@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     supabase_jwt_secret: str
     environment: str = "development"
+    cors_origins: list[str] = ["*"]
 
 
 @lru_cache

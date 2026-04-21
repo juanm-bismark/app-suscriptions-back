@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import get_current_profile, require_roles
 from app.models.profile import AppRole, Profile
@@ -13,7 +13,6 @@ from app.schemas.profile import ProfileOut
 from app.schemas.user import UserCreate, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
-_settings = get_settings()
 
 
 @router.get("", response_model=list[ProfileOut])
@@ -30,6 +29,7 @@ async def create_user(
     body: UserCreate,
     current: Profile = Depends(get_current_profile),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> Profile:
     if current.role == AppRole.member:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
@@ -40,10 +40,10 @@ async def create_user(
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{_settings.supabase_url}/auth/v1/admin/users",
+            f"{settings.supabase_url}/auth/v1/admin/users",
             headers={
-                "apikey": _settings.supabase_service_role_key,
-                "Authorization": f"Bearer {_settings.supabase_service_role_key}",
+                "apikey": settings.supabase_service_role_key,
+                "Authorization": f"Bearer {settings.supabase_service_role_key}",
             },
             json={
                 "email": body.email,
@@ -137,6 +137,7 @@ async def delete_user(
     user_id: uuid.UUID,
     current: Profile = Depends(require_roles(AppRole.admin)),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> None:
     if current.id == user_id:
         raise HTTPException(
@@ -151,10 +152,10 @@ async def delete_user(
 
     async with httpx.AsyncClient() as client:
         resp = await client.delete(
-            f"{_settings.supabase_url}/auth/v1/admin/users/{user_id}",
+            f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
             headers={
-                "apikey": _settings.supabase_service_role_key,
-                "Authorization": f"Bearer {_settings.supabase_service_role_key}",
+                "apikey": settings.supabase_service_role_key,
+                "Authorization": f"Bearer {settings.supabase_service_role_key}",
             },
         )
 

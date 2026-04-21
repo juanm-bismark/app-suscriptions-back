@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +68,7 @@ async def update_my_settings(
     row = result.scalar_one_or_none()
     if row:
         row.settings = body.settings
+        row.updated_at = datetime.now(timezone.utc)
     else:
         row = CompanySettings(company_id=current.company_id, settings=body.settings)
         db.add(row)

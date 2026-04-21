@@ -6,22 +6,22 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.database import get_db
 from app.models.profile import AppRole, Profile
 
 _bearer = HTTPBearer()
-_settings = get_settings()
 
 
 async def get_current_profile(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> Profile:
     try:
         payload = jwt.decode(
             credentials.credentials,
-            _settings.supabase_jwt_secret,
+            settings.supabase_jwt_secret,
             algorithms=["HS256"],
             audience="authenticated",
         )
