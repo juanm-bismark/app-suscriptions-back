@@ -1,0 +1,12 @@
+# Development dependencies
+-r requirements.txt
+
+# Testing
+pytest>=9.0.0
+pytest-asyncio>=0.24.0
+
+# Linting y code quality
+ruff>=0.15.0
+
+# Type checking (optional but recommended)
+mypy>=1.0.0

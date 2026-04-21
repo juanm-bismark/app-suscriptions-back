@@ -1,0 +1,74 @@
+[project]
+name = "suscriptions-api"
+version = "0.0.0"
+requires-python = ">=3.14"
+
+[tool.black]
+line-length = 88
+target-version = ["py314"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+  "E", "F",      # PEP8 errors + pyflakes (errores reales)
+  "I",           # imports ordenados
+  "B",           # bugbear (bugs comunes)
+  "UP",          # pyupgrade (mejores prácticas)
+]
+ignore = [
+  "E501",        # line too long (Black manda)
+  "UP045",       # X | None  →  Optional[X]
+  "UP006",       # list/dict/tuple en lugar de List/Dict/Tuple
+  "UP007",       # X | Y en lugar de Union[X, Y]
+  "UP035",       # imports deprecados de typing (List, Dict, etc.)
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.pydocstyle]
+convention = "google"
+add-ignore = ["D100", "D104", "D107"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+# Ignore mlruns and manual_checks (manual scripts are not pytest-safe)
+addopts = "-ra -q --ignore=mlruns --ignore=tests/manual_checks -m 'not integration'"
+testpaths = [
+  "tests",
+  "app",
+]
+python_files = ["test_*.py", "*_test.py"]
+markers = [
+  "integration: tests that hit the running API and external services",
+]
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+exclude = ["^scripts/"]   # scripts no son código de producción
+
+[[tool.mypy.overrides]]
+module = [
+  "pandas.*",
+  "numpy.*",
+  "sklearn.*",
+  "mlflow.*",
+  "scipy.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "app.domain.*",
+  "app.infrastructure.*",
+  "app.application.*",
+]
+disallow_untyped_defs = false

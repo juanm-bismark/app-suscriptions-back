@@ -1,0 +1,126 @@
+model/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyc
+.Python
+
+# Distribution
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Logs
+pip-log.txt
+pip-delete-this-directory.txt
+*.log
+
+# Unit testing
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database
+db.sqlite3
+db.sqlite3-journal
+dev.db
+*.sql
+*.backup
+
+
+# Data (ignore all data, keep samples tracked)
+data/
+!data/sample/
+!data/sample/**
+
+# Temp / columnar files (optional if you already ignore data/)
+*.tmp
+*.bak
+*.backup
+
+# IDE Specific
+.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+
+# Alembic migrations
+migrations/versions/*.pyc
+migrations/__pycache__/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Type checking / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
+.ruff_cache/
+pyrightconfig.json
+
+# Profiling
+*.prof
+*.lprof
+
+# Security
+*.pem
+*.key
+*.crt
+*.pfx
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
