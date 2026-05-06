@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from cryptography.fernet import Fernet
 
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -18,7 +19,7 @@ from app.tenancy.routers import credentials as credentials_router
 
 COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
-FERNET_KEY = "0yQmM-4diy_DdLtAMkNC-vq3bn3bx0N9-mbkzEazP-E="
+FERNET_KEY = Fernet.generate_key().decode()
 
 
 class _Scalars:

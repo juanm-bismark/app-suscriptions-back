@@ -104,39 +104,35 @@ The `purge()` method delegates to `set_administrative_status()` to avoid duplica
 
 ## Moabits
 
-`moabits.md` is a high-level extraction, but the Orion API 2.0.0 Swagger (`https://www.api.myorion.co/api-doc`) confirms the production server, Bearer/JWT authorization model, and the concrete paths used by the adapter for core v1 operations. The public server is `https://www.api.myorion.co/`; no separate sandbox server is declared in the spec.
+Moabits has two separate Orion API surfaces. The current adapter still reflects the older API 1 shape in code, while the second API is documented by the Orion Gateway API v2 Swagger at `https://apiv2.myorion.co/v3/api-docs`.
 
-Confirmed core paths:
-- `GET /api/sim/details/{iccidList}`
-- `GET /api/sim/serviceStatus/{iccidList}`
-- `GET /api/usage/simUsage`
-- `GET /api/sim/connectivityStatus/{iccidList}`
-- `GET /api/company/simList/{companyCodes}`
-- `GET /api/company/simListDetail/{companyCodes}`
-- `PUT /api/sim/active/`
-- `PUT /api/sim/suspend/`
-- `PUT /api/sim/purge/` with body `{"iccidList": ["..."]}` and success payload `{"status":"Ok","info":{"purged":true}}`
+The dedicated v2 reference for this backend is [MOABITS_ORION_GATEWAY_API_V2.md](MOABITS_ORION_GATEWAY_API_V2.md). It intentionally documents only the needed read endpoints plus `active`, `suspend`, and `purge`.
 
-### Missing Endpoints
+Confirmed API v2 paths in scope:
+- `GET /api/v2/sim/{iccidList}`
+- `GET /api/v2/sim/service-status/{iccidList}`
+- `GET /api/v2/sim/connectivity/{iccidList}`
+- `GET /api/v2/product/product-list/{id}`
+- `GET /api/v2/client/children`
+- `PUT /api/v2/sim/active`
+- `PUT /api/v2/sim/suspend`
+- `PUT /api/v2/sim/purge`
 
-| Endpoint | Purpose | Impact | Priority |
-|----------|---------|--------|----------|
-| `GET /api/usage/companyUsage` | Retrieve aggregated usage by company | No tenant-level usage rollup in UI | Low |
-| `PUT /api/sim/setLimits/` | Set per-SIM data/SMS limits | No per-device quota management in UI | Low |
-| `PUT /api/sim/details/{iccid}/name/` | Update the display name of a SIM | SIM renaming not supported | Low |
+### Out of Scope for the Current Moabits v2 Reference
 
-### Unsupported Operations
+| Endpoint | Reason |
+|----------|--------|
+| `PUT /api/v2/sim/{iccid}/name` | SIM rename is not needed for this backend scope. |
+| `PUT /api/v2/sim/limits` | Quota writes are not needed for this backend scope. |
+| `POST /api/v2/product/assignSIM` | Product assignment is not needed for this backend scope. |
 
-- `set_administrative_status` is limited to the public write routes Orion exposes: active and suspend.
-- `IN_TEST` / `TEST_READY`, `DEACTIVATED`, and `INVENTORY` may appear as native states, but there is no public Swagger endpoint to write those transitions.
-- Selective service control is **supported and implemented** for active/suspend routes (see [ADR-005](adrs/ADR-005-resilience-and-cache.md)).
+### Provider Limitations (Native API v2)
 
-### Provider Limitations (Native API)
-
-- No device reactivation from PURGED state is exposed in the public Swagger.
-- Native pagination is not documented for company SIM list endpoints; the adapter currently paginates locally after pulling company lists.
-- Purge is officially `PUT /api/sim/purge/`, not a generic `Edit Device Details {status: PURGED}` payload.
-- Connectivity status path is plural by variable name (`{iccidList}`), but the backend uses the same path shape for a single ICCID.
+- API v2 declares API key auth through header `X-API-KEY`; no JWT bootstrap endpoint is documented in this Swagger.
+- Bulk SIM operations do not document maximum item counts or partial-success response schemas.
+- Several success responses are declared as generic `object`, so the success payload contract is incomplete.
+- Dates are plain strings without declared `date-time` format or timezone semantics.
+- `GET /api/v2/product/product-list/{id}` and `GET /api/v2/client/children` have schema/example mismatches in Swagger.
 
 ---
 
