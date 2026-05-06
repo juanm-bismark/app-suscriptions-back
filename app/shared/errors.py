@@ -108,7 +108,14 @@ class ProviderResourceNotFound(DomainError):
         self.provider_request_id = provider_request_id
         self.provider_error_code = provider_error_code
         self.provider_error_message = provider_error_message
-        super().__init__(detail=detail, extra=extra)
+        merged_extra = extra or {}
+        if provider_request_id is not None:
+            merged_extra["provider_request_id"] = provider_request_id
+        if provider_error_code is not None:
+            merged_extra["provider_error_code"] = provider_error_code
+        if provider_error_message is not None:
+            merged_extra["provider_error_message"] = provider_error_message
+        super().__init__(detail=detail, extra=merged_extra)
 
 
 class ProviderValidationError(DomainError):
@@ -128,7 +135,14 @@ class ProviderValidationError(DomainError):
         self.provider_request_id = provider_request_id
         self.provider_error_code = provider_error_code
         self.provider_error_message = provider_error_message
-        super().__init__(detail=detail, extra=extra)
+        merged_extra = extra or {}
+        if provider_request_id is not None:
+            merged_extra["provider_request_id"] = provider_request_id
+        if provider_error_code is not None:
+            merged_extra["provider_error_code"] = provider_error_code
+        if provider_error_message is not None:
+            merged_extra["provider_error_message"] = provider_error_message
+        super().__init__(detail=detail, extra=merged_extra)
 
 
 class ProviderForbidden(DomainError):
@@ -148,7 +162,14 @@ class ProviderForbidden(DomainError):
         self.provider_request_id = provider_request_id
         self.provider_error_code = provider_error_code
         self.provider_error_message = provider_error_message
-        super().__init__(detail=detail, extra=extra)
+        merged_extra = extra or {}
+        if provider_request_id is not None:
+            merged_extra["provider_request_id"] = provider_request_id
+        if provider_error_code is not None:
+            merged_extra["provider_error_code"] = provider_error_code
+        if provider_error_message is not None:
+            merged_extra["provider_error_message"] = provider_error_message
+        super().__init__(detail=detail, extra=merged_extra)
 
 
 class UnsupportedOperation(DomainError):

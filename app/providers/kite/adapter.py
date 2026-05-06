@@ -74,7 +74,9 @@ from .status_map import to_native
 def _format_search_dt(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 def _filter_usage_metrics(

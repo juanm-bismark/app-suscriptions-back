@@ -20,6 +20,7 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
                 "password": "KITE_PASSWORD_OPTIONAL",
                 "client_cert_pfx_b64": "BASE64_OF_THE_PFX_FILE",
                 "client_cert_password": "PFX_PASSWORD",
+                "server_ca_bundle_pem_b64": "BASE64_OF_TELEFONICA_CA_PEM_OPTIONAL",
             },
             "account_scope": {
                 "environment": "production",
@@ -52,13 +53,16 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
     "moabits": {
         "summary": "Moabits Orion credentials",
         "description": (
-            "Moabits uses Orion REST bearer/API key credentials. company_codes "
-            "limits listing to the Moabits company codes this tenant can access."
+            "Moabits uses Orion REST JWT auth. Provide either an existing "
+            "authorization_token/api_key bearer token, or an application_key "
+            "so the adapter can call GET /integrity/authorization-token. "
+            "company_codes limits listing to the Moabits company codes this "
+            "tenant can access."
         ),
         "value": {
             "credentials": {
-                "base_url": "https://api.moabits.com",
-                "api_key": "MOABITS_API_KEY",
+                "base_url": "https://www.api.myorion.co",
+                "application_key": "MOABITS_ORION_WEB_CLIENT_APPLICATION_KEY",
                 "company_codes": ["MOABITS_COMPANY_CODE"],
             },
             "account_scope": {

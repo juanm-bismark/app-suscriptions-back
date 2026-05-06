@@ -28,7 +28,7 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.environment)
-    init_engine(settings.database_url, echo=settings.environment == "development")
+    init_engine(settings.database_url, echo=settings.database_echo)
 
     registry = ProviderRegistry()
     registry.register(Provider.KITE, KiteAdapter())

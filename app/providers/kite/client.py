@@ -10,11 +10,13 @@ import base64
 import os
 import ssl
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html import escape
 from typing import Any
 
+import certifi
 import httpx
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -43,6 +45,7 @@ _KITE_TYPES_NS = (
 _WSSE_NS = (
     "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
 )
+_COMMON_NS = "http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,8 @@ class KiteCredentials:
     password: str | None = None
     client_cert_pfx_b64: str | None = None
     client_cert_password: str | None = None
+    server_ca_bundle_pem_b64: str | None = None
+    server_ca_bundle_pem: str | None = None
 
 
 def _creds(data: dict[str, Any]) -> KiteCredentials:
@@ -68,6 +73,14 @@ def _creds(data: dict[str, Any]) -> KiteCredentials:
         client_cert_pfx_b64=data.get("client_cert_pfx_b64") or data.get("pfx_base64"),
         client_cert_password=data.get("client_cert_password")
         or data.get("pfx_password"),
+        server_ca_bundle_pem_b64=data.get("server_ca_bundle_pem_b64")
+        or data.get("server_ca_cert_pem_b64")
+        or data.get("ca_bundle_pem_b64")
+        or data.get("ca_cert_pem_b64"),
+        server_ca_bundle_pem=data.get("server_ca_bundle_pem")
+        or data.get("server_ca_cert_pem")
+        or data.get("ca_bundle_pem")
+        or data.get("ca_cert_pem"),
     )
 
 
@@ -75,30 +88,78 @@ def _qualified(tag: str) -> str:
     return f"<gm2minve_s3t:{tag}>"
 
 
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if tag.startswith("{") else tag
+
+
+def _find_first_descendant_named(element: ET.Element, name: str) -> ET.Element | None:
+    for child in element.iter():
+        if _local_name(child.tag) == name:
+            return child
+    return None
+
+
+def _findtext_any(element: ET.Element, *names: str) -> str | None:
+    for child in element.iter():
+        if _local_name(child.tag) in names and child.text is not None:
+            value = child.text.strip()
+            if value:
+                return value
+    return None
+
+
+def _kite_exception_id(exc_el: ET.Element) -> str:
+    exception_id = _findtext_any(exc_el, "exceptionId") or ""
+    category = _findtext_any(exc_el, "exceptionCategory") or ""
+    if category and exception_id and "." not in exception_id:
+        return f"{category}.{exception_id}"
+    return exception_id
+
+
 def _envelope(creds: KiteCredentials, body_xml: str) -> bytes:
-    header_xml = ""
+    transaction_id = str(uuid.uuid4())
+    consumer_transaction_id = str(uuid.uuid4())
+    header_parts = [
+        "<soapenv:Header>",
+        f"<com:SOATransactionID>{transaction_id}</com:SOATransactionID>",
+        f"<com:SOAConsumerTransactionID>{consumer_transaction_id}</com:SOAConsumerTransactionID>",
+    ]
     if creds.username and creds.password:
-        header_xml = (
-            "<soapenv:Header>"
+        header_parts.append(
             "<wsse:Security>"
             "<wsse:UsernameToken>"
             f"<wsse:Username>{escape(creds.username)}</wsse:Username>"
             f"<wsse:Password>{escape(creds.password)}</wsse:Password>"
             "</wsse:UsernameToken>"
             "</wsse:Security>"
-            "</soapenv:Header>"
         )
+    header_parts.append("</soapenv:Header>")
+    header_xml = "".join(header_parts)
 
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<soapenv:Envelope xmlns:soapenv="{_SOAP_ENV}" '
         f'xmlns:wsse="{_WSSE_NS}" '
+        f'xmlns:com="{_COMMON_NS}" '
         f'xmlns:gm2minve_s3t="{_KITE_TYPES_NS}">'
         f"{header_xml}"
         f"<soapenv:Body>{body_xml}</soapenv:Body>"
         "</soapenv:Envelope>"
     )
     return xml.encode("utf-8")
+
+
+def _server_ca_bundle_pem(creds: KiteCredentials) -> str | None:
+    if creds.server_ca_bundle_pem:
+        return creds.server_ca_bundle_pem
+    if not creds.server_ca_bundle_pem_b64:
+        return None
+    try:
+        return base64.b64decode(creds.server_ca_bundle_pem_b64).decode("utf-8")
+    except Exception as exc:
+        raise ProviderAuthFailed(
+            detail=f"Kite server CA bundle could not be decoded: {exc}"
+        ) from exc
 
 
 def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
@@ -109,8 +170,21 @@ def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
     `client_cert_pfx_b64` plus optional `client_cert_password`, never in
     account_scope or plaintext columns.
     """
-    if not creds.client_cert_pfx_b64:
+    server_ca_pem = _server_ca_bundle_pem(creds)
+    if not creds.client_cert_pfx_b64 and not server_ca_pem:
         return True
+
+    context = ssl.create_default_context(cafile=certifi.where())
+    if server_ca_pem:
+        try:
+            context.load_verify_locations(cadata=server_ca_pem)
+        except ssl.SSLError as exc:
+            raise ProviderAuthFailed(
+                detail=f"Kite server CA bundle could not be loaded: {exc}"
+            ) from exc
+
+    if not creds.client_cert_pfx_b64:
+        return context
 
     try:
         pfx = base64.b64decode(creds.client_cert_pfx_b64)
@@ -132,12 +206,19 @@ def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
             detail="Kite client certificate PFX is missing a private key or certificate"
         )
 
-    context = ssl.create_default_context()
     cert_pem = certificate.public_bytes(Encoding.PEM)
+    ca_chain_pem = b""
     if additional_certs:
-        cert_pem += b"".join(
+        ca_chain_pem = b"".join(
             cert.public_bytes(Encoding.PEM) for cert in additional_certs
         )
+        cert_pem += ca_chain_pem
+        try:
+            context.load_verify_locations(cadata=ca_chain_pem.decode("utf-8"))
+        except ssl.SSLError:
+            # Some PFX files only include the client-certificate chain. It is
+            # useful when valid as a Kite CA bundle, but not required.
+            pass
     key_pem = private_key.private_bytes(
         Encoding.PEM,
         PrivateFormat.PKCS8,
@@ -192,17 +273,17 @@ async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Ele
         fault = root.find(f".//{{{_SOAP_ENV}}}Fault")
         if fault is not None:
             # Try to extract structured fault detail following Kite's Fault/detail/ClientException|ServerException
-            msg = fault.findtext("faultstring") or "unknown SOAP fault"
-            detail_el = fault.find(".//detail")
+            msg = _findtext_any(fault, "faultstring") or "unknown SOAP fault"
+            detail_el = _find_first_descendant_named(fault, "detail")
             if detail_el is not None and len(list(detail_el)) > 0:
                 # take the first child (ClientException or ServerException)
                 exc_el = list(detail_el)[0]
-                exception_id = exc_el.findtext("exceptionId") or ""
+                exception_id = _kite_exception_id(exc_el)
                 exception_text = (
-                    exc_el.findtext("text") or exc_el.findtext("message") or msg
+                    _findtext_any(exc_el, "text", "message") or msg
                 )
-                soa_tx = exc_el.findtext("SOATransactionID") or exc_el.findtext(
-                    "SOAConsumerTransactionID"
+                soa_tx = _findtext_any(
+                    exc_el, "SOATransactionID", "SOAConsumerTransactionID"
                 )
 
                 # Map known exception IDs/categories to domain exceptions
@@ -252,7 +333,13 @@ async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Ele
                         raise UnsupportedOperation(detail=exception_text)
                     if exception_id == "SVR.1006":
                         raise ProviderUnavailable(
-                            detail=exception_text, extra={"retryable": True}
+                            detail=exception_text,
+                            extra={
+                                "retryable": True,
+                                "provider_request_id": soa_tx,
+                                "provider_error_code": exception_id,
+                                "provider_error_message": exception_text,
+                            },
                         )
                     # fallback server-side error
                     raise ProviderUnavailable(
@@ -263,6 +350,15 @@ async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Ele
                             "provider_error_message": exception_text,
                         },
                     )
+
+                raise ProviderProtocolError(
+                    detail=exception_text,
+                    extra={
+                        "provider_request_id": soa_tx,
+                        "provider_error_code": exception_id or None,
+                        "provider_error_message": exception_text,
+                    },
+                )
 
             # Fallback: unknown fault, return generic protocol error
             raise ProviderProtocolError(detail=f"Kite SOAP fault: {msg}")
@@ -332,12 +428,10 @@ class KiteClient:
         if searchParameters is not None:
             parts.append("<gm2minve_s3t:searchParameters>")
             for name, value in searchParameters.items():
-                parts.append("<gm2minve_s3t:param>")
-                parts.append(f"<gm2minve_s3t:name>{escape(name)}</gm2minve_s3t:name>")
-                parts.append(
-                    f"<gm2minve_s3t:value>{escape(value)}</gm2minve_s3t:value>"
-                )
-                parts.append("</gm2minve_s3t:param>")
+                parts.append("<com:param>")
+                parts.append(f"<com:name>{escape(name)}</com:name>")
+                parts.append(f"<com:value>{escape(value)}</com:value>")
+                parts.append("</com:param>")
             parts.append("</gm2minve_s3t:searchParameters>")
 
         parts.append("</gm2minve_s3t:getSubscriptions>")

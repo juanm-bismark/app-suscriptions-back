@@ -115,7 +115,7 @@ def _provider_capabilities(
             {
                 "set_administrative_status": _cap(
                     write_status,
-                    "Orion API 2.0.0 exposes active and suspend write routes; TEST_READY, DEACTIVATED, and INVENTORY are not public write targets.",
+                    "Admin-only service writes map to Orion API 2.0.0 PUT /api/sim/active/ and PUT /api/sim/suspend/. At least one of data_service or sms_service must be true.",
                     ["active", "suspended"],
                 ),
                 "purge": _cap(

@@ -46,6 +46,10 @@ def test_moabits_purge_capability_supported_when_writes_enabled() -> None:
     purge = response.json()["capabilities"]["purge"]
     assert purge["status"] == "supported"
     assert "/api/sim/purge/" in purge["reason"]
+    status_write = response.json()["capabilities"]["set_administrative_status"]
+    assert status_write["status"] == "supported"
+    assert "active/" in status_write["reason"]
+    assert status_write["targets"] == ["active", "suspended"]
 
 
 def test_moabits_purge_capability_requires_feature_flag_when_writes_disabled() -> None:

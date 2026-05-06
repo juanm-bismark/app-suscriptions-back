@@ -2,7 +2,11 @@
 
 Credentials dict keys:
     base_url (str): API base, e.g. "https://www.api.myorion.co".
-    api_key (str): Bearer token/JWT.
+    api_key (str, optional): Bearer token/JWT (backward-compatible direct token).
+    authorization_token|bearer_token|jwt (str, optional): Bearer token/JWT aliases.
+    application_key|x_api_key (str, optional): Orion Web Client application key.
+        When provided without a direct token, the adapter calls
+        GET /integrity/authorization-token and uses info.authorizationToken.
     company_codes (list[str]): Company codes owned by this tenant.
     company_id (str): Injected by the service layer — not a stored credential.
 
@@ -21,9 +25,12 @@ Usage snapshot exposes Moabits-specific raw fields under provider_metrics:
     data_mb (int|None — Moabits returns data in MB).
 
 Orion API 2.0.0 paths used here are documented in the public Swagger:
+    GET /integrity/authorization-token
     GET /api/sim/details/{iccidList}
     GET /api/sim/serviceStatus/{iccidList}
     GET /api/usage/simUsage
+    GET /api/company/simList/{companyCodes}
+    GET /api/company/simListDetail/{companyCodes}
     GET /api/sim/connectivityStatus/{iccidList}
     PUT /api/sim/active/
     PUT /api/sim/suspend/
@@ -31,6 +38,10 @@ Orion API 2.0.0 paths used here are documented in the public Swagger:
 """
 
 import asyncio
+import base64
+import calendar
+import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -42,6 +53,7 @@ from app.providers.adapter_base import BaseAdapter
 from app.providers.base import Provider
 from app.shared.errors import (
     ProviderAuthFailed,
+    ProviderForbidden,
     ProviderProtocolError,
     ProviderRateLimited,
     ProviderUnavailable,
@@ -61,11 +73,17 @@ from app.subscriptions.domain import (
 
 from .status_map import map_status
 
+_TOKEN_REFRESH_MARGIN_SECONDS = 300
+_TOKEN_FALLBACK_TTL_SECONDS = 5 * 60 * 60 + 50 * 60
+_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+_TOKEN_LOCKS: dict[str, asyncio.Lock] = {}
+
 
 @dataclass(frozen=True)
 class _MoabitsCreds:
     base_url: str
-    api_key: str
+    api_key: str | None
+    application_key: str | None
     company_codes: list[str]
 
 
@@ -73,18 +91,30 @@ def _creds(d: dict[str, Any]) -> _MoabitsCreds:
     codes = d.get("company_codes", [])
     if isinstance(codes, str):
         codes = [codes]
+    token = (
+        d.get("authorization_token")
+        or d.get("bearer_token")
+        or d.get("jwt")
+        or d.get("api_key")
+    )
+    application_key = d.get("application_key") or d.get("x_api_key") or d.get("x-api-key")
+    if not token and not application_key:
+        raise ProviderAuthFailed(
+            detail="Moabits credentials require api_key/authorization_token or application_key"
+        )
     return _MoabitsCreds(
         base_url=d["base_url"].rstrip("/"),
-        api_key=d["api_key"],
+        api_key=token,
+        application_key=application_key,
         company_codes=codes,
     )
 
 
-def _client(creds: _MoabitsCreds) -> httpx.AsyncClient:
+def _client(creds: _MoabitsCreds, token: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=creds.base_url,
         headers={
-            "Authorization": f"Bearer {creds.api_key}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         },
         timeout=30.0,
@@ -93,9 +123,19 @@ def _client(creds: _MoabitsCreds) -> httpx.AsyncClient:
 
 def _check(resp: httpx.Response, label: str = "Moabits") -> None:
     if resp.status_code == 401:
-        raise ProviderAuthFailed(detail=f"{label} authentication failed")
+        if label == "Moabits authorization":
+            raise ProviderAuthFailed(
+                detail="Moabits x-api-key is absent, malformed, or not found"
+            )
+        raise ProviderAuthFailed(
+            detail="Moabits authorization token is absent, expired, or invalid"
+        )
     if resp.status_code == 403:
-        raise ProviderAuthFailed(detail=f"{label} access forbidden")
+        if label == "Moabits authorization":
+            raise ProviderAuthFailed(
+                detail="Moabits x-api-key is cancelled, revoked, or expired"
+            )
+        raise ProviderForbidden(detail=f"{label} access denied")
     if resp.status_code == 429:
         raise ProviderRateLimited(detail=f"{label} rate limit exceeded")
     if resp.status_code >= 500:
@@ -106,20 +146,114 @@ def _check(resp: httpx.Response, label: str = "Moabits") -> None:
         )
 
 
+def _cache_key(creds: _MoabitsCreds) -> str:
+    return f"{creds.base_url}|{creds.application_key}"
+
+
+def _jwt_exp(token: str) -> float | None:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+        exp = data.get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+def _token_expires_at(token: str) -> float:
+    exp = _jwt_exp(token)
+    if exp is not None:
+        return exp
+    return time.time() + _TOKEN_FALLBACK_TTL_SECONDS
+
+
+async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
+    if not creds.application_key:
+        raise ProviderAuthFailed(detail="Moabits application key is missing")
+    async with httpx.AsyncClient(
+        base_url=creds.base_url,
+        headers={"x-api-key": creds.application_key, "Accept": "application/json"},
+        timeout=30.0,
+    ) as client:
+        try:
+            resp = await client.get("/integrity/authorization-token")
+        except httpx.TimeoutException as exc:
+            raise ProviderUnavailable(detail="Moabits authorization timeout") from exc
+        except httpx.RequestError as exc:
+            raise ProviderUnavailable(
+                detail=f"Moabits authorization network error: {exc}"
+            ) from exc
+    _check(resp, "Moabits authorization")
+    data = resp.json()
+    info = data.get("info") if isinstance(data, dict) else None
+    token = info.get("authorizationToken") if isinstance(info, dict) else None
+    if not token:
+        raise ProviderProtocolError(
+            detail="Moabits authorization response missing info.authorizationToken"
+        )
+    return str(token)
+
+
+async def _authorization_token(
+    creds: _MoabitsCreds, *, force_refresh: bool = False
+) -> str:
+    if creds.api_key:
+        return creds.api_key
+    key = _cache_key(creds)
+    now = time.time()
+    cached = _TOKEN_CACHE.get(key)
+    if (
+        not force_refresh
+        and cached is not None
+        and cached[1] - now > _TOKEN_REFRESH_MARGIN_SECONDS
+    ):
+        return cached[0]
+
+    lock = _TOKEN_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        now = time.time()
+        cached = _TOKEN_CACHE.get(key)
+        if (
+            not force_refresh
+            and cached is not None
+            and cached[1] - now > _TOKEN_REFRESH_MARGIN_SECONDS
+        ):
+            return cached[0]
+        token = await _fetch_authorization_token(creds)
+        _TOKEN_CACHE[key] = (token, _token_expires_at(token))
+        return token
+
+
 async def _get(creds: _MoabitsCreds, path: str, params: dict[str, Any] | None = None) -> Any:
-    async with _client(creds) as client:
+    token = await _authorization_token(creds)
+    async with _client(creds, token) as client:
         try:
             resp = await client.get(path, params=params or {})
         except httpx.TimeoutException as exc:
             raise ProviderUnavailable(detail="Moabits timeout") from exc
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Moabits network error: {exc}") from exc
+    if resp.status_code == 401 and creds.application_key:
+        token = await _authorization_token(creds, force_refresh=True)
+        async with _client(creds, token) as client:
+            try:
+                resp = await client.get(path, params=params or {})
+            except httpx.TimeoutException as exc:
+                raise ProviderUnavailable(detail="Moabits timeout") from exc
+            except httpx.RequestError as exc:
+                raise ProviderUnavailable(
+                    detail=f"Moabits network error: {exc}"
+                ) from exc
     _check(resp)
     return resp.json()
 
 
 async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotency_key: str | None = None) -> Any:
-    async with _client(creds) as client:
+    token = await _authorization_token(creds)
+    async with _client(creds, token) as client:
         headers: dict[str, str] = {}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
@@ -129,6 +263,20 @@ async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotenc
             raise ProviderUnavailable(detail="Moabits timeout") from exc
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Moabits network error: {exc}") from exc
+    if resp.status_code == 401 and creds.application_key:
+        token = await _authorization_token(creds, force_refresh=True)
+        async with _client(creds, token) as client:
+            headers = {}
+            if idempotency_key:
+                headers["Idempotency-Key"] = idempotency_key
+            try:
+                resp = await client.put(path, json=body, headers=headers)
+            except httpx.TimeoutException as exc:
+                raise ProviderUnavailable(detail="Moabits timeout") from exc
+            except httpx.RequestError as exc:
+                raise ProviderUnavailable(
+                    detail=f"Moabits network error: {exc}"
+                ) from exc
     _check(resp)
     return resp.json() if resp.content else {}
 
@@ -282,6 +430,14 @@ def _usage_metric(metric_type: str, usage: Any, unit: str | None) -> UsageMetric
     return UsageMetric(metric_type=metric_type, usage=value, unit=unit)
 
 
+def _add_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
 class MoabitsAdapter(BaseAdapter):
     """Moabits / Orion API adapter with circuit breaker (ADR-005).
 
@@ -348,6 +504,10 @@ class MoabitsAdapter(BaseAdapter):
         end = end_date or now
         if end < start:
             raise ProviderValidationError(detail="end_date must be after start_date")
+        if end > _add_months(start, 6):
+            raise ProviderValidationError(
+                detail="Moabits usage date range cannot exceed 6 months"
+            )
         fmt = "%Y-%m-%d %H:%M:%S"
 
         data = await _get(
@@ -457,25 +617,37 @@ class MoabitsAdapter(BaseAdapter):
         data_service: bool | None = None,
         sms_service: bool | None = None,
     ) -> None:
-        # Guard write-paths with feature flag
         if not get_settings().lifecycle_writes_enabled:
-            raise UnsupportedOperation(detail="Lifecycle write operations are disabled by feature flag")
-
-        creds = _creds(credentials)
-        # If neither service flag is explicit, enable both (backward compat).
-        # Otherwise use the provided values.
-        data_enabled = data_service if data_service is not None else True
-        sms_enabled = sms_service if sms_service is not None else True
-        body: dict[str, Any] = cast(dict[str, Any], {"iccidList": [iccid], "dataService": data_enabled, "smsService": sms_enabled})
-
-        if target == AdministrativeStatus.ACTIVE:
-            await _put(creds, "/api/sim/active/", body, idempotency_key=idempotency_key)
-        elif target == AdministrativeStatus.SUSPENDED:
-            await _put(creds, "/api/sim/suspend/", body, idempotency_key=idempotency_key)
-        else:
             raise UnsupportedOperation(
-                detail=f"Moabits does not support transitioning to status '{target}'"
+                detail="Lifecycle write operations are disabled by feature flag"
             )
+        if target not in {AdministrativeStatus.ACTIVE, AdministrativeStatus.SUSPENDED}:
+            raise UnsupportedOperation(
+                detail=f"Moabits only supports active/suspended service writes, got '{target}'"
+            )
+
+        data_enabled = bool(data_service)
+        sms_enabled = bool(sms_service)
+        if not data_enabled and not sms_enabled:
+            action = "active" if target == AdministrativeStatus.ACTIVE else "suspend"
+            raise ProviderValidationError(detail=f"No service to {action}")
+
+        path = (
+            "/api/sim/active/"
+            if target == AdministrativeStatus.ACTIVE
+            else "/api/sim/suspend/"
+        )
+        creds = _creds(credentials)
+        await _put(
+            creds,
+            path,
+            {
+                "iccidList": [iccid],
+                "dataService": data_enabled,
+                "smsService": sms_enabled,
+            },
+            idempotency_key=idempotency_key,
+        )
 
     async def purge(
         self, iccid: str, credentials: dict[str, Any], *, idempotency_key: str
@@ -518,7 +690,13 @@ class MoabitsAdapter(BaseAdapter):
         Current workaround: Local pagination accepts requests; consider adding
         a hard limit (e.g., max_offset to cap fetches) if memory becomes an issue.
         """
-        if filters and filters.has_filters:
+        if filters and (
+            filters.status is not None
+            or bool(filters.iccid)
+            or bool(filters.imsi)
+            or bool(filters.msisdn)
+            or bool(filters.custom)
+        ):
             raise UnsupportedOperation(
                 detail="Moabits Search Devices filters are not documented"
             )

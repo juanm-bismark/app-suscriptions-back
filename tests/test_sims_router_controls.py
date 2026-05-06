@@ -1,5 +1,6 @@
 import uuid
 
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from app.identity.dependencies import get_current_profile
 from app.identity.models.profile import AppRole, Profile
 from app.providers.registry import ProviderRegistry
 from app.shared.errors import DomainError
+from app.subscriptions.domain import AdministrativeStatus, Subscription
 from app.subscriptions.routers import sims
 from app.subscriptions.schemas.sim import SimListOut
 
@@ -186,7 +188,9 @@ def test_list_sims_documents_tele2_modified_since_rules() -> None:
     modified_till = next(
         param for param in params if param["name"] == "modified_till"
     )
-    assert "Required when provider=tele2" in modified_since["description"]
+    assert "Provider support: tele2" in modified_since["description"]
+    assert "kite" in modified_since["description"]
+    assert "moabits" in modified_since["description"]
     assert "modified_since + 1 year" in modified_till["description"]
 
 
@@ -196,3 +200,79 @@ def test_list_sims_rejects_unknown_provider() -> None:
     response = client.get("/v1/sims?provider=unknown")
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_provider_listing_commits_routing_upserts_once(monkeypatch) -> None:
+    class _Db:
+        def __init__(self) -> None:
+            self.execute_calls = 0
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            self.execute_calls += 1
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _SearchProvider:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            return (
+                [
+                    Subscription(
+                        iccid="8934071100303041838",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.ACTIVE,
+                        native_status="active",
+                        provider="kite",
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    ),
+                    Subscription(
+                        iccid="8934071100303041796",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.ACTIVE,
+                        native_status="active",
+                        provider="kite",
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    ),
+                ],
+                None,
+            )
+
+    class _SearchRegistry:
+        def get(self, provider):
+            return _SearchProvider()
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    db = _Db()
+
+    await sims._list_via_provider_search(
+        "kite",
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_SearchRegistry(),
+    )
+
+    assert db.execute_calls == 2
+    assert db.commit_calls == 1

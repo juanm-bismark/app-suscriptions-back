@@ -6,6 +6,7 @@ import httpx
 
 from app.providers.kite.client import KiteClient
 from app.shared.errors import (
+    ProviderProtocolError,
     ProviderResourceNotFound,
     ProviderValidationError,
     ProviderForbidden,
@@ -48,6 +49,7 @@ async def test_svc_1006_maps_to_not_found(monkeypatch):
     exc = excinfo.value
     assert getattr(exc, "provider_request_id", None) == "tx-123"
     assert getattr(exc, "provider_error_code", None) == "SVC.1006"
+    assert exc.extra["provider_error_code"] == "SVC.1006"
 
 
 @pytest.mark.asyncio
@@ -138,3 +140,69 @@ async def test_svr_1006_retryable(monkeypatch):
     exc = excinfo.value
     # Ensure retryable flag surfaced in extra
     assert exc.extra.get("retryable") is True
+
+
+@pytest.mark.asyncio
+async def test_namespaced_client_exception_detail_is_extracted(monkeypatch):
+    body = """
+    <soapenv:Envelope
+        xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+        xmlns:com="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1">
+      <soapenv:Body>
+        <soapenv:Fault>
+          <faultcode>soap:Client</faultcode>
+          <faultstring>Client exception</faultstring>
+          <detail>
+            <com:ClientException>
+              <com:exceptionCategory>SVC</com:exceptionCategory>
+              <com:exceptionId>1021</com:exceptionId>
+              <com:text>Invalid search parameter icc</com:text>
+              <com:SOATransactionID>tx-ns-422</com:SOATransactionID>
+            </com:ClientException>
+          </detail>
+        </soapenv:Fault>
+      </soapenv:Body>
+    </soapenv:Envelope>
+    """
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", await _fake_post_factory(body))
+    client = KiteClient({"endpoint": "https://kite.test", "username": "u", "password": "p"})
+    with pytest.raises(ProviderValidationError) as excinfo:
+        await client.get_subscription_detail("8934070100000000001")
+    exc = excinfo.value
+    assert exc.detail == "Invalid search parameter icc"
+    assert exc.extra["provider_request_id"] == "tx-ns-422"
+    assert exc.extra["provider_error_code"] == "SVC.1021"
+
+
+@pytest.mark.asyncio
+async def test_unknown_namespaced_client_exception_keeps_provider_detail(monkeypatch):
+    body = """
+    <soapenv:Envelope
+        xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+        xmlns:com="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1">
+      <soapenv:Body>
+        <soapenv:Fault>
+          <faultcode>soap:Client</faultcode>
+          <faultstring>Client exception</faultstring>
+          <detail>
+            <com:ClientException>
+              <com:exceptionCategory>CLI</com:exceptionCategory>
+              <com:exceptionId>9999</com:exceptionId>
+              <com:text>Malformed SOAP body</com:text>
+              <com:SOATransactionID>tx-unknown</com:SOATransactionID>
+            </com:ClientException>
+          </detail>
+        </soapenv:Fault>
+      </soapenv:Body>
+    </soapenv:Envelope>
+    """
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", await _fake_post_factory(body))
+    client = KiteClient({"endpoint": "https://kite.test", "username": "u", "password": "p"})
+    with pytest.raises(ProviderProtocolError) as excinfo:
+        await client.get_subscription_detail("8934070100000000001")
+    exc = excinfo.value
+    assert exc.detail == "Malformed SOAP body"
+    assert exc.extra["provider_request_id"] == "tx-unknown"
+    assert exc.extra["provider_error_code"] == "CLI.9999"

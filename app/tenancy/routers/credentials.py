@@ -77,8 +77,76 @@ def _tele2_base_url(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _normalized_credentials(provider: Provider, body: CredentialUpsertIn) -> dict[str, Any]:
+def _normalized_kite_credentials(body: CredentialUpsertIn) -> dict[str, Any]:
     credentials = dict(body.credentials)
+    endpoint = str(credentials.get("endpoint") or "").strip().rstrip("/")
+    if not endpoint:
+        raise ValueError("Kite endpoint is required")
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Kite endpoint must be a valid HTTPS URL")
+    credentials["endpoint"] = endpoint
+
+    pfx_b64 = credentials.get("client_cert_pfx_b64") or credentials.get("pfx_base64")
+    if not pfx_b64:
+        raise ValueError("Kite client_cert_pfx_b64 is required")
+    credentials["client_cert_pfx_b64"] = pfx_b64
+    credentials.pop("pfx_base64", None)
+
+    pfx_password = credentials.get("client_cert_password") or credentials.get(
+        "pfx_password"
+    )
+    if not pfx_password:
+        raise ValueError("Kite client_cert_password is required")
+    credentials["client_cert_password"] = pfx_password
+    credentials.pop("pfx_password", None)
+
+    username = credentials.get("username")
+    password = credentials.get("password")
+    if bool(username) != bool(password):
+        raise ValueError(
+            "Kite WS-Security credentials require both username and password"
+        )
+
+    ca_bundle_b64 = (
+        credentials.get("server_ca_bundle_pem_b64")
+        or credentials.get("server_ca_cert_pem_b64")
+        or credentials.get("ca_bundle_pem_b64")
+        or credentials.get("ca_cert_pem_b64")
+    )
+    if ca_bundle_b64:
+        credentials["server_ca_bundle_pem_b64"] = ca_bundle_b64
+        for alias in (
+            "server_ca_cert_pem_b64",
+            "ca_bundle_pem_b64",
+            "ca_cert_pem_b64",
+        ):
+            credentials.pop(alias, None)
+
+    ca_bundle_pem = (
+        credentials.get("server_ca_bundle_pem")
+        or credentials.get("server_ca_cert_pem")
+        or credentials.get("ca_bundle_pem")
+        or credentials.get("ca_cert_pem")
+    )
+    if ca_bundle_pem:
+        credentials["server_ca_bundle_pem"] = ca_bundle_pem
+        for alias in ("server_ca_cert_pem", "ca_bundle_pem", "ca_cert_pem"):
+            credentials.pop(alias, None)
+
+    if body.account_scope.get("end_customer_id") is not None:
+        credentials["end_customer_id"] = body.account_scope["end_customer_id"]
+    if body.account_scope.get("environment") is not None:
+        credentials["environment"] = body.account_scope["environment"]
+    return credentials
+
+
+def _normalized_credentials(
+    provider: Provider, body: CredentialUpsertIn
+) -> dict[str, Any]:
+    credentials = dict(body.credentials)
+    if provider == Provider.KITE:
+        return _normalized_kite_credentials(body)
     if provider != Provider.TELE2:
         return credentials
 

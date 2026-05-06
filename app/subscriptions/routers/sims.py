@@ -261,7 +261,6 @@ async def _upsert_routing(
         )
     )
     await db.execute(stmt)
-    await db.commit()
 
 
 # ── Idempotency helpers ──────────────────────────────────────────────────────────
@@ -406,6 +405,8 @@ async def _list_via_provider_search(
     # Lazy-populate the routing index with every SIM returned by the provider.
     for sub in subs:
         await _upsert_routing(db, sub.iccid, provider, company_id)
+    if subs:
+        await db.commit()
 
     return SimListOut(
         items=[_to_out(s) for s in subs],
@@ -510,17 +511,27 @@ async def list_sims(
     modified_since: str | None = Query(
         None,
         description=(
-            "Required when provider=tele2. Must use yyyy-MM-ddTHH:mm:ssZ, "
-            "cannot be in the future, and cannot be more than one year old."
+            "Normalized provider-scoped filter for SIMs changed since this UTC "
+            "timestamp. Must include the trailing Z and use "
+            "yyyy-MM-ddTHH:mm:ssZ. Provider support: tele2 (required, max "
+            "1-year window), kite (optional, maps to startLastStateChangeDate), "
+            "moabits (currently unsupported and ignored until an equivalent "
+            "server-side filter is documented). Example: 2026-04-01T00:00:00Z."
         ),
-        examples=["2026-04-18T17:31:34Z"],
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        examples=["2026-04-01T00:00:00Z"],
     ),
     modified_till: str | None = Query(
         None,
         description=(
-            "Optional Tele2 upper bound. If omitted for Tele2, the adapter uses "
-            "modified_since + 1 year."
+            "Normalized provider-scoped upper bound for SIM modification/state "
+            "change filtering. Must include the trailing Z and use "
+            "yyyy-MM-ddTHH:mm:ssZ. Provider support: tele2 (optional; defaults "
+            "to modified_since + 1 year), kite (optional, maps to "
+            "endLastStateChangeDate), moabits (currently unsupported and ignored "
+            "until an equivalent server-side filter is documented)."
         ),
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
         examples=["2027-04-18T17:31:34Z"],
     ),
     iccid: str | None = None,
@@ -808,5 +819,7 @@ async def import_sims(
 
     for item in body.sims:
         await _upsert_routing(db, item.iccid, item.provider, current.company_id)
+    if body.sims:
+        await db.commit()
 
     return SimImportOut(imported=len(body.sims))

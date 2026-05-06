@@ -53,7 +53,9 @@ class _Db:
                 if row.company_id == COMPANY_ID and row.active:
                     row.active = False
             return _Result([])
-        return _Result([row for row in self.rows if row.company_id == COMPANY_ID and row.active])
+        return _Result(
+            [row for row in self.rows if row.company_id == COMPANY_ID and row.active]
+        )
 
     def add(self, row: CompanyProviderCredentials) -> None:
         self.rows.append(row)
@@ -94,7 +96,9 @@ class _Registry:
         return self.provider
 
 
-def _row(provider: str = "tele2", account_scope: dict[str, Any] | None = None) -> CompanyProviderCredentials:
+def _row(
+    provider: str = "tele2", account_scope: dict[str, Any] | None = None
+) -> CompanyProviderCredentials:
     now = datetime.now(UTC)
     return CompanyProviderCredentials(
         id=uuid.uuid4(),
@@ -241,6 +245,65 @@ def test_patch_allows_custom_tele2_cobrand_url() -> None:
     assert provider.calls[0]["base_url"] == "https://custom.jasper.example"
 
 
+def test_patch_kite_requires_certificate_credentials() -> None:
+    db = _Db([])
+    provider = _Provider()
+    client = _client(AppRole.manager, db, provider)
+
+    response = client.patch(
+        "/v1/companies/me/credentials/kite",
+        json={
+            "credentials": {
+                "endpoint": "https://kite.test/soap",
+            },
+            "account_scope": {"environment": "production"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Kite client_cert_pfx_b64 is required"
+    assert db.rows == []
+    assert provider.calls == []
+
+
+def test_patch_kite_rotates_certificate_credentials_without_returning_secrets() -> None:
+    db = _Db([])
+    provider = _Provider()
+    client = _client(AppRole.manager, db, provider)
+
+    response = client.patch(
+        "/v1/companies/me/credentials/kite",
+        json={
+            "credentials": {
+                "endpoint": "https://kite.test/soap/",
+                "client_cert_pfx_b64": "BASE64-PFX",
+                "client_cert_password": "pfx-secret",
+                "server_ca_cert_pem_b64": "BASE64-CA",
+            },
+            "account_scope": {
+                "environment": "production",
+                "end_customer_id": "end-customer-1",
+                "cert_expires_at": "2026-12-31T00:00:00Z",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(db.rows) == 1
+    decrypted = decrypt_credentials(db.rows[-1].credentials_enc, FERNET_KEY)
+    assert decrypted["endpoint"] == "https://kite.test/soap"
+    assert decrypted["client_cert_pfx_b64"] == "BASE64-PFX"
+    assert decrypted["client_cert_password"] == "pfx-secret"
+    assert decrypted["server_ca_bundle_pem_b64"] == "BASE64-CA"
+    assert "server_ca_cert_pem_b64" not in decrypted
+    assert decrypted["end_customer_id"] == "end-customer-1"
+    assert provider.calls[0]["company_id"] == str(COMPANY_ID)
+    assert provider.calls[0]["client_cert_pfx_b64"] == "BASE64-PFX"
+    assert provider.calls[0]["server_ca_bundle_pem_b64"] == "BASE64-CA"
+    assert "BASE64-PFX" not in response.text
+    assert "pfx-secret" not in response.text
+
+
 def test_failed_patch_does_not_modify_database() -> None:
     old = _row()
     db = _Db([old])
@@ -295,7 +358,10 @@ def test_expiry_statuses() -> None:
         ).value
         == "expired"
     )
-    assert credential_expiry_status({"cert_expires_at": "not-a-date"}, now=now).value == "invalid"
+    assert (
+        credential_expiry_status({"cert_expires_at": "not-a-date"}, now=now).value
+        == "invalid"
+    )
 
 
 def test_credential_endpoints_document_provider_specific_examples() -> None:
@@ -316,4 +382,5 @@ def test_credential_endpoints_document_provider_specific_examples() -> None:
         assert examples["kite"]["value"]["credentials"]["client_cert_pfx_b64"]
         assert examples["tele2"]["value"]["credentials"]["api_key"]
         assert examples["tele2"]["value"]["credentials"]["api_version"] == "v1"
+        assert examples["moabits"]["value"]["credentials"]["application_key"]
         assert examples["moabits"]["value"]["credentials"]["company_codes"]

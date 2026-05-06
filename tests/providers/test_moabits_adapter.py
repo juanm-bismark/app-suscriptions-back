@@ -12,10 +12,15 @@ These tests use realistic Moabits/Orion API payloads to validate that:
 """
 
 import re
+import base64
+import json
+import time
 from decimal import Decimal
+from datetime import UTC, datetime
 
 import pytest
 
+from app.providers.moabits import adapter as moabits_adapter_mod
 from app.providers.moabits.adapter import (
     MoabitsAdapter,
     _coerce_bool,
@@ -25,11 +30,31 @@ from app.providers.moabits.adapter import (
 from app.subscriptions.domain import (
     AdministrativeStatus,
     ConnectivityState,
+    SubscriptionSearchFilters,
+)
+from app.shared.errors import (
+    ProviderAuthFailed,
+    ProviderValidationError,
+    UnsupportedOperation,
 )
 from app.providers.moabits.status_map import map_status
 
 # Matches /api/usage/simUsage with any querystring (Moabits adds date params).
 _USAGE_URL_RE = re.compile(r"^https://api\.moabits\.test/api/usage/simUsage(\?.*)?$")
+
+
+@pytest.fixture(autouse=True)
+def _clear_moabits_token_cache() -> None:
+    moabits_adapter_mod._TOKEN_CACHE.clear()
+    moabits_adapter_mod._TOKEN_LOCKS.clear()
+
+
+def _jwt_with_exp(exp: int) -> str:
+    def _b64(data: dict) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{_b64({'alg': 'none'})}.{_b64({'exp': exp})}.sig"
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
@@ -288,6 +313,152 @@ async def test_get_usage_exposes_active_sim_and_iccid(
 
 
 @pytest.mark.asyncio
+async def test_get_usage_can_exchange_application_key_for_jwt(httpx_mock) -> None:
+    iccid = "8934070100000000001"
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={
+            "status": "Ok",
+            "info": {"authorizationToken": _jwt_with_exp(int(time.time()) + 3600)},
+        },
+    )
+    httpx_mock.add_response(
+        url=_USAGE_URL_RE,
+        json=_usage_payload(),
+    )
+
+    await MoabitsAdapter().get_usage(
+        iccid,
+        {
+            "base_url": "https://api.moabits.test",
+            "application_key": "app-key",
+            "company_codes": ["ACME"],
+        },
+    )
+
+    auth_request, usage_request = httpx_mock.get_requests()
+    assert auth_request.headers["x-api-key"] == "app-key"
+    assert usage_request.headers["authorization"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_get_usage_reuses_cached_jwt_until_refresh_window(httpx_mock) -> None:
+    iccid = "8934070100000000001"
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={
+            "status": "Ok",
+            "info": {"authorizationToken": _jwt_with_exp(int(time.time()) + 3600)},
+        },
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+    creds = {
+        "base_url": "https://api.moabits.test",
+        "application_key": "app-key",
+        "company_codes": ["ACME"],
+    }
+
+    await MoabitsAdapter().get_usage(iccid, creds)
+    await MoabitsAdapter().get_usage(iccid, creds)
+
+    requests = httpx_mock.get_requests()
+    assert [request.url.path for request in requests].count(
+        "/integrity/authorization-token"
+    ) == 1
+    assert [request.url.path for request in requests].count("/api/usage/simUsage") == 2
+
+
+@pytest.mark.asyncio
+async def test_get_usage_refreshes_jwt_when_exp_is_near(httpx_mock) -> None:
+    iccid = "8934070100000000001"
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={
+            "status": "Ok",
+            "info": {"authorizationToken": _jwt_with_exp(int(time.time()) + 60)},
+        },
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={
+            "status": "Ok",
+            "info": {"authorizationToken": _jwt_with_exp(int(time.time()) + 3600)},
+        },
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+    creds = {
+        "base_url": "https://api.moabits.test",
+        "application_key": "app-key",
+        "company_codes": ["ACME"],
+    }
+
+    await MoabitsAdapter().get_usage(iccid, creds)
+    await MoabitsAdapter().get_usage(iccid, creds)
+
+    assert [request.url.path for request in httpx_mock.get_requests()].count(
+        "/integrity/authorization-token"
+    ) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_usage_refreshes_and_retries_once_on_business_401(httpx_mock) -> None:
+    iccid = "8934070100000000001"
+    first_token = _jwt_with_exp(int(time.time()) + 3600)
+    second_token = _jwt_with_exp(int(time.time()) + 7200)
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={"status": "Ok", "info": {"authorizationToken": first_token}},
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, status_code=401, text="Absent authorization")
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={"status": "Ok", "info": {"authorizationToken": second_token}},
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+
+    await MoabitsAdapter().get_usage(
+        iccid,
+        {
+            "base_url": "https://api.moabits.test",
+            "application_key": "app-key",
+            "company_codes": ["ACME"],
+        },
+    )
+
+    usage_requests = [
+        request
+        for request in httpx_mock.get_requests()
+        if request.url.path == "/api/usage/simUsage"
+    ]
+    assert len(usage_requests) == 2
+    assert usage_requests[0].headers["authorization"] == f"Bearer {first_token}"
+    assert usage_requests[1].headers["authorization"] == f"Bearer {second_token}"
+
+
+@pytest.mark.asyncio
+async def test_get_usage_token_endpoint_403_is_credential_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        status_code=403,
+        text="The api key is Cancelled / Revoked / Expired",
+    )
+
+    with pytest.raises(ProviderAuthFailed) as excinfo:
+        await MoabitsAdapter().get_usage(
+            "8934070100000000001",
+            {
+                "base_url": "https://api.moabits.test",
+                "application_key": "app-key",
+                "company_codes": ["ACME"],
+            },
+        )
+
+    assert "x-api-key is cancelled" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
 async def test_get_usage_handles_missing_optional_fields(
     httpx_mock, moabits_creds: dict
 ) -> None:
@@ -313,6 +484,21 @@ async def test_get_usage_handles_missing_optional_fields(
     assert pm["sms_mt"] is None
     assert pm["data_mb"] is None
     assert pm["sms_mo"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_usage_rejects_ranges_longer_than_six_months(
+    moabits_creds: dict,
+) -> None:
+    with pytest.raises(ProviderValidationError) as excinfo:
+        await MoabitsAdapter().get_usage(
+            "8934070100000000001",
+            moabits_creds,
+            start_date=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+            end_date=datetime(2026, 7, 2, 0, 0, 0, tzinfo=UTC),
+        )
+
+    assert "cannot exceed 6 months" in excinfo.value.detail
 
 
 # ── get_presence ────────────────────────────────────────────────────────────────
@@ -446,3 +632,42 @@ async def test_native_status_preserved_alongside_unified_status(
     sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
     assert sub.native_status == "Suspended"
     assert sub.status == AdministrativeStatus.SUSPENDED
+
+
+@pytest.mark.asyncio
+async def test_list_subscriptions_ignores_modified_date_filters(
+    httpx_mock, moabits_creds: dict
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.moabits.test/api/company/simListDetail/ACME",
+        json=_details_payload(),
+    )
+    httpx_mock.add_response(
+        url="https://api.moabits.test/api/company/simList/ACME",
+        json=_service_status_payload(),
+    )
+
+    subs, next_cursor = await MoabitsAdapter().list_subscriptions(
+        moabits_creds,
+        cursor=None,
+        limit=50,
+        filters=SubscriptionSearchFilters(
+            modified_since=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+            modified_till=datetime(2026, 2, 1, 0, 0, 0, tzinfo=UTC),
+        ),
+    )
+
+    assert len(subs) == 1
+    assert subs[0].iccid == "8934070100000000001"
+    assert next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_list_subscriptions_rejects_non_date_filters(moabits_creds: dict) -> None:
+    with pytest.raises(UnsupportedOperation):
+        await MoabitsAdapter().list_subscriptions(
+            moabits_creds,
+            cursor=None,
+            limit=50,
+            filters=SubscriptionSearchFilters(iccid="8934070100000000001"),
+        )

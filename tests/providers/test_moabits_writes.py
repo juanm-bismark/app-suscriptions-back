@@ -1,4 +1,4 @@
-"""Unit tests for Moabits write operations (set_administrative_status and purge) behind feature flag."""
+"""Unit tests for Moabits admin write operations."""
 
 from __future__ import annotations
 
@@ -17,17 +17,22 @@ async def test_moabits_set_administrative_status_respects_flag(monkeypatch):
     monkeypatch.setattr(moabits_mod.adapter, 'get_settings', lambda: SimpleNamespace(lifecycle_writes_enabled=False))
     adapter = MoabitsAdapter()
     with pytest.raises(UnsupportedOperation):
-        await adapter.set_administrative_status('8934070100000000001', {}, target=AdministrativeStatus.ACTIVE, idempotency_key='k')
+        await adapter.set_administrative_status(
+            '8934070100000000001',
+            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            target=AdministrativeStatus.ACTIVE,
+            idempotency_key='idem',
+            data_service=True,
+        )
 
 
 @pytest.mark.asyncio
-async def test_moabits_set_administrative_status_calls_put_when_enabled(monkeypatch):
+async def test_moabits_active_calls_documented_put_when_enabled(monkeypatch):
     monkeypatch.setattr(moabits_mod.adapter, 'get_settings', lambda: SimpleNamespace(lifecycle_writes_enabled=True))
 
     captured = {}
 
     async def fake_put(creds, path, body, idempotency_key=None):
-        captured['creds'] = creds
         captured['path'] = path
         captured['body'] = body
         captured['idempotency_key'] = idempotency_key
@@ -36,10 +41,83 @@ async def test_moabits_set_administrative_status_calls_put_when_enabled(monkeypa
     monkeypatch.setattr(moabits_mod.adapter, '_put', fake_put)
 
     adapter = MoabitsAdapter()
-    await adapter.set_administrative_status('8934070100000000001', {'base_url': 'https://moabits.test', 'api_key': 'k'}, target=AdministrativeStatus.ACTIVE, idempotency_key='idem')
+    await adapter.set_administrative_status(
+        '8934070100000000001',
+        {'base_url': 'https://moabits.test', 'api_key': 'k'},
+        target=AdministrativeStatus.ACTIVE,
+        idempotency_key='idem',
+        data_service=True,
+        sms_service=False,
+    )
 
     assert captured.get('path') == '/api/sim/active/'
-    assert 'iccidList' in captured.get('body', {})
+    assert captured.get('body') == {
+        'iccidList': ['8934070100000000001'],
+        'dataService': True,
+        'smsService': False,
+    }
+    assert captured.get('idempotency_key') == 'idem'
+
+
+@pytest.mark.asyncio
+async def test_moabits_suspend_calls_documented_put_when_enabled(monkeypatch):
+    monkeypatch.setattr(moabits_mod.adapter, 'get_settings', lambda: SimpleNamespace(lifecycle_writes_enabled=True))
+
+    captured = {}
+
+    async def fake_put(creds, path, body, idempotency_key=None):
+        captured['path'] = path
+        captured['body'] = body
+        return {}
+
+    monkeypatch.setattr(moabits_mod.adapter, '_put', fake_put)
+
+    await MoabitsAdapter().set_administrative_status(
+        '8934070100000000001',
+        {'base_url': 'https://moabits.test', 'api_key': 'k'},
+        target=AdministrativeStatus.SUSPENDED,
+        idempotency_key='idem',
+        data_service=False,
+        sms_service=True,
+    )
+
+    assert captured.get('path') == '/api/sim/suspend/'
+    assert captured.get('body') == {
+        'iccidList': ['8934070100000000001'],
+        'dataService': False,
+        'smsService': True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_moabits_active_suspend_require_at_least_one_service(monkeypatch):
+    monkeypatch.setattr(moabits_mod.adapter, 'get_settings', lambda: SimpleNamespace(lifecycle_writes_enabled=True))
+
+    with pytest.raises(ProviderValidationError) as excinfo:
+        await MoabitsAdapter().set_administrative_status(
+            '8934070100000000001',
+            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            target=AdministrativeStatus.ACTIVE,
+            idempotency_key='idem',
+            data_service=False,
+            sms_service=False,
+        )
+
+    assert excinfo.value.detail == "No service to active"
+
+
+@pytest.mark.asyncio
+async def test_moabits_rejects_other_status_writes(monkeypatch):
+    monkeypatch.setattr(moabits_mod.adapter, 'get_settings', lambda: SimpleNamespace(lifecycle_writes_enabled=True))
+
+    with pytest.raises(UnsupportedOperation):
+        await MoabitsAdapter().set_administrative_status(
+            '8934070100000000001',
+            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            target=AdministrativeStatus.PURGED,
+            idempotency_key='idem',
+            data_service=True,
+        )
 
 
 @pytest.mark.asyncio

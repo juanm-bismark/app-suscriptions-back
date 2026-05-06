@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     jwt_secret: Optional[str] = None
     jwt_expire_minutes: int = 60
     environment: str = "development"
+    database_echo: bool = False
     # Use `Any` for the annotated type so the dotenv/settings source does not
     # attempt JSON decoding on the raw env string. `PlainValidator` will
     # convert whatever value (empty, comma-separated string, or list) into
