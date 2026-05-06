@@ -7,7 +7,7 @@ import pytest
 def moabits_creds() -> dict:
     return {
         "base_url": "https://api.moabits.test",
-        "api_key": "test-token",
+        "x_api_key": "test-key",
         "company_codes": ["ACME"],
         "company_id": "00000000-0000-0000-0000-000000000001",
     }

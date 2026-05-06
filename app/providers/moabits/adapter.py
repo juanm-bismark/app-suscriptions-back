@@ -2,11 +2,9 @@
 
 Credentials dict keys:
     base_url (str): API base, e.g. "https://www.api.myorion.co".
-    api_key (str, optional): Bearer token/JWT (backward-compatible direct token).
-    authorization_token|bearer_token|jwt (str, optional): Bearer token/JWT aliases.
-    application_key|x_api_key (str, optional): Orion Web Client application key.
-        When provided without a direct token, the adapter calls
-        GET /integrity/authorization-token and uses info.authorizationToken.
+    x_api_key (str): Orion Web Client application key. The adapter calls
+        GET /integrity/authorization-token and uses info.authorizationToken as
+        the Bearer token for provider calls.
     company_codes (list[str]): Company codes owned by this tenant.
     company_id (str): Injected by the service layer — not a stored credential.
 
@@ -82,8 +80,7 @@ _TOKEN_LOCKS: dict[str, asyncio.Lock] = {}
 @dataclass(frozen=True)
 class _MoabitsCreds:
     base_url: str
-    api_key: str | None
-    application_key: str | None
+    x_api_key: str
     company_codes: list[str]
 
 
@@ -91,21 +88,14 @@ def _creds(d: dict[str, Any]) -> _MoabitsCreds:
     codes = d.get("company_codes", [])
     if isinstance(codes, str):
         codes = [codes]
-    token = (
-        d.get("authorization_token")
-        or d.get("bearer_token")
-        or d.get("jwt")
-        or d.get("api_key")
-    )
-    application_key = d.get("application_key") or d.get("x_api_key") or d.get("x-api-key")
-    if not token and not application_key:
+    x_api_key = d.get("x_api_key")
+    if not x_api_key:
         raise ProviderAuthFailed(
-            detail="Moabits credentials require api_key/authorization_token or application_key"
+            detail="Moabits credentials require x_api_key"
         )
     return _MoabitsCreds(
         base_url=d["base_url"].rstrip("/"),
-        api_key=token,
-        application_key=application_key,
+        x_api_key=str(x_api_key),
         company_codes=codes,
     )
 
@@ -147,7 +137,7 @@ def _check(resp: httpx.Response, label: str = "Moabits") -> None:
 
 
 def _cache_key(creds: _MoabitsCreds) -> str:
-    return f"{creds.base_url}|{creds.application_key}"
+    return f"{creds.base_url}|{creds.x_api_key}"
 
 
 def _jwt_exp(token: str) -> float | None:
@@ -171,11 +161,9 @@ def _token_expires_at(token: str) -> float:
 
 
 async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
-    if not creds.application_key:
-        raise ProviderAuthFailed(detail="Moabits application key is missing")
     async with httpx.AsyncClient(
         base_url=creds.base_url,
-        headers={"x-api-key": creds.application_key, "Accept": "application/json"},
+        headers={"x-api-key": creds.x_api_key, "Accept": "application/json"},
         timeout=30.0,
     ) as client:
         try:
@@ -200,8 +188,6 @@ async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
 async def _authorization_token(
     creds: _MoabitsCreds, *, force_refresh: bool = False
 ) -> str:
-    if creds.api_key:
-        return creds.api_key
     key = _cache_key(creds)
     now = time.time()
     cached = _TOKEN_CACHE.get(key)
@@ -236,7 +222,7 @@ async def _get(creds: _MoabitsCreds, path: str, params: dict[str, Any] | None = 
             raise ProviderUnavailable(detail="Moabits timeout") from exc
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Moabits network error: {exc}") from exc
-    if resp.status_code == 401 and creds.application_key:
+    if resp.status_code == 401:
         token = await _authorization_token(creds, force_refresh=True)
         async with _client(creds, token) as client:
             try:
@@ -263,7 +249,7 @@ async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotenc
             raise ProviderUnavailable(detail="Moabits timeout") from exc
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Moabits network error: {exc}") from exc
-    if resp.status_code == 401 and creds.application_key:
+    if resp.status_code == 401:
         token = await _authorization_token(creds, force_refresh=True)
         async with _client(creds, token) as client:
             headers = {}

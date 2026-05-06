@@ -3,6 +3,7 @@ Actualización basada en Swagger Orion API 2.0.0 (`https://www.api.myorion.co/ap
 - Server declarado: `https://www.api.myorion.co/`. No se declara sandbox separado.
 - Alcance acordado para backend v1: endpoints `GET`, operaciones admin `PUT /api/sim/active/` y `PUT /api/sim/suspend/`, y la excepción de escritura `PUT /api/sim/purge/`.
 - Autorización: `GET /integrity/authorization-token` con header `x-api-key`; retorna un JWT que debe usarse como `Authorization: Bearer <authorizationToken>`.
+- En credenciales del backend, el único campo canónico para Orion es `x_api_key`. El adapter lo envía a Orion como header `x-api-key`, obtiene el JWT con `GET /integrity/authorization-token`, y no almacena ni acepta un Bearer/JWT directo como credencial canónica.
 - Solo se incluyen operaciones definidas explícitamente en el documento fuente.
 - El endpoint `GET /api/v2/product/product-list` no está definido en este Swagger. Los productos asociados a una compañía aparecen embebidos dentro de la respuesta de `getCompanyInfo` en el campo `products[]`; por tanto, se mapean como parte de ese esquema y no como operación independiente.
 - Los endpoints de listado de SIMs (`/api/company/simList/{companyCodes}` y `/api/company/simListDetail/{companyCodes}`) documentan únicamente el parámetro path `companyCodes`. No hay filtros públicos `modified_since`, `modified_till`, `modifiedSince`, `modifiedTill`, `startLastStateChangeDate`, ni equivalentes en el Swagger de Moabits/Orion 2.0.0.

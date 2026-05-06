@@ -53,22 +53,22 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
     "moabits": {
         "summary": "Moabits Orion credentials",
         "description": (
-            "Moabits uses Orion REST JWT auth. Provide either an existing "
-            "authorization_token/api_key bearer token, or an application_key "
-            "so the adapter can call GET /integrity/authorization-token. "
-            "company_codes limits listing to the Moabits company codes this "
-            "tenant can access."
+            "Moabits uses Orion REST JWT auth. Provide x_api_key, the Orion "
+            "Web Client application key. The adapter sends it as the x-api-key "
+            "header to GET /integrity/authorization-token, caches the returned "
+            "JWT, and refreshes/retries once when a provider business endpoint "
+            "returns 401. company_codes limits listing to the Moabits company "
+            "codes this tenant can access."
         ),
         "value": {
             "credentials": {
                 "base_url": "https://www.api.myorion.co",
-                "application_key": "MOABITS_ORION_WEB_CLIENT_APPLICATION_KEY",
+                "x_api_key": "MOABITS_ORION_X_API_KEY",
                 "company_codes": ["MOABITS_COMPANY_CODE"],
             },
             "account_scope": {
                 "company_codes": ["MOABITS_COMPANY_CODE"],
                 "environment": "production",
-                "token_expires_at": "2026-12-31T00:00:00Z",
             },
         },
     },

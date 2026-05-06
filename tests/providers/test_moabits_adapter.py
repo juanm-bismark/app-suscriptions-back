@@ -47,6 +47,10 @@ _USAGE_URL_RE = re.compile(r"^https://api\.moabits\.test/api/usage/simUsage(\?.*
 def _clear_moabits_token_cache() -> None:
     moabits_adapter_mod._TOKEN_CACHE.clear()
     moabits_adapter_mod._TOKEN_LOCKS.clear()
+    moabits_adapter_mod._TOKEN_CACHE["https://api.moabits.test|test-key"] = (
+        "test-token",
+        time.time() + 3600,
+    )
 
 
 def _jwt_with_exp(exp: int) -> str:
@@ -313,7 +317,7 @@ async def test_get_usage_exposes_active_sim_and_iccid(
 
 
 @pytest.mark.asyncio
-async def test_get_usage_can_exchange_application_key_for_jwt(httpx_mock) -> None:
+async def test_get_usage_can_exchange_x_api_key_for_jwt(httpx_mock) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
         url="https://api.moabits.test/integrity/authorization-token",
@@ -331,7 +335,7 @@ async def test_get_usage_can_exchange_application_key_for_jwt(httpx_mock) -> Non
         iccid,
         {
             "base_url": "https://api.moabits.test",
-            "application_key": "app-key",
+            "x_api_key": "app-key",
             "company_codes": ["ACME"],
         },
     )
@@ -339,6 +343,22 @@ async def test_get_usage_can_exchange_application_key_for_jwt(httpx_mock) -> Non
     auth_request, usage_request = httpx_mock.get_requests()
     assert auth_request.headers["x-api-key"] == "app-key"
     assert usage_request.headers["authorization"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_get_usage_rejects_legacy_moabits_api_key_alias(httpx_mock) -> None:
+    with pytest.raises(ProviderAuthFailed) as excinfo:
+        await MoabitsAdapter().get_usage(
+            "8934070100000000001",
+            {
+                "base_url": "https://api.moabits.test",
+                "api_key": "legacy-alias",
+                "company_codes": ["ACME"],
+            },
+        )
+
+    assert "x_api_key" in excinfo.value.detail
+    assert httpx_mock.get_requests() == []
 
 
 @pytest.mark.asyncio
@@ -355,7 +375,7 @@ async def test_get_usage_reuses_cached_jwt_until_refresh_window(httpx_mock) -> N
     httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
     creds = {
         "base_url": "https://api.moabits.test",
-        "application_key": "app-key",
+        "x_api_key": "app-key",
         "company_codes": ["ACME"],
     }
 
@@ -390,7 +410,7 @@ async def test_get_usage_refreshes_jwt_when_exp_is_near(httpx_mock) -> None:
     httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
     creds = {
         "base_url": "https://api.moabits.test",
-        "application_key": "app-key",
+        "x_api_key": "app-key",
         "company_codes": ["ACME"],
     }
 
@@ -422,7 +442,7 @@ async def test_get_usage_refreshes_and_retries_once_on_business_401(httpx_mock) 
         iccid,
         {
             "base_url": "https://api.moabits.test",
-            "application_key": "app-key",
+            "x_api_key": "app-key",
             "company_codes": ["ACME"],
         },
     )
@@ -434,6 +454,44 @@ async def test_get_usage_refreshes_and_retries_once_on_business_401(httpx_mock) 
     ]
     assert len(usage_requests) == 2
     assert usage_requests[0].headers["authorization"] == f"Bearer {first_token}"
+    assert usage_requests[1].headers["authorization"] == f"Bearer {second_token}"
+
+
+@pytest.mark.asyncio
+async def test_get_usage_retries_token_expired_detail_with_fresh_jwt(httpx_mock) -> None:
+    iccid = "8934070100000000001"
+    first_token = _jwt_with_exp(int(time.time()) + 3600)
+    second_token = _jwt_with_exp(int(time.time()) + 7200)
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={"status": "Ok", "info": {"authorizationToken": first_token}},
+    )
+    httpx_mock.add_response(
+        url=_USAGE_URL_RE,
+        status_code=401,
+        json={"detail": "Token expired"},
+    )
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={"status": "Ok", "info": {"authorizationToken": second_token}},
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+
+    await MoabitsAdapter().get_usage(
+        iccid,
+        {
+            "base_url": "https://api.moabits.test",
+            "x_api_key": "orion-application-key",
+            "company_codes": ["ACME"],
+        },
+    )
+
+    usage_requests = [
+        request
+        for request in httpx_mock.get_requests()
+        if request.url.path == "/api/usage/simUsage"
+    ]
+    assert len(usage_requests) == 2
     assert usage_requests[1].headers["authorization"] == f"Bearer {second_token}"
 
 
@@ -450,7 +508,7 @@ async def test_get_usage_token_endpoint_403_is_credential_error(httpx_mock) -> N
             "8934070100000000001",
             {
                 "base_url": "https://api.moabits.test",
-                "application_key": "app-key",
+                "x_api_key": "app-key",
                 "company_codes": ["ACME"],
             },
         )

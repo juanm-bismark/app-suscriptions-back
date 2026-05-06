@@ -19,7 +19,7 @@ async def test_moabits_set_administrative_status_respects_flag(monkeypatch):
     with pytest.raises(UnsupportedOperation):
         await adapter.set_administrative_status(
             '8934070100000000001',
-            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
             target=AdministrativeStatus.ACTIVE,
             idempotency_key='idem',
             data_service=True,
@@ -43,7 +43,7 @@ async def test_moabits_active_calls_documented_put_when_enabled(monkeypatch):
     adapter = MoabitsAdapter()
     await adapter.set_administrative_status(
         '8934070100000000001',
-        {'base_url': 'https://moabits.test', 'api_key': 'k'},
+        {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
         target=AdministrativeStatus.ACTIVE,
         idempotency_key='idem',
         data_service=True,
@@ -74,7 +74,7 @@ async def test_moabits_suspend_calls_documented_put_when_enabled(monkeypatch):
 
     await MoabitsAdapter().set_administrative_status(
         '8934070100000000001',
-        {'base_url': 'https://moabits.test', 'api_key': 'k'},
+        {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
         target=AdministrativeStatus.SUSPENDED,
         idempotency_key='idem',
         data_service=False,
@@ -96,7 +96,7 @@ async def test_moabits_active_suspend_require_at_least_one_service(monkeypatch):
     with pytest.raises(ProviderValidationError) as excinfo:
         await MoabitsAdapter().set_administrative_status(
             '8934070100000000001',
-            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
             target=AdministrativeStatus.ACTIVE,
             idempotency_key='idem',
             data_service=False,
@@ -113,7 +113,7 @@ async def test_moabits_rejects_other_status_writes(monkeypatch):
     with pytest.raises(UnsupportedOperation):
         await MoabitsAdapter().set_administrative_status(
             '8934070100000000001',
-            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
             target=AdministrativeStatus.PURGED,
             idempotency_key='idem',
             data_service=True,
@@ -140,7 +140,7 @@ async def test_moabits_purge_respects_flag_and_calls_put_when_enabled(monkeypatc
         return {"status": "Ok", "info": {"purged": True}}
 
     monkeypatch.setattr(moabits_mod.adapter, '_put', fake_put2)
-    await adapter.purge('8934070100000000001', {'base_url': 'https://moabits.test', 'api_key': 'k'}, idempotency_key='idem')
+    await adapter.purge('8934070100000000001', {'base_url': 'https://moabits.test', 'x_api_key': 'k'}, idempotency_key='idem')
     assert captured.get('path') == '/api/sim/purge/'
     assert captured.get('body') == {'iccidList': ['8934070100000000001']}
     assert captured.get('idempotency_key') == 'idem'
@@ -158,6 +158,6 @@ async def test_moabits_purge_requires_purged_confirmation(monkeypatch):
     with pytest.raises(ProviderValidationError):
         await MoabitsAdapter().purge(
             '8934070100000000001',
-            {'base_url': 'https://moabits.test', 'api_key': 'k'},
+            {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
             idempotency_key='idem',
         )

@@ -382,5 +382,5 @@ def test_credential_endpoints_document_provider_specific_examples() -> None:
         assert examples["kite"]["value"]["credentials"]["client_cert_pfx_b64"]
         assert examples["tele2"]["value"]["credentials"]["api_key"]
         assert examples["tele2"]["value"]["credentials"]["api_version"] == "v1"
-        assert examples["moabits"]["value"]["credentials"]["application_key"]
+        assert examples["moabits"]["value"]["credentials"]["x_api_key"]
         assert examples["moabits"]["value"]["credentials"]["company_codes"]
