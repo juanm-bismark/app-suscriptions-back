@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- November 06, 2023 -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:gm2minve_s3="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/inventory/v12/services"
+    xmlns:gm2minve_s3t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/inventory/v12/types"
+    xmlns:ucf="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+    targetNamespace="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/inventory/v12/services">
+
+    <wsdl:import
+        namespace="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+        location="UNICA_API_SOAP_common_faults_v1_1.wsdl" />
+
+    <wsdl:types>
+        <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+            elementFormDefault="qualified">
+            <xsd:import
+                namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/inventory/v12/types"
+                schemaLocation="UNICA_API_SOAP_Globalm2m_inventory_types_v12_0.xsd" />
+        </xsd:schema>
+    </wsdl:types>
+
+    <wsdl:message name="GetSubscriptionsRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getSubscriptions" />
+    </wsdl:message>
+    <wsdl:message name="GetSubscriptionsResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getSubscriptionsResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetSubscriptionDetailRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getSubscriptionDetail" />
+    </wsdl:message>
+    <wsdl:message name="GetSubscriptionDetailResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getSubscriptionDetailResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetPresenceDetailRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getPresenceDetail" />
+    </wsdl:message>
+    <wsdl:message name="GetPresenceDetailResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getPresenceDetailResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetLocationDetailRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getLocationDetail" />
+    </wsdl:message>
+    <wsdl:message name="GetLocationDetailResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getLocationDetailResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetStatusDetailRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getStatusDetail" />
+    </wsdl:message>
+    <wsdl:message name="GetStatusDetailResponse">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getStatusDetailResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetStatusHistoryRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getStatusHistory" />
+    </wsdl:message>
+    <wsdl:message name="GetStatusHistoryResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getStatusHistoryResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="ModifySubscriptionRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:modifySubscription" />
+    </wsdl:message>
+    <wsdl:message name="ModifySubscriptionResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:modifySubscriptionResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetTimeAndConsumptionRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getTimeAndConsumption" />
+    </wsdl:message>
+    <wsdl:message name="GetTimeAndConsumptionResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getTimeAndConsumptionResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="ModifyTimeAndConsumptionRequest">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:modifyTimeAndConsumption" />
+    </wsdl:message>
+    <wsdl:message name="ModifyTimeAndConsumptionResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:modifyTimeAndConsumptionResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="SendSMSRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:sendSMS" />
+    </wsdl:message>
+    <wsdl:message name="SendSMSResponse">
+        <wsdl:part name="parameters" element="gm2minve_s3t:sendSMSResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetSendSMSResultRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:getSendSMSResult" />
+    </wsdl:message>
+    <wsdl:message name="GetSendSMSResultResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:getSendSMSResultResponse" />
+    </wsdl:message>
+    
+    <wsdl:message name="DownloadAndActivateProfileRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:downloadAndActivateProfile" />
+    </wsdl:message>
+    <wsdl:message name="DownloadAndActivateProfileResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:downloadAndActivateProfileResponse" />
+    </wsdl:message>
+    
+    <wsdl:message name="AuditSwapProfileRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:auditSwapProfile" />
+    </wsdl:message>
+    <wsdl:message name="AuditSwapProfileResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:auditSwapProfileResponse" />
+    </wsdl:message>
+    
+    <wsdl:message name="NetworkResetRequest">
+        <wsdl:part name="parameters" element="gm2minve_s3t:networkReset" />
+    </wsdl:message>
+    <wsdl:message name="NetworkResetResponse">
+        <wsdl:part name="parameters"
+            element="gm2minve_s3t:networkResetResponse" />
+    </wsdl:message>
+
+    <wsdl:portType name="GlobalM2MInventoryPort">
+        <wsdl:operation name="getSubscriptions">
+            <wsdl:input message="gm2minve_s3:GetSubscriptionsRequest" />
+            <wsdl:output message="gm2minve_s3:GetSubscriptionsResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getSubscriptionDetail">
+            <wsdl:input message="gm2minve_s3:GetSubscriptionDetailRequest" />
+            <wsdl:output message="gm2minve_s3:GetSubscriptionDetailResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getPresenceDetail">
+            <wsdl:input message="gm2minve_s3:GetPresenceDetailRequest" />
+            <wsdl:output message="gm2minve_s3:GetPresenceDetailResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getLocationDetail">
+            <wsdl:input message="gm2minve_s3:GetLocationDetailRequest" />
+            <wsdl:output message="gm2minve_s3:GetLocationDetailResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getStatusDetail">
+            <wsdl:input message="gm2minve_s3:GetStatusDetailRequest" />
+            <wsdl:output message="gm2minve_s3:GetStatusDetailResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getStatusHistory">
+            <wsdl:input message="gm2minve_s3:GetStatusHistoryRequest" />
+            <wsdl:output message="gm2minve_s3:GetStatusHistoryResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="modifySubscription">
+            <wsdl:input message="gm2minve_s3:ModifySubscriptionRequest" />
+            <wsdl:output message="gm2minve_s3:ModifySubscriptionResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getTimeAndConsumption">
+            <wsdl:input message="gm2minve_s3:GetTimeAndConsumptionRequest" />
+            <wsdl:output message="gm2minve_s3:GetTimeAndConsumptionResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="modifyTimeAndConsumption">
+            <wsdl:input message="gm2minve_s3:ModifyTimeAndConsumptionRequest" />
+            <wsdl:output message="gm2minve_s3:ModifyTimeAndConsumptionResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="sendSMS">
+            <wsdl:input message="gm2minve_s3:SendSMSRequest" />
+            <wsdl:output message="gm2minve_s3:SendSMSResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="getSendSMSResult">
+            <wsdl:input message="gm2minve_s3:GetSendSMSResultRequest" />
+            <wsdl:output message="gm2minve_s3:GetSendSMSResultResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="downloadAndActivateProfile">
+            <wsdl:input message="gm2minve_s3:DownloadAndActivateProfileRequest" />
+            <wsdl:output message="gm2minve_s3:DownloadAndActivateProfileResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="auditSwapProfile">
+            <wsdl:input message="gm2minve_s3:AuditSwapProfileRequest" />
+            <wsdl:output message="gm2minve_s3:AuditSwapProfileResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+        <wsdl:operation name="networkReset">
+            <wsdl:input message="gm2minve_s3:NetworkResetRequest" />
+            <wsdl:output message="gm2minve_s3:NetworkResetResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>        
+    </wsdl:portType>
+
+    <wsdl:binding name="GlobalM2MInventorySOAPBinding"
+        type="gm2minve_s3:GlobalM2MInventoryPort">
+        <soap:binding style="document"
+            transport="http://schemas.xmlsoap.org/soap/http" />
+        <wsdl:operation name="getSubscriptions">
+            <soap:operation soapAction="urn:getSubscriptions" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getSubscriptionDetail">
+            <soap:operation soapAction="urn:getSubscriptionDetail" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getPresenceDetail">
+            <soap:operation soapAction="urn:getPresenceDetail" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getLocationDetail">
+            <soap:operation soapAction="urn:getLocationDetail" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getStatusDetail">
+            <soap:operation soapAction="urn:getStatusDetail" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getStatusHistory">
+            <soap:operation soapAction="urn:getStatusHistory" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="modifySubscription">
+            <soap:operation soapAction="urn:modifySubscription" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getTimeAndConsumption">
+            <soap:operation soapAction="urn:getTimeAndConsumption" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="modifyTimeAndConsumption">
+            <soap:operation soapAction="urn:modifyTimeAndConsumption" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="sendSMS">
+            <soap:operation soapAction="urn:sendSMS" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="getSendSMSResult">
+            <soap:operation soapAction="urn:getSendSMSResult" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="downloadAndActivateProfile">
+            <soap:operation soapAction="urn:downloadAndActivateProfile" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="auditSwapProfile">
+            <soap:operation soapAction="urn:auditSwapProfile" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+        <wsdl:operation name="networkReset">
+            <soap:operation soapAction="urn:networkReset" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>        
+    </wsdl:binding>
+
+    <wsdl:service name="GlobalM2MInventoryService">
+        <wsdl:port name="GlobalM2MInventory"
+            binding="gm2minve_s3:GlobalM2MInventorySOAPBinding">
+            <soap:address
+                location="https://kiteplatform-api.telefonica.com:8010/services/SOAP/GlobalM2M/Inventory/v12/r12" />
+        </wsdl:port>
+    </wsdl:service>
+
+</wsdl:definitions>

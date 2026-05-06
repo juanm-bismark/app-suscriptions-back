@@ -4,9 +4,14 @@
 # Testing
 pytest>=9.0.0
 pytest-asyncio>=0.24.0
+pytest-httpx>=0.30.0
+respx>=0.20.0
 
 # Linting y code quality
 ruff>=0.15.0
+
+# Import boundary enforcement (ADR-001)
+import-linter>=2.0
 
 # Type checking (optional but recommended)
 mypy>=1.0.0

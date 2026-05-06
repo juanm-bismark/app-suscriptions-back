@@ -1,0 +1,285 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- November 09, 2023 -->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/user/v3/types"
+    xmlns:uct="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+    xmlns:gm2m_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+    targetNamespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/user/v3/types"
+    attributeFormDefault="unqualified" elementFormDefault="qualified">
+
+    <xsd:import namespace="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+        schemaLocation="UNICA_API_SOAP_common_types_v1_1.xsd" />
+    <xsd:import
+        namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+        schemaLocation="UNICA_API_SOAP_Globalm2m_types_v1_2.xsd" />
+
+    <!-- createUser operation -->
+    <xsd:element name="createUser">
+        <!-- Create an user -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="username" type="gm2m_s1t:myStr" />
+                <!-- Username used to login -->
+                <xsd:element name="firstname" type="gm2m_s1t:myStr" />
+                <!-- Firstname -->
+                <xsd:element name="lastname" type="gm2m_s1t:myStr" />
+                <!-- Lastname -->
+                <xsd:element name="email" type="uct:EmailAddressType" />
+                <!-- Email -->
+                <xsd:element name="orgId" type="xsd:string"
+                    minOccurs="0" />
+                <!-- Organization, when not present created user belongs to the API consumer organization -->
+                <xsd:element name="phone" type="xsd:string"
+                    minOccurs="0" />
+                <!-- Phone number -->
+                <xsd:element name="roles" type="xsd:string" maxOccurs="unbounded"/>
+                <!-- Role, must be any returned by getRoles operation -->
+                <xsd:element name="language" type="gm2m_s1t:myStr" />
+                <!-- Language, ISO-639-1 alpha-2 -->
+                <xsd:element name="country" type="gm2m_s1t:myStr" />
+                <!-- Country, ISO 3166-1 alpha-2 -->
+                <xsd:element name="timezone" type="gm2m_s1t:myStr" />
+                <!-- Time zone ID, format Area/Location. Available zones
+                 can be obtained in the Olson timezone database -->
+                <xsd:element name="monetaryInfo" type="xsd:boolean"
+                    minOccurs="0" />
+                <!-- Set to true when the user has access to monetary information. Defaults to false -->
+                <xsd:element name="mobilePhone" type="xsd:string" minOccurs="0" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="createUserResponse">
+        <!-- Void response to user creation. -->
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- deleteUser operation -->
+    <xsd:element name="deleteUser">
+        <!-- Delete an user -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="username" type="gm2m_s1t:myStr">
+                    <!-- username of the user that will be removed -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="deleteUserResponse">
+        <!-- Void response to user removal -->
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- modifyUser operation -->
+    <xsd:element name="modifyUser">
+        <!-- Modify an user -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="username" type="gm2m_s1t:myStr">
+                    <!-- Username of the user that will be modified -->
+                </xsd:element>
+                <xsd:element name="firstname" type="xsd:string"
+                    minOccurs="0">
+                    <!-- New firstname -->
+                </xsd:element>
+                <xsd:element name="lastname" type="xsd:string"
+                    minOccurs="0">
+                    <!-- New lastname -->
+                </xsd:element>
+                <xsd:element name="email" type="uct:EmailAddressType"
+                    minOccurs="0">
+                    <!-- New email -->
+                </xsd:element>
+                <xsd:element name="phone" type="xsd:string"
+                    minOccurs="0">
+                    <!-- New phone number -->
+                </xsd:element>
+                <xsd:element name="roles" type="xsd:string"
+                    minOccurs="0" maxOccurs="unbounded">
+                    <!-- New role array, must be any returned by getRoles operation -->
+                </xsd:element>
+                <xsd:element name="language" type="xsd:string"
+                    minOccurs="0">
+                    <!-- Language, ISO-639-1 alpha-2 -->
+                </xsd:element>
+                <xsd:element name="country" type="xsd:string"
+                    minOccurs="0">
+                    <!-- Country, ISO 3166-1 alpha-2 -->
+                </xsd:element>
+                <xsd:element name="timezone" type="xsd:string"
+                    minOccurs="0">
+                    <!-- Time zone ID, format Area/Location. Available zones
+                        can be obtained in the Olson timezone database -->
+                </xsd:element>
+                <xsd:element name="monetaryInfo" type="xsd:boolean"
+                    minOccurs="0">
+                    <!-- Set to true when the user has access to monetary
+                        information. -->
+                </xsd:element>
+                <xsd:element name="mobilePhone" type="xsd:string" minOccurs="0" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="modifyUserResponse">
+        <!-- Void response to user modification. -->
+        <xsd:complexType />
+    </xsd:element>
+
+    <xsd:complexType name="UserType">
+        <xsd:sequence>
+            <xsd:element name="username" type="xsd:string">
+                <!-- Username used to login -->
+            </xsd:element>
+            <xsd:element name="firstname" type="xsd:string">
+                <!-- Firstname -->
+            </xsd:element>
+            <xsd:element name="lastname" type="xsd:string">
+                <!-- Lastname -->
+            </xsd:element>
+            <xsd:element name="email" type="uct:EmailAddressType">
+                <!-- Email -->
+            </xsd:element>
+            <xsd:element name="orgId" type="xsd:string">
+                <!-- Organization -->
+            </xsd:element>
+            <xsd:element name="phone" type="xsd:string"
+                minOccurs="0">
+                <!-- Phone number -->
+            </xsd:element>
+            <xsd:element name="roles" type="xsd:string" maxOccurs="unbounded">
+                <!-- Role, must be any returned by getRoles operation -->
+            </xsd:element>
+            <xsd:element name="language" type="xsd:string">
+                <!-- Language, ISO-639-1 alpha-2 -->
+            </xsd:element>
+            <xsd:element name="country" type="xsd:string">
+                <!-- Country, ISO 3166-1 alpha-2 -->
+            </xsd:element>
+            <xsd:element name="timezone" type="xsd:string">
+                <!-- Time zone ID, format Area/Location. Available zones
+                    can be obtained in the Olson timezone database -->
+            </xsd:element>
+            <xsd:element name="monetaryInfo" type="xsd:boolean"
+                minOccurs="0">
+                <!-- Set to true when the user has access to monetary information. -->
+            </xsd:element>
+            <xsd:element name="status" type="xsd:string"
+                minOccurs="0">
+                <!-- Status of the Customer: ACTIVE, PENDING, BLOCKED. -->
+            </xsd:element>
+            <xsd:element name="mobilePhone" type="xsd:string" minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- getUsers operation -->
+    <xsd:element name="getUsers">
+        <!-- List users -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="searchParameters" type="uct:SearchParamsType"
+                    minOccurs="0">
+                    <!-- Search criteria to be applied, the response will
+                        include those users matching the indicated criteria. Criteria can be organization,
+                        username, email -->
+                </xsd:element>
+                <xsd:element name="index" type="xsd:int"
+                    minOccurs="0">
+                    <!-- Start index -->
+                </xsd:element>
+                <xsd:element name="maxBatchSize" type="xsd:int"
+                    minOccurs="0">
+                    <!-- Max number of users returned in the response -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="getUsersResponse">
+        <!-- Users list response -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="user" type="tns:UserType"
+                    minOccurs="0" maxOccurs="unbounded">
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <!-- blockUser operation -->
+    <xsd:element name="blockUser">
+        <!-- Blocks an user -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="username" type="gm2m_s1t:myStr">
+                    <!-- Username -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="blockUserResponse">
+        <!-- Void response to block user -->
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- unblockUser operation -->
+    <xsd:element name="unblockUser">
+        <!-- Unblocks an user -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="username" type="gm2m_s1t:myStr">
+                    <!-- Username -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="unblockUserResponse">
+        <!-- Void response to unblock user -->
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- getRoles operation -->
+    <xsd:element name="getRoles">
+        <!-- List roles of the given organization -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="orgId" type="gm2m_s1t:myStr">
+                    <!-- Organization -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="getRolesResponse">
+        <!-- Available roles list -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="role" type="xsd:string"
+                    minOccurs="0" maxOccurs="unbounded">
+                    <!-- roles array -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <!-- resetPassword operation -->
+    <xsd:element name="resetPassword">
+        <!-- Unblocks an user -->
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="username" type="gm2m_s1t:myStr">
+                    <!-- Username -->
+                </xsd:element>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="resetPasswordResponse">
+        <!-- Void response to reset password -->
+        <xsd:complexType />
+    </xsd:element>
+
+</xsd:schema>

@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- December 18, 2020 -->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/reports/v1/types"
+    xmlns:uct="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+    xmlns:gm2m_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+    targetNamespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/reports/v1/types"
+    attributeFormDefault="unqualified" elementFormDefault="qualified">
+
+    <xsd:import namespace="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+        schemaLocation="UNICA_API_SOAP_common_types_v1_1.xsd" />
+    <xsd:import
+        namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+        schemaLocation="UNICA_API_SOAP_Globalm2m_types_v1_1.xsd" />
+
+    <!-- DateType -->
+    <xsd:simpleType name="DateType">
+        <xsd:union memberTypes="xsd:gYearMonth xsd:date" />
+    </xsd:simpleType>
+
+    <!-- PeriodType -->
+    <xsd:simpleType name="PeriodType">
+        <xsd:restriction base="xsd:string">
+            <xsd:enumeration value="daily" />
+            <xsd:enumeration value="monthly" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <!-- GetReportType -->
+    <xsd:complexType name="GetReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="supervisionGroup" type="gm2m_s1t:myStr" />
+            <xsd:element name="period" type="PeriodType" />
+            <xsd:element name="date" type="DateType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- GetReportResponseType -->
+    <xsd:complexType name="GetReportResponseType">
+        <xsd:sequence>
+            <xsd:element name="resultURL" type="xsd:anyURI"
+                maxOccurs="unbounded" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- ReportType -->
+    <xsd:complexType name="ReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="supervisionGroup" type="gm2m_s1t:myStr" />
+            <xsd:element name="period" type="PeriodType" />
+            <xsd:element name="date" type="DateType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- DailySummaryAggregatedReportType -->
+    <xsd:complexType name="DailySummaryAggregatedReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="supervisionGroup" type="gm2m_s1t:myStr" />
+            <xsd:element name="date" type="xsd:gYearMonth" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- DailyConsumptionReportType -->
+    <xsd:complexType name="DailyConsumptionReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="showBillingAccount" type="xsd:boolean"
+                minOccurs="0" />
+            <xsd:element name="showCommercialGroup" type="xsd:boolean"
+                minOccurs="0" />
+            <xsd:element name="showSubscriptions" type="xsd:boolean"
+                minOccurs="0" />
+            <xsd:element name="start" type="xsd:date" />
+            <xsd:element name="end" type="xsd:date" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- MonthlyExpenseDetailReportType -->
+    <xsd:complexType name="MonthlyExpenseDetailReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="billingAccount" type="gm2m_s1t:myStr" />
+            <xsd:element name="date" type="xsd:gYearMonth" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- SubscriptionBaseReportType -->
+    <xsd:complexType name="SubscriptionBaseReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="start" type="xsd:gYearMonth" />
+            <xsd:element name="end" type="xsd:gYearMonth" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- ArpuReportType -->
+    <xsd:complexType name="ArpuReportType">
+        <xsd:sequence>
+            <xsd:element name="groupBy">
+                <xsd:simpleType>
+                    <xsd:restriction base="xsd:string">
+                        <xsd:enumeration value="none" />
+                        <xsd:enumeration value="sector" />
+                        <xsd:enumeration value="companyType" />
+                    </xsd:restriction>
+                </xsd:simpleType>
+            </xsd:element>
+            <xsd:element name="start" type="xsd:gYearMonth" />
+            <xsd:element name="end" type="xsd:gYearMonth" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- DailyExpenseDetailReportType -->
+    <xsd:complexType name="DailyExpenseDetailReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="start" type="xsd:date" />
+            <xsd:element name="end" type="xsd:date" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- DailyConsumptionDetailReportType -->
+    <xsd:complexType name="DailyConsumptionDetailReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="start" type="xsd:date" />
+            <xsd:element name="end" type="xsd:date" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- SubscriptionSnapshotReportType -->
+    <xsd:complexType name="SubscriptionSnapshotReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="date" type="DateType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- SMSAOReportType -->
+    <xsd:complexType name="SMSAOReportType">
+        <xsd:sequence>
+            <xsd:element name="watcherId" type="gm2m_s1t:myStr" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- PrebillAggregatedMonthlyReportType -->
+    <xsd:complexType name="PrebillAggregatedMonthlyReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="billingAccount" type="gm2m_s1t:myStr" />
+            <xsd:element name="date" type="xsd:gYearMonth" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+   <!-- DailyAPITransactionActivityType -->
+    <xsd:complexType name="DailyAPITransactionActivityType">
+        <xsd:sequence>
+            <xsd:element name="date" type="DateType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- DailyNetworkRegistrationFailureType -->
+    <xsd:complexType name="DailyNetworkRegistrationFailureType">
+        <xsd:sequence>
+            <xsd:element name="date" type="DateType" />
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- SwapActivityReportType -->
+    <xsd:complexType name="SwapActivityReportType">
+        <xsd:sequence>
+            <xsd:element name="date" type="DateType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- RetiredSubscriptionsReportType -->
+    <xsd:complexType name="RetiredSubscriptionsReportType">
+        <xsd:sequence>
+            <xsd:element name="start" type="xsd:date" />
+            <xsd:element name="end" type="xsd:date" />
+        </xsd:sequence>
+    </xsd:complexType>
+    
+    <!-- SubscriptionDetailMonthlyReportType -->
+    <xsd:complexType name="SubscriptionDetailMonthlyReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+            <xsd:element name="billingAccount" type="gm2m_s1t:myStr" />
+            <xsd:element name="dateBillingCycleEnd" type="xsd:date" />
+            <xsd:element name="msisdn" type="gm2m_s1t:myStr" minOccurs="0"/>
+        </xsd:sequence>
+    </xsd:complexType>
+    
+    <!-- ManufacturerReportType -->
+    <xsd:complexType name="ManufacturerReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+    
+    <!-- ChangedImeiReportType -->
+    <xsd:complexType name="ChangedImeiReportType">
+        <xsd:sequence>
+            <xsd:element name="orgId" type="gm2m_s1t:myStr"
+                minOccurs="0" />
+             <xsd:element name="date" type="xsd:date" />    
+        </xsd:sequence>
+    </xsd:complexType>
+    
+    <!-- UserListReportType -->
+    <xsd:complexType name="UserListReportType"></xsd:complexType>
+ 
+    <xsd:simpleType name="orderType">
+        <xsd:restriction base="xsd:string">
+            <xsd:minLength value="0" />
+            <xsd:maxLength value="30" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <!-- ManufacturerFileReportType -->       
+    <xsd:complexType name="ManufacturerFileReportType">
+        <xsd:sequence>
+            <xsd:element name="start" type="xsd:date" minOccurs="0" />
+            <xsd:element name="end" type="xsd:date" minOccurs="0" />
+            <xsd:element name="order" type="orderType" minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>    
+    
+    <!-- AlarmsMonthlyReportType -->       
+    <xsd:complexType name="AlarmsMonthlyReportType">
+        <xsd:sequence>
+            <xsd:element name="date" type="xsd:gYearMonth" />  
+        </xsd:sequence>
+    </xsd:complexType>   
+
+    <!-- SwapFirstUseMonthlyReportType -->       
+    <xsd:complexType name="SwapFirstUseMonthlyReportType">
+        <xsd:sequence>
+            <xsd:element name="date" type="xsd:gYearMonth" />  
+        </xsd:sequence>
+    </xsd:complexType>    
+    
+    <!-- CustomerManufacturerFileReportType -->       
+    <xsd:complexType name="CustomerManufacturerFileReportType">
+        <xsd:sequence>
+            <xsd:element name="orderId" type="gm2m_s1t:myStr" />
+        </xsd:sequence>
+    </xsd:complexType>    
+
+    <!-- ReportInfoType -->
+    <xsd:complexType name="ReportInfoType">
+        <xsd:choice>
+            <xsd:element name="presence" type="ReportType" />
+            <xsd:element name="location" type="ReportType" />
+            <xsd:element name="accumulated_summary_daily"
+                type="DailySummaryAggregatedReportType" />
+            <xsd:element name="consumption_daily" type="DailyConsumptionReportType" />
+            <xsd:element name="expense_detail_monthly"
+                type="MonthlyExpenseDetailReportType" />
+            <xsd:element name="subscription_base_monthly"
+                type="SubscriptionBaseReportType" />
+            <xsd:element name="kpi_monthly" type="ArpuReportType" />
+            <xsd:element name="expense_detail_daily" type="DailyExpenseDetailReportType" />
+            <xsd:element name="consumption_detail_daily"
+                type="DailyConsumptionDetailReportType" />
+            <xsd:element name="subscription_snapshot_daily"
+                type="SubscriptionSnapshotReportType" />
+            <xsd:element name="sms_ao" type="SMSAOReportType" />
+            <xsd:element name="charges_aggregated" type="PrebillAggregatedMonthlyReportType" />
+            <xsd:element name="api_transaction_activity_daily" type="DailyAPITransactionActivityType" />
+            <xsd:element name="network_registration_failure_daily" type="DailyNetworkRegistrationFailureType" />
+            <xsd:element name="swap_activity" type="SwapActivityReportType" />
+            <xsd:element name="retired_subscriptions" type="RetiredSubscriptionsReportType" />
+            <xsd:element name="subscription_detail_monthly" type="SubscriptionDetailMonthlyReportType" />
+            <xsd:element name="manufacturer_model_summary" type="ManufacturerReportType" />
+            <xsd:element name="changed_imei" type="ChangedImeiReportType" />
+            <xsd:element name="user_list" type="UserListReportType" />
+            <xsd:element name="manufacturer_file" type="ManufacturerFileReportType" />
+            <xsd:element name="alarms_monthly" type="AlarmsMonthlyReportType" />
+            <xsd:element name="swap_first_use_monthly" type="SwapFirstUseMonthlyReportType" />
+            <xsd:element name="customer_manufacturer_file" type="CustomerManufacturerFileReportType" />
+        </xsd:choice>
+    </xsd:complexType>
+
+    <!-- StatusType -->
+    <xsd:simpleType name="StatusType">
+        <xsd:restriction base="xsd:string">
+            <xsd:enumeration value="finished" />
+            <xsd:enumeration value="active" />
+            <xsd:enumeration value="paused" />
+            <xsd:enumeration value="timeout" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <!-- DownloadReportListType -->
+    <xsd:complexType name="DownloadReportListType">
+        <xsd:sequence>
+            <xsd:element name="downloadReportId" type="gm2m_s1t:myStr" />
+            <xsd:element name="created" type="xsd:dateTime" />
+            <xsd:element name="expire" type="xsd:dateTime" />
+            <xsd:element name="modified" type="xsd:dateTime" />
+            <xsd:element name="status" type="StatusType" />
+            <xsd:element name="params" type="ReportInfoType" />
+            <xsd:element name="remove" type="xsd:dateTime" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+
+    <!-- Operations -->
+
+    <!-- getDownloadReportList -->
+    <xsd:element name="getDownloadReportList">
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- getDownloadReportListResponse -->
+    <xsd:element name="getDownloadReportListResponse">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="downloadReports" type="DownloadReportListType"
+                    minOccurs="0" maxOccurs="unbounded" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <!-- createDownloadReport -->
+    <xsd:element name="createDownloadReport" type="ReportInfoType" />
+
+    <!-- createDownloadReportResponse -->
+    <xsd:element name="createDownloadReportResponse">
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- getDownloadReportLink -->
+    <xsd:element name="getDownloadReportLink">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="downloadReportId" type="gm2m_s1t:myStr" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <!-- getDownloadReportLinkResponse -->
+    <xsd:element name="getDownloadReportLinkResponse" type="GetReportResponseType" />
+
+    <!-- deleteDownloadReport operation -->
+    <xsd:element name="deleteDownloadReport">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="downloadReportId" type="gm2m_s1t:myStr" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <!-- deleteDownloadReportResponse operation -->
+    <xsd:element name="deleteDownloadReportResponse">
+        <xsd:complexType />
+    </xsd:element>
+
+</xsd:schema>
+

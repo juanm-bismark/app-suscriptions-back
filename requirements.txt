@@ -7,19 +7,27 @@ pydantic>=2.9.0
 pydantic-settings>=2.14.0
 python-dotenv>=1.2.0
 
-# Cliente HTTP (servicios internos/externos)
+# Cliente HTTP (adapters de proveedores)
 httpx>=0.28.0
 
 # Postgres support
 SQLAlchemy[asyncio]>=2.0.0
-psycopg[binary]>=3.3.0
+asyncpg
 alembic>=1.18.0
 
 # Required by FastAPI para form/file parsing
 python-multipart>=0.0.18
 
-# JWT validation (Supabase tokens)
+# Auth
 PyJWT>=2.10.0
+bcrypt>=4.0.0
+cryptography>=43.0.0
+
+# Logging estructurado
+structlog>=24.0.0
+
+# Resiliencia — retry con backoff exponencial (usado en adapters, Ola 1)
+tenacity>=9.0.0
 
 # API Features
 fastapi-pagination>=0.15.0

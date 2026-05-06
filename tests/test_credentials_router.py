@@ -1,0 +1,319 @@
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
+
+from app.config import Settings, get_settings
+from app.database import get_db
+from app.identity.dependencies import get_current_profile
+from app.identity.models.profile import AppRole, Profile
+from app.shared.crypto import decrypt_credentials, encrypt_credentials
+from app.shared.errors import DomainError, ProviderAuthFailed
+from app.tenancy.credential_expiry import credential_expiry_status
+from app.tenancy.models.credentials import CompanyProviderCredentials
+from app.tenancy.routers import credentials as credentials_router
+
+COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
+FERNET_KEY = "0yQmM-4diy_DdLtAMkNC-vq3bn3bx0N9-mbkzEazP-E="
+
+
+class _Scalars:
+    def __init__(self, rows: list[CompanyProviderCredentials]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[CompanyProviderCredentials]:
+        return self._rows
+
+
+class _Result:
+    def __init__(self, rows: list[CompanyProviderCredentials]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _Scalars:
+        return _Scalars(self._rows)
+
+    def scalar_one_or_none(self) -> CompanyProviderCredentials | None:
+        if not self._rows:
+            return None
+        return self._rows[0]
+
+
+class _Db:
+    def __init__(self, rows: list[CompanyProviderCredentials] | None = None) -> None:
+        self.rows = rows or []
+        self.commits = 0
+
+    async def execute(self, statement: Any) -> _Result:
+        if getattr(statement, "__visit_name__", "") == "update":
+            for row in self.rows:
+                if row.company_id == COMPANY_ID and row.active:
+                    row.active = False
+            return _Result([])
+        return _Result([row for row in self.rows if row.company_id == COMPANY_ID and row.active])
+
+    def add(self, row: CompanyProviderCredentials) -> None:
+        self.rows.append(row)
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def refresh(self, row: CompanyProviderCredentials) -> None:
+        return None
+
+
+class _Provider:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[dict[str, Any]] = []
+        self.cursors: list[str | None] = []
+
+    async def list_subscriptions(
+        self,
+        credentials: dict[str, Any],
+        *,
+        cursor: str | None,
+        limit: int,
+        filters: Any = None,
+    ) -> tuple[list[Any], None]:
+        self.calls.append(credentials)
+        self.cursors.append(cursor)
+        if self.fail:
+            raise ProviderAuthFailed(detail="bad provider credentials")
+        return [], None
+
+
+class _Registry:
+    def __init__(self, provider: _Provider) -> None:
+        self.provider = provider
+
+    def get(self, provider: str) -> _Provider:
+        return self.provider
+
+
+def _row(provider: str = "tele2", account_scope: dict[str, Any] | None = None) -> CompanyProviderCredentials:
+    now = datetime.now(UTC)
+    return CompanyProviderCredentials(
+        id=uuid.uuid4(),
+        company_id=COMPANY_ID,
+        provider=provider,
+        credentials_enc=encrypt_credentials({"api_key": "old-secret"}, FERNET_KEY),
+        account_scope=account_scope or {},
+        active=True,
+        rotated_at=now,
+        created_at=now,
+    )
+
+
+def _profile(role: AppRole) -> Profile:
+    return Profile(id=USER_ID, company_id=COMPANY_ID, role=role)
+
+
+def _client(
+    role: AppRole,
+    db: _Db | None = None,
+    provider: _Provider | None = None,
+) -> TestClient:
+    app = FastAPI()
+
+    @app.exception_handler(DomainError)
+    async def _domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={"code": exc.code, "detail": exc.detail, **exc.extra},
+        )
+
+    async def _db_override():
+        yield db or _Db()
+
+    app.include_router(credentials_router.router, prefix="/v1")
+    app.dependency_overrides[get_current_profile] = lambda: _profile(role)
+    app.dependency_overrides[get_db] = _db_override
+    app.dependency_overrides[get_settings] = lambda: Settings(fernet_key=FERNET_KEY)
+    app.dependency_overrides[credentials_router.get_registry] = lambda: _Registry(
+        provider or _Provider()
+    )
+    return TestClient(app)
+
+
+def test_manager_can_list_credential_metadata_without_secrets() -> None:
+    db = _Db([_row(account_scope={"account_id": "acct-1"})])
+    client = _client(AppRole.manager, db)
+
+    response = client.get("/v1/companies/me/credentials")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["provider"] == "tele2"
+    assert payload[0]["account_scope"] == {"account_id": "acct-1"}
+    serialized = response.text
+    assert "old-secret" not in serialized
+    assert "credentials_enc" not in serialized
+    assert "api_key" not in serialized
+
+
+def test_member_cannot_manage_credentials() -> None:
+    client = _client(AppRole.member, _Db([_row()]))
+
+    response = client.get("/v1/companies/me/credentials")
+
+    assert response.status_code == 403
+
+
+def test_test_endpoint_returns_provider_failure_without_persisting() -> None:
+    db = _Db([])
+    provider = _Provider(fail=True)
+    client = _client(AppRole.admin, db, provider)
+
+    response = client.post(
+        "/v1/companies/me/credentials/tele2/test",
+        json={"credentials": {"username": "u", "api_key": "k"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider": "tele2",
+        "ok": False,
+        "detail": "bad provider credentials",
+    }
+    assert db.rows == []
+
+
+def test_patch_rotates_and_encrypts_credentials() -> None:
+    old = _row()
+    db = _Db([old])
+    provider = _Provider()
+    client = _client(AppRole.manager, db, provider)
+
+    response = client.patch(
+        "/v1/companies/me/credentials/tele2",
+        json={
+            "credentials": {
+                "username": "alice",
+                "api_key": "new-secret",
+            },
+            "account_scope": {"account_id": "acct-2", "max_tps": 5},
+        },
+    )
+
+    assert response.status_code == 200
+    assert old.active is False
+    assert len(db.rows) == 2
+    created = db.rows[-1]
+    assert created.active is True
+    assert created.rotated_at is not None
+    assert created.account_scope == {"account_id": "acct-2", "max_tps": 5}
+    decrypted = decrypt_credentials(created.credentials_enc, FERNET_KEY)
+    assert decrypted["api_key"] == "new-secret"
+    assert decrypted["base_url"] == "https://restapi3.jasper.com"
+    assert "api_version" not in decrypted
+    assert "cobrand_url" not in decrypted
+    assert provider.calls[0]["company_id"] == str(COMPANY_ID)
+    assert provider.calls[0]["base_url"] == "https://restapi3.jasper.com"
+    assert provider.calls[0]["max_tps"] == 5
+    assert provider.cursors[0] is not None
+    assert "since:" in provider.cursors[0]
+    assert "new-secret" not in response.text
+
+
+def test_patch_allows_custom_tele2_cobrand_url() -> None:
+    db = _Db([])
+    provider = _Provider()
+    client = _client(AppRole.manager, db, provider)
+
+    response = client.patch(
+        "/v1/companies/me/credentials/tele2",
+        json={
+            "credentials": {
+                "cobrand_url": "custom.jasper.example/rws/api/v1/devices",
+                "username": "alice",
+                "api_key": "secret",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    decrypted = decrypt_credentials(db.rows[-1].credentials_enc, FERNET_KEY)
+    assert decrypted["base_url"] == "https://custom.jasper.example"
+    assert provider.calls[0]["base_url"] == "https://custom.jasper.example"
+
+
+def test_failed_patch_does_not_modify_database() -> None:
+    old = _row()
+    db = _Db([old])
+    client = _client(AppRole.admin, db, _Provider(fail=True))
+
+    response = client.patch(
+        "/v1/companies/me/credentials/tele2",
+        json={"credentials": {"username": "u", "api_key": "bad"}},
+    )
+
+    assert response.status_code == 422
+    assert old.active is True
+    assert len(db.rows) == 1
+    assert db.commits == 0
+
+
+def test_only_admin_can_deactivate_credentials() -> None:
+    db = _Db([_row()])
+    manager = _client(AppRole.manager, db)
+    admin = _client(AppRole.admin, db)
+
+    manager_response = manager.delete("/v1/companies/me/credentials/tele2")
+    admin_response = admin.delete("/v1/companies/me/credentials/tele2")
+
+    assert manager_response.status_code == 403
+    assert admin_response.status_code == 204
+    assert db.rows[0].active is False
+
+
+def test_expiry_statuses() -> None:
+    now = datetime(2026, 5, 6, tzinfo=UTC)
+
+    assert credential_expiry_status({}, now=now).value == "valid"
+    assert (
+        credential_expiry_status(
+            {"cert_expires_at": (now + timedelta(days=40)).isoformat()},
+            now=now,
+        ).value
+        == "valid"
+    )
+    assert (
+        credential_expiry_status(
+            {"cert_expires_at": (now + timedelta(days=10)).isoformat()},
+            now=now,
+        ).value
+        == "expiring"
+    )
+    assert (
+        credential_expiry_status(
+            {"token_expires_at": (now - timedelta(days=1)).isoformat()},
+            now=now,
+        ).value
+        == "expired"
+    )
+    assert credential_expiry_status({"cert_expires_at": "not-a-date"}, now=now).value == "invalid"
+
+
+def test_credential_endpoints_document_provider_specific_examples() -> None:
+    client = _client(AppRole.admin)
+
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    paths = response.json()["paths"]
+    for method_path, method in [
+        ("/v1/companies/me/credentials/{provider}/test", "post"),
+        ("/v1/companies/me/credentials/{provider}", "patch"),
+    ]:
+        examples = paths[method_path][method]["requestBody"]["content"][
+            "application/json"
+        ]["examples"]
+        assert set(examples) == {"kite", "tele2", "moabits"}
+        assert examples["kite"]["value"]["credentials"]["client_cert_pfx_b64"]
+        assert examples["tele2"]["value"]["credentials"]["api_key"]
+        assert examples["tele2"]["value"]["credentials"]["api_version"] == "v1"
+        assert examples["moabits"]["value"]["credentials"]["company_codes"]

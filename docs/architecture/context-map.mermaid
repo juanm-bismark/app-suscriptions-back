@@ -1,0 +1,35 @@
+%% Context Map — relaciones entre bounded contexts
+%% Notación DDD: U = Upstream, D = Downstream, ACL = Anti-Corruption Layer,
+%% CF = Conformist, P = Partnership, SK = Shared Kernel, OHS = Open Host Service.
+
+flowchart LR
+    subgraph SYSTEM ["Subscriptions API (modular monolith)"]
+        IAM["Identity & Access<br/><i>existing</i><br/>users, profiles, refresh_tokens"]
+        TEN["Tenancy<br/><i>extended</i><br/>companies, company_provider_credentials"]
+        SUB["Subscription Aggregation<br/><i>new</i><br/>Subscription, SIM Routing Map"]
+        PRV["Provider Integration<br/><i>new — technical context</i><br/>SubscriptionProvider Protocol + Adapters"]
+    end
+
+    subgraph EXTERNAL ["External providers (out of our control)"]
+        KITE["Kite API<br/>SOAP/REST style<br/>vocab: icc, lifeCycleStatus"]
+        TELE2["Tele2 API<br/>REST v1<br/>vocab: iccid, status, ratePlan"]
+        MOABITS["Moabits Orion API<br/>REST 2.0.0<br/>vocab: iccid, simStatus"]
+    end
+
+    %% Inter-context relationships
+    IAM -- "U / OHS<br/>Profile.company_id" --> TEN
+    TEN -- "U<br/>company_id, credentials" --> SUB
+    SUB -- "ACL via Provider Adapter<br/>(D — we conform to providers)" --> PRV
+
+    %% External relationships — each adapter is a Conformist toward its provider
+    PRV -- "CF + ACL" --> KITE
+    PRV -- "CF + ACL" --> TELE2
+    PRV -- "CF + ACL" --> MOABITS
+
+    classDef new fill:#dff5e1,stroke:#2b8a3e,stroke-width:2px;
+    classDef existing fill:#eef,stroke:#3b5bdb;
+    classDef external fill:#fff3bf,stroke:#e8590c;
+    class SUB,PRV new;
+    class IAM existing;
+    class TEN existing;
+    class KITE,TELE2,MOABITS external;

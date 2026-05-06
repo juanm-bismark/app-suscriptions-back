@@ -1,0 +1,23 @@
+%% C4 Level 1 — System Context for "Subscriptions API"
+%% Max 10-12 elements. Using Mermaid C4 syntax (C4Context).
+
+C4Context
+  title System Context — Subscriptions API
+
+  Person(user, "Usuario interno", "admin / manager / member de una Company. Consulta SIMs y ejecuta operaciones de control.")
+
+  System(api, "Subscriptions API", "FastAPI · modular monolith. Centraliza lectura y operaciones de SIMs sobre 3 proveedores con modelo canónico.")
+
+  System_Ext(kite, "Kite", "Plataforma M2M de Telefónica. REST/SOAP. Vocabulario: icc, lifeCycleStatus, consumption*.")
+  System_Ext(tele2, "Tele2 IoT", "API REST v1. Vocabulario: iccid, status, ratePlan, Get Device Usage.")
+  System_Ext(moabits, "Moabits Orion", "API REST 2.0.0. Vocabulario: iccid, simStatus, simUsage.")
+
+  SystemDb(pgdb, "PostgreSQL", "Tenancy, identity, SIM Routing Map, audit_log, idempotency_keys. NO persiste estado de SIM.")
+
+  Rel(user, api, "HTTPS + JWT", "HTTPS")
+  Rel(api, pgdb, "SQL (asyncpg)", "TCP")
+  Rel(api, kite, "HTTPS + auth propio de Kite", "HTTPS")
+  Rel(api, tele2, "HTTPS + auth propio de Tele2", "HTTPS")
+  Rel(api, moabits, "HTTPS + JWT de Moabits", "HTTPS")
+
+  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Nov 24, 2016 -->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/echo/v1/types"
+    xmlns:uct="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+    xmlns:gm2m_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+    targetNamespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/echo/v1/types"
+    attributeFormDefault="unqualified" elementFormDefault="qualified">
+
+    <!-- EchoType -->
+    <xsd:simpleType name="EchoDataType">
+        <xsd:restriction base="xsd:string">
+            <xsd:minLength value="1"/>
+            <xsd:maxLength value="20"/>
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <!-- echo operation -->
+    <xsd:element name="echo">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="data" type="tns:EchoDataType"/>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="echoResponse">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="data" type="tns:EchoDataType"/>
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+    
+</xsd:schema>

@@ -1,0 +1,422 @@
+# Subscriptions API — Architecture
+
+## Executive Summary
+
+Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaciones de control sobre las ~134 612 SIMs M2M/IoT de la organización distribuidas entre tres proveedores externos (Kite, Tele2 y Moabits). Opera como **proxy en tiempo real**: no mantiene una copia local del catálogo — la fuente de verdad es siempre el proveedor. El resultado es una API que el frontend interno puede usar sin conocer qué proveedor vive detrás, que aísla fallas de un proveedor de los demás, y que permite agregar un cuarto proveedor sin modificar el dominio.
+
+## Status
+
+| | |
+|---|---|
+| **Fecha** | 2026-04-29 |
+| **Versión** | 1.0 |
+| **Estado** | Accepted — listo para implementación del primer proveedor (mitigaciones de seguridad AP-1, AP-8 implementadas) |
+| **Autores** | Equipo backend + solution architect |
+| **Depth del ejercicio** | comprehensive (Phases 1–8) |
+| **Últimas actualizaciones** | 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
+
+---
+
+## Context
+
+### Business context
+- La organización gestiona líneas M2M/IoT para sus clientes empresariales.
+- Hoy cada proveedor se consulta por herramientas distintas — UX fragmentada, imposibilidad de ver el catálogo completo en un solo lugar.
+- Objetivo: una sola API (y un solo frontend interno) para las tres plataformas.
+
+Listing behaviour: `GET /v1/sims` requiere `?provider=<name>` por
+defecto. Las credenciales son siempre `Company × Provider` y no existe
+una credencial global que permita listar de todos los proveedores a
+la vez de forma segura y eficiente.
+
+Por tanto:
+- Provider-scoped listing (requerido): `GET /v1/sims?provider=<name>`
+   — resolver `company_provider_credentials` y usar la paginación
+   nativa del proveedor si existe (`SearchableProvider`).
+- Global listing (sin `provider`): deshabilitado por defecto y sólo
+   disponible tras un **bootstrap explícito por tenant** que poblare el
+   `sim_routing_map` (import CSV o proceso admin). Hasta entonces el
+   cliente debe pedir `?provider=`.
+
+Rationale: sin un `sim_routing_map` poblado por tenant no hay forma
+fiable de decidir qué credenciales usar para cada `iccid` y evitar un
+fan-out indiscriminado a todos los proveedores. Ver `migrations/001_sim_routing_map.sql`
+y `migrations/002_company_provider_credentials.sql`.
+
+### Technical context
+- Stack existente: FastAPI (async) + SQLAlchemy 2.0 + asyncpg + PyJWT + bcrypt + httpx (declarado, no usado aún).
+- Multi-tenant por `Company` con RBAC (`admin`/`manager`/`member`/`public`).
+- Desplegado en Docker. Postgres managed (tipo Supabase o equivalente).
+
+### Constraints
+- **Modo proxy puro**: decisión explícita del producto — sin sync, sin batch, sin almacén canónico del SIM.
+- **Escala**: 15–20 usuarios concurrentes, 134 612 SIMs totales, sin batch jobs.
+- **Equipo**: `[ASSUMPTION: team_size < 5]` — descarta microservicios.
+
+---
+
+## Architecture Decisions
+
+Detalle completo en [adrs/](adrs/).
+
+| # | Decisión | Link | Estado |
+|---|---|---|---|
+| ADR-001 | Modular Monolith (paquetes por bounded context, single deployable) | [ADR-001](adrs/ADR-001-modular-monolith.md) | Accepted |
+| ADR-002 | Proxy en tiempo real — sin almacén canónico; sólo `SIM Routing Map` | [ADR-002](adrs/ADR-002-real-time-proxy-no-canonical-store.md) | Accepted |
+| ADR-003 | Anti-Corruption Layer + `SubscriptionProvider` Protocol + adapter por proveedor + Registry | [ADR-003](adrs/ADR-003-acl-provider-adapter.md) | Accepted |
+| ADR-004 | Modelo canónico de errores → RFC 7807 Problem Details | [ADR-004](adrs/ADR-004-error-model.md) | Accepted |
+| ADR-005 | Resiliencia: timeout + retry idempotente + circuit breaker + cache TTL≤5s + bulkhead | [ADR-005](adrs/ADR-005-resilience-and-cache.md) | Accepted |
+| ADR-006 | Credenciales por tenant en tabla cifrada con Fernet, no en JSONB de settings | [ADR-006](adrs/ADR-006-encrypted-credentials-table.md) | Accepted |
+| ADR-007 | Versionado URL `/v1/` + cursor pagination + `Idempotency-Key` obligatoria en mutaciones | [ADR-007](adrs/ADR-007-api-versioning-and-pagination.md) | Accepted |
+| ADR-008 | JWT existente reutilizado + RBAC + scope por `Company` + `audit_log` | [ADR-008](adrs/ADR-008-auth-rbac-audit.md) | Accepted |
+| ADR-009 | Pirámide de tests + golden files de mappers + contract tests + FakeProvider | [ADR-009](adrs/ADR-009-testing-strategy.md) | Accepted |
+
+---
+
+## Domain Model (resumen)
+
+Detalle en [domain-model.md](domain-model.md) y [context-map.mermaid](context-map.mermaid).
+
+**Bounded contexts**:
+1. **Identity & Access** *(existente)* — `User`, `Profile`, `RefreshToken`.
+2. **Tenancy** *(extendido)* — `Company`, `CompanySettings`, `CompanyProviderCredentials` (nuevo).
+3. **Subscription Aggregation** *(nuevo)* — aggregate `Subscription`, `SIM Routing Map`. Sin persistir estado del SIM.
+4. **Provider Integration** *(nuevo, técnico)* — ACL con un adapter por proveedor.
+
+**Aggregate root**: `Subscription` identificado por `iccid`, con value objects `AdministrativeStatus`, `ConnectivityPresence`, `UsageSnapshot`, `UsageMetric`, `CommercialPlan`, `ConsumptionLimit`, y el historial `StatusChange`.
+
+**Lenguaje ubicuo**: vocabulario de proveedor (`icc`, `lifeCycleStatus`, `simStatus`, `Edit Device Details`, …) **sólo** aparece dentro de un Provider Adapter. El dominio y los routers usan únicamente `iccid`, `AdministrativeStatus`, `ControlOperation`.
+
+**Decisiones semánticas críticas**:
+- `ControlOperation` — Operación canónica `purge` mapeada por adapters a las APIs proveedoras (p.ej. Kite `networkReset`, Tele2 `Edit Device {status: PURGED}`, Moabits `PUT /api/sim/purge/`). Operaciones no soportadas por el provider de la SIM devuelven `409 UnsupportedOperation`.
+- El contrato expuesto al frontend separa `provider_fields` (bloque dinámico de atributos del proveedor) de `provider_metrics`/`usage_metrics` (consumo normalizado).
+
+---
+
+## System Design
+
+### C4 Level 1 — System Context
+Ver [c4-context.mermaid](c4-context.mermaid).
+
+Un único sistema `Subscriptions API` consumido por usuarios internos (autenticados con JWT), conectado a Postgres y a los tres proveedores externos.
+
+### C4 Level 2 — Containers
+Ver [c4-container.mermaid](c4-container.mermaid).
+
+Dentro del sistema: `FastAPI App` (routers + middleware), `Subscription Aggregation Module` (dominio + services), `Provider Adapters` (ACL), `Identity & Tenancy Module`. Todo deploy en un proceso; se comunican **in-process**.
+
+### C4 Level 3 — Components
+Ver [c4-component.mermaid](c4-component.mermaid).
+
+Dentro de Subscription Aggregation: `SubscriptionFetcher`, `SubscriptionSearchService`, `SubscriptionOperationService`, `ProviderRegistry`, tabla `sim_routing_map`. Dentro de Provider Adapters: `SubscriptionProvider` Protocol + `KiteAdapter` / `Tele2Adapter` / `MoabitsAdapter`.
+
+### Patrones (resumen por dimensión)
+
+| Dimensión | Patrón |
+|---|---|
+| Topología | Modular Monolith (ADR-001) |
+| Comunicación | HTTP sync por adapter; sin fan-out cross-provider por defecto (ADR-005) |
+| Propiedad de datos | Proxy puro, cero espejo (ADR-002) |
+| API style | REST + `/v1/` + cursor pagination + RFC 7807 (ADR-007) |
+| AuthN/AuthZ | JWT propio + RBAC + scope por Company (ADR-008) |
+| Testing | Pirámide + golden files + contract tests (ADR-009) |
+| ACL | Adapter por proveedor + Protocol + Registry (ADR-003) |
+
+---
+
+## Non-Functional Requirements (resumen)
+
+Tabla completa en [nfr-analysis.md](nfr-analysis.md).
+
+| Categoría | Ejemplos con número |
+|---|---|
+| Performance | P50 ≤ 800 ms, P95 ≤ 3 s, P99 ≤ 8 s (GET iccid) · P95 ≤ 5 s (provider-scoped listing / routing-map page) |
+| Availability | 99.5% mensual; caída de un proveedor no genera 5xx para SIMs de otros |
+| Scalability | 20 concurrentes en 1 worker; horizontal N workers sin cambios de código |
+| Security | CORS explícito · refresh tokens hasheados · Fernet en credenciales · `audit_log` 100% en mutaciones · rate limit 60 req/s por tenant |
+| Observability | 100% requests con `request_id` · logs JSON · métricas Prometheus · trazas OTel opcional |
+| Maintainability | Cobertura 80% global, 90% mappers · import-linter contratos · nuevo provider sin tocar dominio |
+| Cost | 1 servicio, 1 DB, cero brokers; sin fan-out cross-provider por defecto |
+
+**Blockers declarados** (deben cerrarse antes de exponer a producción):
+- **NFR-Sec2**: hashear refresh tokens ([app/models/refresh_token.py](../../app/models/refresh_token.py)).
+- **NFR-Sec3**: CORS explícito, no `*` con `credentials=true` ([app/main.py:26-32](../../app/main.py#L26-L32)).
+
+---
+
+## Security Architecture
+
+Detalle en [nfr-analysis.md §2](nfr-analysis.md) y [ADR-008](adrs/ADR-008-auth-rbac-audit.md).
+
+| Capa | Mecanismo |
+|---|---|
+| AuthN | JWT HS256 propio (60 min) + refresh tokens rotatorios hasheados + bcrypt en passwords |
+| AuthZ | RBAC por `AppRole` + tenant isolation obligatorio por `company_id` |
+| Data in transit | TLS 1.2+ terminado en el orquestador; HSTS |
+| Data at rest | SIM data no persiste. Credenciales de proveedor cifradas con Fernet usando `FERNET_KEY`. Refresh tokens sha256. |
+| Secrets | `JWT_SECRET`, `DATABASE_URL`, `FERNET_KEY` en env vars gestionadas por orquestador |
+| Log hygiene | Scrubber obligatorio sobre campos `password`, `token`, `Authorization`, `credentials`, `secret`, `key` |
+| Audit | Toda mutación + toda denegación 403 sobre mutaciones → `audit_log` con actor, request_id, outcome |
+| Abuse control | Rate limit por `company_id` (token bucket) · `Idempotency-Key` obligatorio en `POST /v1/sims/{iccid}/purge` |
+
+**Matriz de permisos** (ADR-008):
+
+| Operación | member | manager | admin |
+|---|:-:|:-:|:-:|
+| Lecturas sobre SIMs | ✓ | ✓ | ✓ |
+| Ver/probar/rotar credenciales propias del tenant | ✗ | ✓ | ✓ |
+| Desactivar credenciales del tenant | ✗ | ✗ | ✓ |
+| Control operation `purge` | ✗ | ✗ | ✓ |
+
+---
+
+## Data Architecture
+
+**Principio**: **cero persistencia** del estado de SIM (ADR-002). Postgres aloja sólo:
+
+| Tabla | Propósito | Contexto |
+|---|---|---|
+| `users`, `profiles`, `refresh_tokens` | Identity & Access | existente |
+| `companies`, `company_settings` | Tenancy | existente |
+| `company_provider_credentials` | Credenciales cifradas por (Company × Provider) | **nueva** — ADR-006 |
+| `sim_routing_map` | `iccid → provider, company_id, last_seen_at` | **nueva** — ADR-002 |
+| `audit_log` | Bitácora de mutaciones y denegaciones | **nueva** — ADR-008 |
+| `idempotency_keys` | `(company_id, key)` → respuesta cacheada 24 h | **nueva** — ADR-007 |
+| `lifecycle_change_audit` | Bitácora específica de writes de lifecycle/purge | **nueva** — implementación |
+
+**Modelo de ruteo**: el único estado compartido sobre SIMs es el `SimRoutingMap`. No es caché, no es espejo, es **ruteo** (qué proveedor atender para este iccid). Carga inicial: CSV de los proveedores (opción sana) o *lazy discovery* en la primera consulta. `[REQUIRES INPUT]`
+
+**Índices críticos**:
+- `sim_routing_map(iccid PK)` — lookup O(1).
+- `sim_routing_map(company_id, provider)` — listado por tenant.
+- `company_provider_credentials(company_id, provider) WHERE active` — resolución de credencial.
+- `audit_log(company_id, occurred_at DESC)` — consultas de auditoría por tenant.
+- `audit_log(actor_id, occurred_at DESC)` — actividad por usuario.
+- `idempotency_keys(company_id, key)` — replay idempotente por tenant.
+- `lifecycle_change_audit(provider, requested_at)` — diagnóstico de writes por proveedor.
+
+---
+
+## API Design
+
+### Endpoints (detalle en [ADR-007](adrs/ADR-007-api-versioning-and-pagination.md))
+
+```
+POST   /v1/auth/login
+POST   /v1/auth/signup
+POST   /v1/auth/refresh
+POST   /v1/auth/logout
+GET    /v1/me
+GET    /v1/users
+*      /v1/companies/**
+GET    /v1/companies/me/credentials                     # manager/admin — metadata only
+GET    /v1/companies/me/credentials/{provider}          # manager/admin — metadata only
+POST   /v1/companies/me/credentials/{provider}/test     # manager/admin — no secret persistence
+PATCH  /v1/companies/me/credentials/{provider}          # manager/admin — rotate/create
+DELETE /v1/companies/me/credentials/{provider}          # admin — deactivate
+GET    /v1/providers/{provider}/capabilities             # supported / not_supported / feature-flag / confirmation
+
+GET    /v1/sims?provider=<name>                          # provider-scoped listing required by default
+GET    /v1/sims/{iccid}
+GET    /v1/sims/{iccid}/usage                             # normalized usage_metrics + provider_metrics
+GET    /v1/sims/{iccid}/presence
+PUT    /v1/sims/{iccid}/status                            # Idempotency-Key obligatoria · admin
+POST   /v1/sims/{iccid}/purge                             # Idempotency-Key obligatoria · admin
+POST   /v1/sims/import                                    # bootstrap SIM Routing Map
+```
+
+### Convenciones
+
+- Versionado en URL (`/v1/`), nunca por header.
+- La implementación actual usa rutas REST explícitas sobre `/v1/sims/...`; la operación canónica sigue siendo `purge`, pero no se adoptó `:` custom verbs en este repo.
+- No se exponen endpoints proveedor-específicos para `networkReset`, `Edit Device Details` o rutas de purga propietarias; los adapters traducen desde `POST /v1/sims/{iccid}/purge`.
+- Las capacidades que existan sólo en un proveedor se publican como capabilities opcionales, no como lógica condicional en el frontend.
+- `status_history`, `aggregated_usage`, `plan_catalog` y `quota_management` se reportan en `GET /v1/providers/{provider}/capabilities`; no tienen ruta pública en v1 hasta que se adopte un Capability Protocol y se implemente el router correspondiente.
+- Paginación cursor-based (ordenamiento estable cross-proveedor).
+- Errores RFC 7807 con `code` estable (`provider.unavailable`, `subscription.not_found`, …).
+- Headers: `X-Request-ID` echo-or-generated, `X-API-Version: v1`.
+- `Idempotency-Key` obligatoria en mutaciones; sin ella → 400.
+- Respuestas parciales en búsquedas: `200` con `partial: true` y `failed_providers[]`.
+
+### OpenAPI
+
+Generado automáticamente por FastAPI en `/v1/openapi.json` y `/v1/docs`. Schemas nombrados para `Problem`, `Page<Subscription>`, `Subscription`, `UsageSnapshot`, etc.
+
+---
+
+## Testing Strategy
+
+Detalle en [ADR-009](adrs/ADR-009-testing-strategy.md).
+
+Pirámide:
+
+1. **Unit sobre mappers con golden files** — el activo principal. Payload del proveedor ↔ modelo canónico esperado, comparados con `assert ==`. Cambio del proveedor = falla determinista.
+2. **Contract tests sobre adapters** — cumplimiento del Protocol + comportamiento de errores (401→ProviderAuthFailed, 429→ProviderRateLimited, timeout→ProviderUnavailable, etc.).
+3. **Integration tests sobre services** — con `FakeProvider` in-memory + Postgres real.
+4. **Component tests sobre routers** — `TestClient` + dependency overrides.
+5. **E2E opcional** — contra sandbox de proveedor, CI nightly, no bloqueante. `[REQUIRES INPUT]`
+6. **Property-based** opcional con `hypothesis` en mappers críticos.
+
+**Gates de CI**: cobertura 80% global, 90% mappers, 100% errores/auth. Suite completa (capas 1–4) < 60 s.
+
+---
+
+## Cost Architecture
+
+Detalle en [patterns-decisions.md D7](patterns-decisions.md) y [ADR-005](adrs/ADR-005-resilience-and-cache.md).
+
+**Palancas de costo**:
+1. **Sin fan-out cross-provider por defecto.** Single-SIM y mutaciones llaman sólo al proveedor resuelto; listados usan listing nativo provider-scoped o una página acotada de `sim_routing_map`.
+2. **Sin infra adicional en MVP**: 1 servicio, 1 Postgres. No Redis, no broker, no cola.
+3. **Rate limit por `company_id`** protege la cuota del tenant y evita que un cliente descontrolado queme su propia cuota o la de otros.
+
+**Drivers de costo a monitorear**:
+- Cuota/costo por request de cada proveedor (depende del contrato).
+- Egress de red hacia los proveedores (menor a la escala actual).
+- Postgres: trivial — las tablas son chicas (134k routing rows, audit_log creciente, idempotency de 24 h).
+
+**Tele2 / Cisco Control Center fair use aplicado**:
+- Search Devices exige `modified_since` en formato `yyyy-MM-ddTHH:mm:ssZ`; si falta, se devuelve `errorCode=10000003`.
+- `pageSize` default/máximo = 50, `pageNumber` default = 1, y `modifiedTill` default = `modifiedSince + 1 año`.
+- Tele2 se rate-limita en proceso por cuenta/tenant: default 1 TPS, configurable con `company_provider_credentials.account_scope.max_tps` (p.ej. `5` para Advantage).
+- `40000029 Rate Limit Exceeded` y HTTP 429 se traducen a `ProviderRateLimited` y activan backoff temporal.
+
+**Tele2 / Cisco Control Center pendiente**:
+- El rate limiter no es distribuido. Usar múltiples workers/réplicas puede violar el TPS contratado; migrar a Redis antes de escalar horizontalmente.
+- No hay detección automática de BCTPS/SBCTPS/ICTPS/Overage TPS; `max_tps` se configura manualmente.
+- No hay caché diaria/por cadence para evitar búsquedas repetidas; el cliente debe limitar la frecuencia funcional de sincronización.
+
+**Cuándo esto deja de ser óptimo**:
+- Si se introducen reportes cross-proveedor → Postgres va a recibir carga grande de lectura → mover a modo agregador (implica invalidar ADR-002).
+- Si se escala a N workers, el cache deja de ser óptimo per-proc → mover a Redis (decisión explícita, no gratis).
+
+---
+
+## Deployment Architecture
+
+- **Unidad**: imagen Docker. Un proceso uvicorn. `docker-compose.yml` ya existe para dev.
+- **Env vars mínimas**:
+  - `DATABASE_URL` — Postgres con SSL.
+  - `JWT_SECRET` — rotable.
+  - `JWT_EXPIRE_MINUTES` — default 60.
+  - `FERNET_KEY` — 32 bytes URL-safe base64, **obligatorio en prod**.
+  - `CORS_ORIGINS` — lista JSON. **No `["*"]` con credentials en prod.**
+  - `ENVIRONMENT` — `development`|`staging`|`production`.
+  - `PROVIDER_<NAME>_TIMEOUT_READ_MS`, `_RETRY_ENABLED`, `_CB_OPEN_THRESHOLD` — overrides por adapter.
+  - `RATE_LIMIT_PER_TENANT_RPS` — default 60.
+- **Reverse proxy** (nginx, Caddy, managed por el PaaS) para TLS, HSTS, header stripping.
+- **Health**: `/health` ya existe. Agregar `/ready` que chequee Postgres disponible.
+- **Rolling deploy**: 2 réplicas mínimas en prod para no tener downtime durante release (aunque una sola atienda la carga nominal).
+- **Migraciones**: SQL manual en `migrations/*.sql`. Ejecutar `init.sql` primero y luego los archivos numerados en orden. Cada archivo crea una responsabilidad: routing, credenciales, audit log, idempotency y lifecycle audit.
+
+---
+
+## Migration Strategy (brownfield)
+
+**Plan en tres olas**, cada una independientemente desplegable y reversible.
+
+### Ola 0 — Paydown de deuda técnica bloqueante (antes de tocar nada de subscriptions)
+Blockers de seguridad (NFR-Sec2, NFR-Sec3):
+- Fix CORS en [app/main.py:26-32](../../app/main.py#L26-L32).
+- Hashear refresh tokens en [app/models/refresh_token.py](../../app/models/refresh_token.py) + migración que re-emite tokens.
+- Prefijar routers existentes con `/v1/` ([app/main.py:44-47](../../app/main.py#L44-L47)).
+- Introducir logger estructurado (`structlog`) + middleware de `request_id`.
+- Introducir `DomainError` + handler global RFC 7807.
+- Reorganizar carpetas a paquetes por bounded context (`identity/`, `tenancy/`, `shared/`) sin cambio funcional.
+
+### Ola 1 — Fundación del dominio de suscripciones (primer proveedor: Kite)
+- DDL: `001_sim_routing_map.sql`, `002_company_provider_credentials.sql`, `003_audit_log.sql`, `004_idempotency_keys.sql`, `005_lifecycle_change_audit.sql`.
+- `app/subscriptions/` con aggregate canónico + `SubscriptionFetcher` + `SubscriptionSearchService` + `SubscriptionOperationService`.
+- `app/providers/base.py` con Protocol + errores.
+- `app/providers/kite/` completo (client, dto, mappers, adapter) + tests Capa 1 y 2.
+- Endpoints `/v1/sims/**` funcionales sólo para SIMs de Kite.
+- Rate limit, circuit breaker, cache TTL, import-linter, métricas Prometheus en `/metrics`.
+
+### Ola 2 — Tele2 y Moabits
+- `app/providers/tele2/` y `app/providers/moabits/`.
+- Para cada uno: golden files, contract tests, mapeo de estados, decisión explícita sobre operaciones no soportadas.
+- Herramienta CLI para bootstrap del `SIM Routing Map` desde CSV.
+
+### Ola 3 — Endurecimiento operativo
+- Alertas configuradas sobre dashboards.
+- Runbook para: rotar credencial de proveedor, rotar `JWT_SECRET`, abrir/cerrar circuito manualmente, investigar fallas desde `request_id`.
+- OpenTelemetry si se adopta APM.
+
+### Rollback
+- Cada ola es un set de PRs. Ola 1 y Ola 2 son aditivas (nuevas tablas, nuevos endpoints). Rollback = revert y migración inversa.
+- Ola 0 toca código existente → feature flag por `settings.environment`: si `development`, mantener CORS `*` para facilitar dev; en `production` es una lista.
+
+---
+
+## Open Questions
+
+Capturadas durante el proceso; ninguna bloquea el diseño, algunas bloquean implementación:
+
+| # | Pregunta | Bloquea |
+|---|---|---|
+| OQ-1 | `SIM Routing Map`: ¿bootstrap por CSV de los proveedores o descubrimiento lazy? | Ola 2 |
+| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / `companyCodes` (Moabits). ¿Estructura exacta en `account_scope`? | Ola 1 |
+| OQ-3 | ¿Alguno de los proveedores ofrece sandbox para E2E? | Capa 5 de testing (opcional) |
+| OQ-4 | Stack de observabilidad: ¿Prometheus/Grafana propio, Datadog, New Relic? | Ola 3 |
+| OQ-5 | Retención legal de `audit_log` | Ola 3 |
+| OQ-6 | ¿Frontend ya envía `Idempotency-Key`? Si no, coordinar con frontend | Ola 1 |
+| OQ-7 | SLA contractual de cada proveedor — calibra timeouts y umbrales de circuit breaker | Ola 1 |
+| OQ-8 | Rotación de `FERNET_KEY`: ¿procedimiento definido? | Prod |
+| OQ-9 | ¿Superadmin global cross-tenant será necesario? Hoy no contemplado | Futuro |
+
+---
+
+## Next Steps (priorizado, accionable)
+
+**Orden sugerido de ejecución**:
+
+1. **Ola 0 — deuda bloqueante** *(días, 1 dev)*
+   1. [PR] Fix CORS explícito.
+   2. [PR] Hashear refresh tokens (+ migración).
+   3. [PR] Prefijar routers existentes con `/v1/`.
+   4. [PR] `structlog` + middleware `request_id`.
+   5. [PR] `DomainError` + handler global RFC 7807.
+   6. [PR] Reorganizar a paquetes por bounded context (refactor sin cambio funcional).
+   7. [PR] `import-linter` con contratos.
+
+2. **Ola 1 — primer proveedor (Kite)** *(semanas, 1–2 devs)*
+   1. [PR] SQL migrations: `001_sim_routing_map`, `002_company_provider_credentials`, `003_audit_log`, `004_idempotency_keys`, `005_lifecycle_change_audit`.
+   2. [PR] `app/providers/base.py` — Protocol + errores.
+   3. [PR] `app/subscriptions/` — aggregate + services + routers.
+   4. [PR] `app/providers/kite/` completo + golden files + contract tests.
+   5. [PR] Rate limit + circuit breaker + cache + métricas Prometheus + `/ready`.
+   6. [PR] Matriz RBAC + `audit_log` middleware.
+   7. [PR] Endpoints `companies/me/credentials` para alta/rotación por `manager`/`admin` y desactivación por `admin`.
+
+3. **Ola 2 — Tele2 + Moabits** *(semanas, 1 dev en paralelo)*
+   - Uno por sprint. Cada proveedor: adapter + tests + CLI bootstrap de routing map.
+
+4. **Ola 3 — endurecimiento** *(días)*
+   - Alertas, runbooks, OTel opcional.
+
+**Quick wins que se pueden aplicar hoy sin esperar la ola**:
+- Fix NFR-Sec3 (CORS) y NFR-Sec2 (refresh token hash) — **minutos de código, eliminan vulnerabilidades reales**.
+
+---
+
+## References
+
+| Recurso | Link |
+|---|---|
+| Context state canónico | [_context_state.json](_context_state.json) |
+| Phase 1 — análisis del código | [arch-analysis.md](arch-analysis.md) |
+| Phase 2 — modelo de dominio | [domain-model.md](domain-model.md) |
+| Phase 2 — context map | [context-map.mermaid](context-map.mermaid) |
+| Phase 3 — patrones y trade-offs | [patterns-decisions.md](patterns-decisions.md) |
+| Phase 4 — ADRs | [adrs/](adrs/) |
+| Phase 5 — C4 diagrams | [c4-context.mermaid](c4-context.mermaid), [c4-container.mermaid](c4-container.mermaid), [c4-component.mermaid](c4-component.mermaid) |
+| Phase 6 — NFR analysis | [nfr-analysis.md](nfr-analysis.md) |
+| Phase 7 — consistency check report | [_phase7_consistency_check.md](_phase7_consistency_check.md) |
+| **Provider Spec Gaps** | [PROVIDER_SPEC_GAPS.md](PROVIDER_SPEC_GAPS.md) — Unimplemented features, missing endpoints, and product decisions for future capability protocols |
+
+**Externos** (para referencia, no URLs inventadas — son estándares públicos bien conocidos):
+- DDD Context Mapping (Eric Evans, Vaughn Vernon) — para el patrón ACL.
+- C4 Model (Simon Brown).
+- RFC 7807 — Problem Details for HTTP APIs.
+- Google AIP-136 — custom methods / verbs con `:`.
+- OWASP API Security Top 10.

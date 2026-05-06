@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- April 22, 2021 -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:gm2mrptss1="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/reports/v1/services"
+    xmlns:gm2mrpts_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/reports/v1/types"
+    xmlns:ucf="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+    targetNamespace="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/reports/v1/services"
+    xmlns:p="http://www.w3.org/2001/XMLSchema">
+
+    <wsdl:import
+        namespace="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+        location="UNICA_API_SOAP_common_faults_v1_1.wsdl" />
+
+    <wsdl:types>
+        <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+            elementFormDefault="qualified">
+            <xsd:import
+                namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/reports/v1/types"
+                schemaLocation="UNICA_API_SOAP_Globalm2m_reports_types_v1_16.xsd" />
+        </xsd:schema>
+    </wsdl:types>
+
+    <wsdl:message name="GetDownloadReportListRequest">
+        <wsdl:part name="parameters" element="gm2mrpts_s1t:getDownloadReportList" />
+    </wsdl:message>
+
+    <wsdl:message name="GetDownloadReportListResponse">
+        <wsdl:part name="parameters"
+            element="gm2mrpts_s1t:getDownloadReportListResponse" />
+    </wsdl:message>
+
+    <wsdl:message name="GetDownloadReportLinkRequest">
+        <wsdl:part name="parameters" element="gm2mrpts_s1t:getDownloadReportLink"></wsdl:part>
+    </wsdl:message>
+    <wsdl:message name="GetDownloadReportLinkResponse">
+        <wsdl:part name="parameters"
+            element="gm2mrpts_s1t:getDownloadReportLinkResponse"></wsdl:part>
+    </wsdl:message>
+
+    <wsdl:message name="CreateDownloadReportRequest">
+        <wsdl:part name="parameters" element="gm2mrpts_s1t:createDownloadReport"></wsdl:part>
+    </wsdl:message>
+    <wsdl:message name="CreateDownloadReportResponse">
+        <wsdl:part name="parameters"
+            element="gm2mrpts_s1t:createDownloadReportResponse"></wsdl:part>
+    </wsdl:message>
+
+    <wsdl:message name="DeleteDownloadReportRequest">
+        <wsdl:part name="parameters" element="gm2mrpts_s1t:deleteDownloadReport"></wsdl:part>
+    </wsdl:message>
+    <wsdl:message name="DeleteDownloadReportResponse">
+        <wsdl:part name="parameters"
+            element="gm2mrpts_s1t:deleteDownloadReportResponse"></wsdl:part>
+    </wsdl:message>
+
+    <wsdl:portType name="GlobalM2MReportsPort">
+        <wsdl:operation name="getDownloadReportList">
+            <wsdl:input message="gm2mrptss1:GetDownloadReportListRequest" />
+            <wsdl:output message="gm2mrptss1:GetDownloadReportListResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+
+        <wsdl:operation name="getDownloadReportLink">
+            <wsdl:input message="gm2mrptss1:GetDownloadReportLinkRequest" />
+            <wsdl:output message="gm2mrptss1:GetDownloadReportLinkResponse" />
+            <wsdl:fault name="ClientException" message="ucf:ClientException" />
+            <wsdl:fault name="ServerException" message="ucf:ServerException" />
+        </wsdl:operation>
+   
+    <wsdl:operation name="createDownloadReport">
+        <wsdl:input message="gm2mrptss1:CreateDownloadReportRequest" />
+        <wsdl:output message="gm2mrptss1:CreateDownloadReportResponse" />
+        <wsdl:fault name="ClientException" message="ucf:ClientException" />
+        <wsdl:fault name="ServerException" message="ucf:ServerException" />
+    </wsdl:operation>
+
+    <wsdl:operation name="deleteDownloadReport">
+        <wsdl:input message="gm2mrptss1:DeleteDownloadReportRequest" />
+        <wsdl:output message="gm2mrptss1:DeleteDownloadReportResponse" />
+        <wsdl:fault name="ClientException" message="ucf:ClientException" />
+        <wsdl:fault name="ServerException" message="ucf:ServerException" />
+    </wsdl:operation>
+
+ </wsdl:portType>
+
+    <wsdl:binding name="GlobalM2MReportsSOAPBinding" type="gm2mrptss1:GlobalM2MReportsPort">
+        <soap:binding style="document"
+            transport="http://schemas.xmlsoap.org/soap/http" />
+
+        <wsdl:operation name="createDownloadReport">
+            <soap:operation soapAction="urn:createDownloadReport" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+
+        <wsdl:operation name="deleteDownloadReport">
+            <soap:operation soapAction="urn:deleteDownloadReport" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+
+        <wsdl:operation name="getDownloadReportList">
+            <soap:operation soapAction="urn:getDownloadReportList" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+
+        <wsdl:operation name="getDownloadReportLink">
+            <soap:operation soapAction="urn:getDownloadReportLink" />
+            <wsdl:input>
+                <soap:body use="literal" />
+            </wsdl:input>
+            <wsdl:output>
+                <soap:body use="literal" />
+            </wsdl:output>
+            <wsdl:fault name="ClientException">
+                <soap:fault name="ClientException" use="literal" />
+            </wsdl:fault>
+            <wsdl:fault name="ServerException">
+                <soap:fault name="ServerException" use="literal" />
+            </wsdl:fault>
+        </wsdl:operation>
+
+    </wsdl:binding>
+
+    <wsdl:service name="GlobalM2MReportsService">
+        <wsdl:port name="GlobalM2Mreports"
+            binding="gm2mrptss1:GlobalM2MReportsSOAPBinding">
+            <soap:address location="https://kiteplatform-api.telefonica.com:8010/services/SOAP/GlobalM2M/Reports/v1/r12" />
+        </wsdl:port>
+    </wsdl:service>
+
+</wsdl:definitions>

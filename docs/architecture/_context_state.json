@@ -1,0 +1,100 @@
+{
+  "project_type": "brownfield",
+  "depth": "comprehensive",
+  "focus_areas": [
+    "analysis",
+    "DDD",
+    "patterns",
+    "ADR",
+    "diagrams",
+    "NFR",
+    "security",
+    "migration"
+  ],
+  "system_description": "API que centraliza la consulta y operación de SIMs/suscripciones provenientes de tres proveedores externos (Kite, Tele2, Moabits) bajo un modelo de dominio canónico. Sólo proxy en tiempo real: no persiste el estado del SIM.",
+  "tech_constraints": {
+    "language": "Python 3.12+",
+    "framework": "FastAPI (async)",
+    "orm": "SQLAlchemy 2.0 async + asyncpg",
+    "http_client": "httpx",
+    "auth": "JWT propio (PyJWT + bcrypt) con RBAC; persistencia en Postgres",
+    "db": "PostgreSQL (gestionado en Supabase o equivalente)",
+    "deploy": "Docker (docker-compose ya presente)"
+  },
+  "team_size": "<5 ingenieros [ASSUMPTION]",
+  "scale_requirements": {
+    "sims_total": 134612,
+    "concurrent_users": "15-20",
+    "batch_jobs": "ninguno",
+    "mode": "real-time proxy (sin sincronización ni almacén canónico de SIMs)"
+  },
+  "decisions_made": [
+    "D1 → ADR-001: Modular Monolith",
+    "D2+D7 → ADR-005: HTTP sync + asyncio.gather + timeout/retry/circuit breaker + cache TTL ≤ 5s",
+    "D3 → ADR-002: Real-time proxy, SIM Routing Map only persisted artifact",
+    "D4 → ADR-007: REST + /v1/sims URL versioning + cursor pagination + RFC 7807",
+    "D5 → ADR-008: Reuse existing JWT + RBAC + Company scope + audit_log",
+    "D6 → ADR-009: Test pyramid + golden files + contract tests + fake providers",
+    "D8 → ADR-006: Encrypted credentials table (not JSONB)",
+    "D9 → ADR-004: Canonical error hierarchy → RFC 7807",
+    "D-transversal → ADR-003: ACL + Provider Adapter pattern + Provider Registry"
+  ],
+  "open_questions": [
+    "¿Qué proveedor se considera 'autoridad' cuando un mismo ICCID aparece en más de uno? (caso esperado: nunca, pero hay que definirlo)",
+    "¿Existe un identificador estable de cliente/cuenta por proveedor (Kite endCustomerId, Tele2 accountId, Moabits companyCodes) que se mapee a Company del sistema?",
+    "¿La carga inicial del mapping ICCID→provider la entregan los proveedores en CSV o se descubre llamando sus listados?",
+    "¿Qué SLA de uptime contractual exigen los proveedores externos? Determina la agresividad del circuit breaker"
+  ],
+  "assumptions": [
+    "team_size < 5 ingenieros",
+    "El sistema sólo se invoca desde un frontend interno autenticado; no hay clientes públicos",
+    "Las credenciales de cada proveedor son por-cuenta-empresa (cada Company puede tener sus propias credenciales para uno o más proveedores)",
+    "El operador del sistema acepta que la latencia de la API quede acotada por la latencia del proveedor más lento involucrado en una operación"
+  ],
+  "component_names": {
+    "api_service": "Subscriptions API",
+    "domain_aggregate_root": "Subscription",
+    "domain_value_object_consumption": "UsageSnapshot",
+    "domain_value_object_usage_metric": "UsageMetric",
+    "domain_value_object_status": "AdministrativeStatus",
+    "domain_value_object_presence": "ConnectivityPresence",
+    "domain_event": "StatusChange",
+    "anti_corruption_layer": "Provider Adapter",
+    "provider_interface": "SubscriptionProvider (Protocol)",
+    "provider_registry": "Provider Registry",
+    "routing_table": "SIM Routing Map",
+    "providers": [
+      "Kite",
+      "Tele2",
+      "Moabits"
+    ],
+    "auth_subject": "Profile",
+    "tenant": "Company"
+  },
+  "phases_to_run": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "delivery_batches": {
+    "batch_1": [
+      "Phase 1",
+      "Phase 2",
+      "Phase 3"
+    ],
+    "batch_2": [
+      "Phase 4",
+      "Phase 5",
+      "Phase 6"
+    ],
+    "batch_3": [
+      "Phase 7",
+      "Phase 8"
+    ]
+  }
+}

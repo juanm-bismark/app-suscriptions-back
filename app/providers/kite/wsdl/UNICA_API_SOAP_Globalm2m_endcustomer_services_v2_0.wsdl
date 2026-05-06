@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- March 27, 2023 -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+	xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+	xmlns:gm2mendcust_s1="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/endcustomer/v2/services"
+	xmlns:gm2mendcust_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/endcustomer/v2/types"
+	xmlns:ucf="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+	targetNamespace="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/endcustomer/v2/services">
+
+	<wsdl:import namespace="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+		location="UNICA_API_SOAP_common_faults_v1_1.wsdl"/>
+
+	<wsdl:types>
+		<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+			<xsd:import
+				namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/endcustomer/v2/types"
+				schemaLocation="UNICA_API_SOAP_Globalm2m_endcustomer_types_v2_0.xsd"/>
+		</xsd:schema>
+	</wsdl:types>
+
+	<wsdl:message name="CreateEndCustomerRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:createEndCustomer"/>
+	</wsdl:message>
+	<wsdl:message name="CreateEndCustomerResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:createEndCustomerResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="GetEndCustomerRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:getEndCustomer"/>
+	</wsdl:message>
+	<wsdl:message name="GetEndCustomerResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:getEndCustomerResponse"/>
+	</wsdl:message>
+	
+  <wsdl:message name="GetEndCustomersRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:getEndCustomers"/>
+	</wsdl:message>
+	<wsdl:message name="GetEndCustomersResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:getEndCustomersResponse"/>
+	</wsdl:message>
+
+	<wsdl:message name="ModifyEndCustomerRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:modifyEndCustomer"/>
+	</wsdl:message>
+	<wsdl:message name="ModifyEndCustomerResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:modifyEndCustomerResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="DeleteEndCustomerRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:deleteEndCustomer"/>
+	</wsdl:message>
+	<wsdl:message name="DeleteEndCustomerResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:deleteEndCustomerResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="DeactivateEndCustomerRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:deactivateEndCustomer"/>
+	</wsdl:message>
+	<wsdl:message name="DeactivateEndCustomerResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:deactivateEndCustomerResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="ActivateEndCustomerRequest">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:activateEndCustomer"/>
+	</wsdl:message>
+	<wsdl:message name="ActivateEndCustomerResponse">
+		<wsdl:part name="parameters" element="gm2mendcust_s1t:activateEndCustomerResponse"/>
+	</wsdl:message>
+	
+	<wsdl:portType name="GlobalM2MEndCustomerPort">
+		<wsdl:operation name="createEndCustomer">
+			<wsdl:input message="gm2mendcust_s1:CreateEndCustomerRequest"/>
+			<wsdl:output message="gm2mendcust_s1:CreateEndCustomerResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="getEndCustomer">
+			<wsdl:input message="gm2mendcust_s1:GetEndCustomerRequest"/>
+			<wsdl:output message="gm2mendcust_s1:GetEndCustomerResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="getEndCustomers">
+			<wsdl:input message="gm2mendcust_s1:GetEndCustomersRequest"/>
+			<wsdl:output message="gm2mendcust_s1:GetEndCustomersResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>			
+		<wsdl:operation name="modifyEndCustomer">
+			<wsdl:input message="gm2mendcust_s1:ModifyEndCustomerRequest"/>
+			<wsdl:output message="gm2mendcust_s1:ModifyEndCustomerResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="deleteEndCustomer">
+			<wsdl:input message="gm2mendcust_s1:DeleteEndCustomerRequest"/>
+			<wsdl:output message="gm2mendcust_s1:DeleteEndCustomerResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="deactivateEndCustomer">
+			<wsdl:input message="gm2mendcust_s1:DeactivateEndCustomerRequest"/>
+			<wsdl:output message="gm2mendcust_s1:DeactivateEndCustomerResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>		
+		<wsdl:operation name="activateEndCustomer">
+			<wsdl:input message="gm2mendcust_s1:ActivateEndCustomerRequest"/>
+			<wsdl:output message="gm2mendcust_s1:ActivateEndCustomerResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+	</wsdl:portType>
+
+	<wsdl:binding name="GlobalM2MEndCustomerSOAPBinding" type="gm2mendcust_s1:GlobalM2MEndCustomerPort">
+		<soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+		<wsdl:operation name="createEndCustomer">
+			<soap:operation soapAction="urn:createEndCustomer"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+			<wsdl:operation name="getEndCustomer">
+			<soap:operation soapAction="urn:getEndCustomer"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="getEndCustomers">
+			<soap:operation soapAction="urn:getEndCustomers"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>		
+		<wsdl:operation name="modifyEndCustomer">
+			<soap:operation soapAction="urn:modifyEndCustomer"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="deleteEndCustomer">
+			<soap:operation soapAction="urn:deleteEndCustomer"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>		
+		<wsdl:operation name="deactivateEndCustomer">
+			<soap:operation soapAction="urn:deactivateEndCustomer"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>	
+		<wsdl:operation name="activateEndCustomer">
+			<soap:operation soapAction="urn:activateEndCustomer"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>	
+	</wsdl:binding>
+
+	<wsdl:service name="GlobalM2MEndCustomerService">
+		<wsdl:port name="GlobalM2MEndCustomer" binding="gm2mendcust_s1:GlobalM2MEndCustomerSOAPBinding">
+			<soap:address location="https://kiteplatform-api.telefonica.com:8010/services/SOAP/GlobalM2M/EndCustomers/v2/r12"/>
+		</wsdl:port>
+	</wsdl:service>
+
+</wsdl:definitions>

@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- November 09, 2023 -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+	xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+	xmlns:gm2muser_s1="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/user/v3/services"
+	xmlns:gm2muser_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/user/v3/types"
+	xmlns:ucf="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+	targetNamespace="http://www.telefonica.com/wsdl/UNICA/SOAP/Globalm2m/user/v3/services">
+
+	<wsdl:import namespace="http://www.telefonica.com/wsdl/UNICA/SOAP/common/v1/faults"
+		location="UNICA_API_SOAP_common_faults_v1_1.wsdl"/>
+
+	<wsdl:types>
+		<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+			<xsd:import
+				namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/user/v3/types"
+				schemaLocation="UNICA_API_SOAP_Globalm2m_user_types_v3_0.xsd"/>
+		</xsd:schema>
+	</wsdl:types>
+
+	<wsdl:message name="CreateUserRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:createUser"/>
+	</wsdl:message>
+	<wsdl:message name="CreateUserResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:createUserResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="DeleteUserRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:deleteUser"/>
+	</wsdl:message>
+	<wsdl:message name="DeleteUserResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:deleteUserResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="ModifyUserRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:modifyUser"/>
+	</wsdl:message>
+	<wsdl:message name="ModifyUserResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:modifyUserResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="GetUsersRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:getUsers"/>
+	</wsdl:message>
+	<wsdl:message name="GetUsersResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:getUsersResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="BlockUserRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:blockUser"/>
+	</wsdl:message>
+	<wsdl:message name="BlockUserResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:blockUserResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="UnblockUserRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:unblockUser"/>
+	</wsdl:message>
+	<wsdl:message name="UnblockUserResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:unblockUserResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="GetRolesRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:getRoles"/>
+	</wsdl:message>
+	<wsdl:message name="GetRolesResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:getRolesResponse"/>
+	</wsdl:message>
+	
+	<wsdl:message name="ResetPasswordRequest">
+		<wsdl:part name="parameters" element="gm2muser_s1t:resetPassword"/>
+	</wsdl:message>
+	<wsdl:message name="ResetPasswordResponse">
+		<wsdl:part name="parameters" element="gm2muser_s1t:resetPasswordResponse"/>
+	</wsdl:message>
+	
+	<wsdl:portType name="GlobalM2MUserPort">
+		<wsdl:operation name="createUser">
+			<wsdl:input message="gm2muser_s1:CreateUserRequest"/>
+			<wsdl:output message="gm2muser_s1:CreateUserResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>		
+		<wsdl:operation name="deleteUser">
+			<wsdl:input message="gm2muser_s1:DeleteUserRequest"/>
+			<wsdl:output message="gm2muser_s1:DeleteUserResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="modifyUser">
+			<wsdl:input message="gm2muser_s1:ModifyUserRequest"/>
+			<wsdl:output message="gm2muser_s1:ModifyUserResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="getUsers">
+			<wsdl:input message="gm2muser_s1:GetUsersRequest"/>
+			<wsdl:output message="gm2muser_s1:GetUsersResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="blockUser">
+			<wsdl:input message="gm2muser_s1:BlockUserRequest"/>
+			<wsdl:output message="gm2muser_s1:BlockUserResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="unblockUser">
+			<wsdl:input message="gm2muser_s1:UnblockUserRequest"/>
+			<wsdl:output message="gm2muser_s1:UnblockUserResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="getRoles">
+			<wsdl:input message="gm2muser_s1:GetRolesRequest"/>
+			<wsdl:output message="gm2muser_s1:GetRolesResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+		<wsdl:operation name="resetPassword">
+			<wsdl:input message="gm2muser_s1:ResetPasswordRequest"/>
+			<wsdl:output message="gm2muser_s1:ResetPasswordResponse"/>
+			<wsdl:fault name="ClientException" message="ucf:ClientException"/>
+			<wsdl:fault name="ServerException" message="ucf:ServerException"/>
+		</wsdl:operation>
+	</wsdl:portType>
+
+	<wsdl:binding name="GlobalM2MUserSOAPBinding" type="gm2muser_s1:GlobalM2MUserPort">
+		<soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+		<wsdl:operation name="createUser">
+			<soap:operation soapAction="urn:createUser"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="deleteUser">
+			<soap:operation soapAction="urn:deleteUser"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="modifyUser">
+			<soap:operation soapAction="urn:modifyUser"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="getUsers">
+			<soap:operation soapAction="urn:getUsers"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="blockUser">
+			<soap:operation soapAction="urn:blockUser"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="unblockUser">
+			<soap:operation soapAction="urn:unblockUser"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="getRoles">
+			<soap:operation soapAction="urn:getRoles"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+		<wsdl:operation name="resetPassword">
+			<soap:operation soapAction="urn:resetPassword"/>
+			<wsdl:input>
+				<soap:body use="literal"/>
+			</wsdl:input>
+			<wsdl:output>
+				<soap:body use="literal"/>
+			</wsdl:output>
+			<wsdl:fault name="ClientException">
+				<soap:fault name="ClientException" use="literal"/>
+			</wsdl:fault>
+			<wsdl:fault name="ServerException">
+				<soap:fault name="ServerException" use="literal"/>
+			</wsdl:fault>
+		</wsdl:operation>
+	</wsdl:binding>
+
+	<wsdl:service name="GlobalM2MUserService">
+		<wsdl:port name="GlobalM2MUser" binding="gm2muser_s1:GlobalM2MUserSOAPBinding">
+			<soap:address location="https://kiteplatform-api.telefonica.com:8010/services/SOAP/GlobalM2M/Users/v3/r12"/>
+		</wsdl:port>
+	</wsdl:service>
+
+</wsdl:definitions>

@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- July 01, 2019 -->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v2/types"
+    xmlns:uct="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+    targetNamespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v2/types"
+    elementFormDefault="qualified" attributeFormDefault="unqualified">
+
+    <xsd:import namespace="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+        schemaLocation="UNICA_API_SOAP_common_types_v1_1.xsd" />
+
+    <xsd:simpleType name="myStr">
+        <xsd:restriction base="xsd:string">
+            <xsd:minLength value="1" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <xsd:complexType name="ContactType">
+        <xsd:sequence>
+            <xsd:element name="firstName" type="tns:myStr" />
+            <xsd:element name="lastName" type="tns:myStr" />
+            <xsd:element name="phone" type="uct:E164Type" />
+            <xsd:element name="email" type="uct:EmailAddressType" />
+            <xsd:element name="mobile" type="uct:E164Type" />
+            <xsd:element name="fax" type="uct:E164Type"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="ContactUpdateType">
+        <xsd:sequence>
+            <xsd:element name="firstName" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="lastName" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="email" type="uct:EmailAddressType"
+                minOccurs="0" />
+            <xsd:element name="phone" type="uct:E164Type"
+                minOccurs="0" />
+            <xsd:element name="mobile" type="uct:E164Type"
+                minOccurs="0" />
+            <xsd:element name="fax" type="uct:E164Type"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:simpleType name="StatusType">
+        <xsd:restriction base="xsd:string">
+            <xsd:enumeration value="Active" />
+            <xsd:enumeration value="Inactive" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <xsd:complexType name="ShippingAddressType">
+        <xsd:sequence>
+            <xsd:element name="line1" type="tns:myStr" />
+            <xsd:element name="line2" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="city" type="tns:myStr" />
+            <xsd:element name="state" type="tns:myStr" />
+            <xsd:element name="country" type="tns:myStr" />
+            <xsd:element name="postalCode" type="tns:myStr" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="ShippingAddressUpdateType">
+        <xsd:sequence>
+            <xsd:element name="line1" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="line2" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="city" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="state" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="country" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="postalCode" type="xsd:string"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="BillingAccountType">
+        <xsd:sequence>
+            <xsd:element name="billingAccountName" type="xsd:string" />
+            <xsd:element name="billingAccountId" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="fiscalNumber" type="xsd:string" />
+            <xsd:element name="billable" type="xsd:boolean" />
+            <xsd:element name="autoPrebillIssue" type="xsd:boolean" />
+            <xsd:element name="billAccIDinSPCRM" type="xsd:string" />
+            <xsd:element name="address" type="tns:ShippingAddressType"
+                minOccurs="0" />
+            <xsd:element name="addressIsCompanyAddress"
+                type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="contact" type="tns:ContactType"
+                minOccurs="0" />
+            <xsd:element name="contactIsPrimaryContact"
+                type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="paymentMethod" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="paymentData" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="commercialGroup" type="xsd:string"
+                maxOccurs="unbounded" minOccurs="0" />
+            <xsd:element name="subscriptions" type="xsd:unsignedInt" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="BillingAccountUpdateType">
+        <xsd:sequence>
+            <xsd:element name="billingAccountName" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="fiscalNumber" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="billable" type="xsd:boolean"
+                minOccurs="0" />
+            <xsd:element name="autoPrebillIssue" type="xsd:boolean"
+                minOccurs="0" />
+            <xsd:element name="billAccIDinSPCRM" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="address"
+                type="tns:ShippingAddressUpdateType" minOccurs="0" />
+            <xsd:element name="addressIsCompanyAddress"
+                type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="contact" type="tns:ContactUpdateType"
+                minOccurs="0" />
+            <xsd:element name="contactIsPrimaryContact"
+                type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="paymentMethod" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="paymentData" type="xsd:string"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="BillingAccountCreationType">
+        <xsd:sequence>
+            <xsd:element name="billingAccountName" type="tns:myStr" />
+            <xsd:element name="fiscalNumber" type="tns:myStr" />
+            <xsd:element name="billable" type="xsd:boolean" />
+            <xsd:element name="autoPrebillIssue" type="xsd:boolean" />
+            <xsd:element name="billAccIDinSPCRM" type="tns:myStr" />
+            <xsd:element name="address" type="tns:ShippingAddressType"
+                minOccurs="0" />
+            <xsd:element name="addressIsCompanyAddress"
+                type="xsd:boolean" />
+            <xsd:element name="contact" type="tns:ContactType"
+                minOccurs="0" />
+            <xsd:element name="contactIsPrimaryContact"
+                type="xsd:boolean" />
+            <xsd:element name="paymentMethod" type="xsd:string"
+                minOccurs="0" />
+            <xsd:element name="paymentData" type="xsd:string"
+                minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- StaticAddressingType -->
+    <xsd:complexType name="StaticAddressingType">
+        <xsd:choice>
+            <xsd:element name="ipv4" type="tns:Ipv4AddressingType" />
+            <xsd:element name="ipv6" type="tns:Ipv6AddressingType" />
+        </xsd:choice>
+    </xsd:complexType>
+
+    <!-- DynamicAddressingType -->
+    <xsd:complexType name="DynamicAddressingType">
+        <xsd:sequence>
+            <xsd:element name="ipType" type="tns:IpType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- IpType -->
+    <xsd:simpleType name="IpType">
+        <xsd:restriction base="xsd:string">
+            <xsd:enumeration value="ipv4" />
+            <xsd:enumeration value="ipv6" />
+            <xsd:enumeration value="ipv4v6" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <!-- Ipv4AddressingType -->
+    <xsd:complexType name="Ipv4AddressingType">
+        <xsd:sequence>
+            <xsd:element name="network" type="uct:Ipv4AddressType" />
+            <xsd:element name="mask" type="tns:Ipv4MaskType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- Ipv6AddressingType -->
+    <xsd:complexType name="Ipv6AddressingType">
+        <xsd:sequence>
+            <xsd:element name="network" type="uct:Ipv6AddressType" />
+            <xsd:element name="mask" type="tns:Ipv6MaskType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <!-- Ipv4MaskType -->
+    <xsd:simpleType name="Ipv4MaskType">
+        <xsd:restriction base="xsd:string">
+            <xsd:pattern
+                value="(255).(([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]).){2}(([1-9]?[0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <!-- Ipv6MaskType -->
+    <xsd:simpleType name="Ipv6MaskType">
+        <xsd:restriction base="xsd:string">
+            <xsd:pattern
+                value="/(1(([0-2][0-8])|([0-1][9]))|([1-9][0-9])|[1-9])" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+</xsd:schema>

@@ -1,0 +1,7 @@
+python3 -m uvicorn app.main:app --reload
+
+python3 -m pip install -r requirements.txt
+
+docker compose exec db psql -U postgres -d app_suscripciones
+
+docker compose exec db psql -U postgres -d app_suscripciones -c "SELECT * FROM profiles;"

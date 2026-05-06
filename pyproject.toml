@@ -42,6 +42,7 @@ testpaths = [
   "app",
 ]
 python_files = ["test_*.py", "*_test.py"]
+asyncio_mode = "auto"
 markers = [
   "integration: tests that hit the running API and external services",
 ]
@@ -72,3 +73,39 @@ module = [
   "app.application.*",
 ]
 disallow_untyped_defs = false
+
+# ── Import boundaries (ADR-001) ────────────────────────────────────────────────
+# Run: lint-imports
+[tool.importlinter]
+root_packages = ["app"]
+
+[[tool.importlinter.contracts]]
+name = "identity and tenancy must not import from each other's routers"
+type = "forbidden"
+source_modules = ["app.identity"]
+forbidden_modules = ["app.tenancy.routers"]
+
+[[tool.importlinter.contracts]]
+name = "tenancy routers must not import from identity routers"
+type = "forbidden"
+source_modules = ["app.tenancy"]
+forbidden_modules = ["app.identity.routers"]
+
+# --- Forward-looking contracts: uncomment in Ola 1 once app.subscriptions and app.providers exist ---
+#
+# [[tool.importlinter.contracts]]
+# name = "subscriptions must not import concrete provider adapters"
+# type = "forbidden"
+# source_modules = ["app.subscriptions"]
+# forbidden_modules = ["app.providers.kite", "app.providers.tele2", "app.providers.moabits"]
+#
+# [[tool.importlinter.contracts]]
+# name = "provider adapters must be independent of each other"
+# type = "independence"
+# modules = ["app.providers.kite", "app.providers.tele2", "app.providers.moabits"]
+#
+# [[tool.importlinter.contracts]]
+# name = "identity and tenancy must not import from subscriptions or providers"
+# type = "forbidden"
+# source_modules = ["app.identity", "app.tenancy"]
+# forbidden_modules = ["app.subscriptions", "app.providers"]

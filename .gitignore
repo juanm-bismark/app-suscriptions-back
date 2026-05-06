@@ -73,6 +73,7 @@ db.sqlite3
 db.sqlite3-journal
 dev.db
 *.sql
+!migrations/*.sql
 *.backup
 
 
@@ -124,3 +125,6 @@ docker-compose.override.yml
 # OS
 .DS_Store
 Thumbs.db
+
+
+.import_linter_cache

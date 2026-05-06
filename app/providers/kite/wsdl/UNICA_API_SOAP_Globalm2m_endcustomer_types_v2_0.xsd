@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- April 10, 2023 -->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/endcustomer/v2/types"
+    xmlns:uct="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+    xmlns:gm2m_s1t="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+    targetNamespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/endcustomer/v2/types"
+    attributeFormDefault="unqualified" elementFormDefault="qualified">
+
+    <xsd:import namespace="http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+        schemaLocation="UNICA_API_SOAP_common_types_v1_1.xsd" />
+    <xsd:import
+        namespace="http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/v1/types"
+        schemaLocation="UNICA_API_SOAP_Globalm2m_types_v1_1.xsd" />
+
+    <xsd:simpleType name="ThresholdNominalType">
+        <xsd:restriction base="xsd:int">
+            <xsd:minInclusive value="1" />
+            <xsd:maxInclusive value="999999" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <xsd:simpleType name="ThresholdPercentageType">
+        <xsd:restriction base="xsd:int">
+            <xsd:minInclusive value="1" />
+            <xsd:maxInclusive value="100" />
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <xsd:complexType name="EndCustomerType">
+        <xsd:sequence>
+            <xsd:element name="name" type="gm2m_s1t:myStr" minOccurs="0" />
+            <xsd:element name="status" type="gm2m_s1t:StatusType" minOccurs="0" />
+            <xsd:element name="defaultLanguage" type="gm2m_s1t:myStr" />
+            <xsd:element name="companyType" type="gm2m_s1t:myStr" minOccurs="0" />
+            <xsd:element name="sector" type="gm2m_s1t:myStr" minOccurs="0" />
+            <xsd:element name="companyAddress" type="gm2m_s1t:ShippingAddressType" />
+            <xsd:element name="primaryContact" type="gm2m_s1t:ContactType" />
+            <xsd:element name="firstAdditionalContact" type="gm2m_s1t:ContactType"  minOccurs="0" />
+            <xsd:element name="secondAdditionalContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+            <xsd:element name="thirdAdditionalContact" type="gm2m_s1t:ContactType"  minOccurs="0" />
+            <xsd:element name="fourthAdditionalContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+            <xsd:element name="billingAddress" type="gm2m_s1t:ShippingAddressType" />
+            <xsd:element name="shippingAddress" type="gm2m_s1t:ShippingAddressType" />
+            <xsd:element name="customField1" type="xsd:string" minOccurs="0" />
+            <xsd:element name="customField2" type="xsd:string" minOccurs="0" />
+            <xsd:element name="customField3" type="xsd:string" minOccurs="0" />
+            <xsd:element name="customField4" type="xsd:string" minOccurs="0" />
+            <xsd:element name="authorizationFlowEnabled" type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="authorizationFlowDelegated" type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="authorizationFlowThresholdPercentageEnabled" type="xsd:boolean" minOccurs="0" />
+            <xsd:element name="authorizationFlowThresholdNominal" type="tns:ThresholdNominalType" minOccurs="0" />
+            <xsd:element name="authorizationFlowThresholdPercentage" type="tns:ThresholdPercentageType" minOccurs="0" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="EndCustomerBasicInfoType">
+        <xsd:sequence>
+            <xsd:element name="endCustomerID" type="xsd:string" />
+            <xsd:element name="name" type="xsd:string" />
+            <xsd:element name="status" type="gm2m_s1t:StatusType" />
+        </xsd:sequence>
+    </xsd:complexType>
+
+
+    <!-- createEndCustomer operation -->
+    <xsd:element name="createEndCustomer" type="tns:EndCustomerType">
+    </xsd:element>
+
+    <xsd:element name="createEndCustomerResponse">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomerID" type="xsd:string" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <!-- getEndCustomers operation -->
+    <xsd:element name="getEndCustomers">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="startIndex" type="xsd:int" minOccurs="0" />
+                <xsd:element name="maxBatchSize" type="xsd:int" minOccurs="0" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+
+    <xsd:element name="getEndCustomersResponse">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomer" type="tns:EndCustomerBasicInfoType" minOccurs="0" maxOccurs="unbounded" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+
+    <!-- getEndCustomer operation -->
+    <xsd:element name="getEndCustomer">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomerID" type="gm2m_s1t:myStr" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="getEndCustomerResponse" type="tns:EndCustomerType">
+    </xsd:element>
+
+    <!-- modifyEndCustomer operation -->
+    <xsd:element name="modifyEndCustomer">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomerID" type="gm2m_s1t:myStr" />
+                <xsd:element name="name" type="xsd:string" minOccurs="0" />
+                <xsd:element name="defaultLanguage" type="xsd:string" minOccurs="0" />
+                <xsd:element name="companyType" type="xsd:string" minOccurs="0" />
+                <xsd:element name="sector" type="xsd:string" minOccurs="0" />
+                <xsd:element name="companyAddress" type="gm2m_s1t:ShippingAddressType" minOccurs="0" />
+                <xsd:element name="primaryContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+                <xsd:element name="firstAdditionalContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+                <xsd:element name="secondAdditionalContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+                <xsd:element name="thirdAdditionalContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+                <xsd:element name="fourthAdditionalContact" type="gm2m_s1t:ContactType" minOccurs="0" />
+                <xsd:element name="billingAddress" type="gm2m_s1t:ShippingAddressType" minOccurs="0" />
+                <xsd:element name="shippingAddress" type="gm2m_s1t:ShippingAddressType" minOccurs="0" />
+                <xsd:element name="customField1" type="xsd:string" minOccurs="0" />
+                <xsd:element name="customField2" type="xsd:string" minOccurs="0" />
+                <xsd:element name="customField3" type="xsd:string" minOccurs="0" />
+                <xsd:element name="customField4" type="xsd:string" minOccurs="0" />
+                <xsd:element name="authorizationFlowEnabled" type="xsd:boolean" minOccurs="0" />
+                <xsd:element name="authorizationFlowDelegated" type="xsd:boolean" minOccurs="0" />
+                <xsd:element name="authorizationFlowThresholdPercentageEnabled" type="xsd:boolean" minOccurs="0" />
+                <xsd:element name="authorizationFlowThresholdNominal" type="tns:ThresholdNominalType" minOccurs="0" />
+                <xsd:element name="authorizationFlowThresholdPercentage" type="tns:ThresholdPercentageType" minOccurs="0" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+
+    <xsd:element name="modifyEndCustomerResponse">
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- deleteEndCustomer operation -->
+    <xsd:element name="deleteEndCustomer">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomerID" type="gm2m_s1t:myStr" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="deleteEndCustomerResponse">
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- deactivateEndCustomer operation -->
+    <xsd:element name="deactivateEndCustomer">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomerID" type="gm2m_s1t:myStr" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="deactivateEndCustomerResponse">
+        <xsd:complexType />
+    </xsd:element>
+
+    <!-- activateEndCustomer operation -->
+    <xsd:element name="activateEndCustomer">
+        <xsd:complexType>
+            <xsd:sequence>
+                <xsd:element name="endCustomerID" type="gm2m_s1t:myStr" />
+            </xsd:sequence>
+        </xsd:complexType>
+    </xsd:element>
+
+    <xsd:element name="activateEndCustomerResponse">
+        <xsd:complexType />
+    </xsd:element>
+
+</xsd:schema>
