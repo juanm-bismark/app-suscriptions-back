@@ -35,7 +35,7 @@ Esta sección es **normativa**: cuando aparezca uno de estos términos en códig
 | **ConsumptionLimit** | Límite configurado y comportamiento al excederse: `value`, `unit`, `enabled`, `trafficCut: bool`. | Kite anidado en `consumption*` · Tele2 `overageLimitOverride` · Moabits `dataLimit/smsLimit` |
 | **CommercialPlan** | Plan/tarifa asignado: `code`, `name`, `start_date`, `end_date`. | Kite `commercialGroup` · Tele2 `ratePlan` + `communicationPlan` · Moabits `product_*` + `planStartDate/planExpirationDate` |
 | **NormalizedSubscriptionView** | Bloques de respuesta pensados para frontend: `identity`, `status`, `plan`, `customer`, `network`, `hardware`, `services`, `limits`, `dates`, `custom_fields`. Se deriva en el borde HTTP; no se persiste. | Traduce campos útiles de `provider_fields` a una estructura homogénea. |
-| **detail_level** | Nivel de completitud de una fila HTTP: `summary` cuando viene de un endpoint liviano, `detail` cuando fue enriquecida con un endpoint de detalle. Es derivado en el router, no campo persistido del dataclass de dominio. | Tele2 `Search Devices` vs `Get Device Details`; Moabits v1 `simList` vs enrichment v2 opcional. |
+| **detail_level** | Nivel de completitud de una fila HTTP: `summary` cuando viene de un endpoint liviano, `detail` cuando fue enriquecida con un endpoint de detalle. Es derivado en el router, no campo persistido del dataclass de dominio. | Tele2 `Search Devices` vs `Get Device Details`; Moabits v1 `simList` + enrichment v2 degradable. |
 | **StatusChange** | Evento histórico de cambio de estado: `from_state`, `to_state`, `at`, `automatic: bool`, `reason`, `actor`. Sólo Kite expone histórico nativo; los demás generarán este evento sintético si se sincroniza alguna vez. | Kite `getStatusHistory` |
 | **ControlOperation (Purge)** | Operación canónica de control sobre una SIM que el sistema expone para acciones administrativas o de red. En la práctica un único comando canónico (nombrado `purge` en el dominio) se mapea a distintas APIs proveedoras que por motivos históricos usan verbos diferentes (`networkReset`, `Edit Device {status: PURGED}`, rutas dedicadas de purga). Parámetros típicos: `iccid`, `technologies?`, `idempotency_key?`. | Kite `networkReset(network2g3g, network4g)` · Tele2 `Edit Device Details {status: PURGED}` · Moabits `PUT /api/sim/purge/` |
 | **Provider** | Origen externo de los datos. Enum: `KITE`, `TELE2`, `MOABITS`. Toda Subscription tiene exactamente un Provider asignado. | n/a (es del modelo canónico) |
@@ -226,10 +226,17 @@ listado base y enriquece como máximo las primeras 5 SIMs de la página con
 restantes se devuelven como `detail_level=summary`.
 
 Para Moabits, `GET /v1/sims?provider=moabits` usa v1
-`/api/company/simList/{companyCode}` como listado base. Por defecto las
-filas son `summary`. Si `MOABITS_V2_ENRICHMENT_ENABLED=true`, el adapter
-llama v2 detail/connectivity para los ICCIDs de la página y marca cada
-fila como `detail` sólo cuando v2 detail respondió para ese ICCID.
+`/api/company/simList/{companyCode}` como listado base y, por defecto,
+intenta enriquecer la página con API v2. El adapter llama v2
+detail/connectivity para los ICCIDs de la página (`/api/v2/sim/{iccids}` y
+`/api/v2/sim/connectivity/{iccids}`) cuando
+`MOABITS_V2_ENRICHMENT_ENABLED=true`, que es el default operativo.
+
+Las filas se marcan como `detail` sólo cuando v2 detail respondió para ese
+ICCID; si v2 falla o no retorna detalle, la fila sigue disponible como
+`summary` con los datos v1. Los fallos de v2 no convierten el listado en
+`partial=true`: se reportan por `provider_fields.enrichment_status` y logs
+estructurados.
 
 ---
 

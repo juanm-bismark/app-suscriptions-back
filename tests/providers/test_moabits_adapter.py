@@ -768,9 +768,21 @@ async def test_native_status_preserved_alongside_unified_status(
     assert sub.status == AdministrativeStatus.SUSPENDED
 
 
+@pytest.fixture
+def disable_moabits_v2(monkeypatch):
+    from app.config import get_settings as _get_settings
+
+    monkeypatch.setenv("MOABITS_V2_ENRICHMENT_ENABLED", "false")
+    _get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        _get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_list_subscriptions_ignores_modified_date_filters(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     httpx_mock.add_response(
         url="https://api.moabits.test/api/company/simList/ACME",
@@ -796,7 +808,7 @@ async def test_list_subscriptions_ignores_modified_date_filters(
 
 @pytest.mark.asyncio
 async def test_list_subscriptions_tolerates_string_status_rows(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
@@ -819,7 +831,7 @@ async def test_list_subscriptions_tolerates_string_status_rows(
 
 @pytest.mark.asyncio
 async def test_list_subscriptions_uses_status_rows_without_detail_call(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8910300000001880253"
     httpx_mock.add_response(
@@ -860,7 +872,7 @@ async def test_list_subscriptions_uses_status_rows_without_detail_call(
 
 @pytest.mark.asyncio
 async def test_list_subscriptions_stops_fetching_company_codes_after_page_is_full(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     creds = {**moabits_creds, "company_codes": ["ACME", "NEXT"]}
     rows = [
@@ -967,7 +979,7 @@ def _v2_detail_payload(iccids: list[str]) -> dict:
                 {
                     "iccid": iccid,
                     "msisdn": f"3460000{iccid[-4:]}",
-                    "imsi": "234107959380675",
+                    "imsi": "22-1",
                     "imsiNumber": "234107959380675",
                     "imei": "8652090794108",
                     "product_id": 22499,
@@ -1003,7 +1015,7 @@ def _v2_connectivity_payload(iccids: list[str]) -> list[dict]:
             "mcc": "732",
             "mnc": "101",
             "imsi": "22-01",
-            "usageKB": 38,
+            "usageKB": "49",
             "rat": "4G",
             "privateIp": "10.30.143.178",
             "chargeTowards": "BALANCE",
@@ -1050,6 +1062,12 @@ async def test_list_subscriptions_v2_enrichment_full(
     assert pf["product_id"] == 22499
     assert pf["client_name"] == "Bismark Colombia"
     assert pf["company_code"] == "48123"
+    assert pf["imsi_raw"] == "22-1"
+    assert pf["imsi_number"] == "234107959380675"
+    assert pf["data_limit_mb"] == 40
+    assert pf["sms_limit_mo"] == 1
+    assert pf["sms_limit_mt"] == 1
+    assert pf["sms_limit"] == 2
     # v1 service flags & active services list
     assert pf["data_service"] == "Enabled"
     assert pf["sms_service"] == "Enabled"
@@ -1063,6 +1081,9 @@ async def test_list_subscriptions_v2_enrichment_full(
     assert pf["mnc"] == "101"
     assert pf["session_started_at"] == "2026-05-07T09:59:51.000+00:00"
     assert pf["data_session_id"] == "session;1776845235;933530"
+    assert pf["usage_kb"] == 49
+    assert pf["charge_towards"] == "BALANCE"
+    assert pf["connectivity_imsi_raw"] == "22-01"
     # Enrichment metadata
     assert pf["enrichment_status"] == "full"
     assert pf["detail_enriched"] is True
@@ -1070,9 +1091,13 @@ async def test_list_subscriptions_v2_enrichment_full(
 
 @pytest.mark.asyncio
 async def test_list_subscriptions_v2_disabled_does_not_call_v2(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, monkeypatch
 ) -> None:
-    """Default flag off: no v2 endpoint hit, output identical to legacy listing."""
+    """Explicit flag off: no v2 endpoint hit, output identical to legacy listing."""
+    from app.config import get_settings as _get_settings
+
+    monkeypatch.setenv("MOABITS_V2_ENRICHMENT_ENABLED", "false")
+    _get_settings.cache_clear()
     iccid = "8910300000046595692"
     httpx_mock.add_response(
         url="https://api.moabits.test/api/company/simList/ACME",

@@ -751,6 +751,22 @@ class Tele2Adapter(BaseAdapter):
         limit: int,
         filters: SubscriptionSearchFilters | None = None,
     ) -> tuple[list[Subscription], str | None]:
+        return await self._call_with_breaker(
+            self._list_subscriptions_impl,
+            credentials,
+            cursor=cursor,
+            limit=limit,
+            filters=filters,
+        )
+
+    async def _list_subscriptions_impl(
+        self,
+        credentials: dict[str, Any],
+        *,
+        cursor: str | None,
+        limit: int,
+        filters: SubscriptionSearchFilters | None = None,
+    ) -> tuple[list[Subscription], str | None]:
         """List devices on the Tele2 account these credentials authenticate to.
 
         Native pagination: `pageNumber` (1-based) + `pageSize` (1..50).

@@ -15,6 +15,28 @@ Actualización basada en Swagger Orion API 2.0.0 (`https://www.api.myorion.co/ap
 - El endpoint `GET /api/v2/product/product-list` no está definido en este Swagger. Los productos asociados a una compañía aparecen embebidos dentro de la respuesta de `getCompanyInfo` en el campo `products[]`; por tanto, se mapean como parte de ese esquema y no como operación independiente.
 - Los endpoints de listado de SIMs (`/api/company/simList/{companyCodes}` y `/api/company/simListDetail/{companyCodes}`) documentan únicamente el parámetro path `companyCodes`. No hay filtros públicos `modified_since`, `modified_till`, `modifiedSince`, `modifiedTill`, `startLastStateChangeDate`, ni equivalentes en el Swagger de Moabits/Orion 2.0.0.
 
+## Comportamiento actual del backend para `GET /v1/sims?provider=moabits`
+
+El listado canónico del backend combina las dos superficies Orion:
+
+1. v1 `GET /api/company/simList/{companyCode}` descubre los ICCIDs de la compañía y aporta `simStatus`, `dataService` y `smsService`.
+2. El backend pagina localmente esos resultados.
+3. Para los ICCIDs de la página, API v2 se intenta por defecto (`MOABITS_V2_ENRICHMENT_ENABLED=true`) con:
+   - `GET /api/v2/sim/{iccidList}`
+   - `GET /api/v2/sim/connectivity/{iccidList}`
+4. La respuesta pública conserva campos comunes en `normalized` y deja valores Moabits específicos o diagnósticos en `provider_fields`.
+
+API v2 no reemplaza a v1 porque no documenta un listado por `companyCode`. Si v2 falla o no encuentra detalle para una SIM, la fila sigue saliendo con datos v1 y `provider_fields.enrichment_status` indica `v1_only`, `detail_only`, `connectivity_only` o `full`.
+
+Mapeos relevantes de enrichment:
+
+- `imsiNumber` es el IMSI canónico; `imsi` de detail queda como `imsi_raw` si tiene formato no canónico.
+- `imsi` de connectivity queda como `connectivity_imsi_raw`, no sustituye el IMSI canónico.
+- `dataLimit` se expone como `data_limit_mb`.
+- `smsLimitMo` y `smsLimitMt` se preservan como `sms_limit_mo` y `sms_limit_mt`; si no hay `smsLimit`, `sms_limit` se calcula como suma de ambos.
+- `network`, `country`, `rat`, `privateIp` se exponen como `operator`, `country`, `rat_type`, `ip_address`.
+- `mcc`, `mnc`, `dataSessionId`, `dateOpened`, `chargeTowards` y `usageKB` se preservan como `mcc`, `mnc`, `data_session_id`, `session_started_at`, `charge_towards` y `usage_kb`.
+
 ## 0) Autorización
 
 ### Endpoint / Operación: `getAuthorizationToken`

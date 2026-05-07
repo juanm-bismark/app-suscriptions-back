@@ -13,7 +13,7 @@ Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaci
 | **Estado** | Accepted — listo para implementación del primer proveedor (mitigaciones de seguridad AP-1, AP-8 implementadas) |
 | **Autores** | Equipo backend + solution architect |
 | **Depth del ejercicio** | comprehensive (Phases 1–8) |
-| **Últimas actualizaciones** | 2026-05-07: Moabits v2 enrichment opcional para `GET /v1/sims?provider=moabits` detrás de `MOABITS_V2_ENRICHMENT_ENABLED` (ADR-011). Bootstrap explícito de `company_codes` Moabits — eliminado el auto-scope por nombre en `_list_via_provider_search` (ADR-010). El listado responde 412 si `company_codes` está vacío, apuntando a `discover` + `PUT company-codes`; la selección se persiste en `provider_source_configs` y el `PUT` es admin-only. 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 `GET /v1/sims?provider=tele2` enriquece hasta 5 SIMs por página con `Get Device Details`. 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
+| **Últimas actualizaciones** | 2026-05-07: Moabits v2 enrichment para `GET /v1/sims?provider=moabits` se intenta por defecto (`MOABITS_V2_ENRICHMENT_ENABLED=true`) después de descubrir ICCIDs con v1 `simList`; `false` conserva salida legacy v1-only (ADR-011). Bootstrap explícito de `company_codes` Moabits — eliminado el auto-scope por nombre en `_list_via_provider_search` (ADR-010). El listado responde 412 si `company_codes` está vacío, apuntando a `discover` + `PUT company-codes`; la selección se persiste en `provider_source_configs` y el `PUT` es admin-only. 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 `GET /v1/sims?provider=tele2` enriquece hasta 5 SIMs por página con `Get Device Details`. 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
 
 ---
 
@@ -71,7 +71,7 @@ Detalle completo en [adrs/](adrs/).
 | ADR-008 | JWT existente reutilizado + RBAC + scope por `Company` + `audit_log` | [ADR-008](adrs/ADR-008-auth-rbac-audit.md) | Accepted |
 | ADR-009 | Pirámide de tests + golden files de mappers + contract tests + FakeProvider | [ADR-009](adrs/ADR-009-testing-strategy.md) | Accepted |
 | ADR-010 | Moabits: bootstrap explícito de `company_codes` (sin auto-scope por nombre) | [ADR-010](adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md) | Accepted |
-| ADR-011 | Moabits: enrichment v2 opcional para listado provider-scoped | [ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md) | Accepted |
+| ADR-011 | Moabits: enrichment v2 por defecto para listado provider-scoped | [ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md) | Accepted |
 
 ---
 

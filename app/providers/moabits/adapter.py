@@ -13,10 +13,10 @@ Provider-specific fields returned in Subscription.provider_fields (Moabits block
     iccid, msisdn-side fields kept canonical at the top of Subscription.
     product_id, product_name, product_code, company_code, client_name,
     first_lu, first_cdr, last_lu, last_cdr, firstcdrmonth, last_network,
-    imsi_number, services_raw, services,
+    imsi_number, imsi_raw, services_raw, services,
     number_of_renewals_plan, remaining_renewals_plan,
     plan_start_date, plan_expiration_date, autorenewal,
-    data_limit_mb, sms_limit,
+    data_limit_mb, sms_limit, sms_limit_mo, sms_limit_mt,
     data_service (Enabled|Disabled), sms_service (Enabled|Disabled).
 
 Usage snapshot exposes Moabits-specific raw fields under provider_metrics:
@@ -652,6 +652,7 @@ _V2_CONNECTIVITY_FIELD_MAP: dict[str, str] = {
     "dataSessionId": "data_session_id",
     "dateOpened": "session_started_at",
     "usageKB": "usage_kb",
+    "imsi": "connectivity_imsi_raw",
 }
 
 
@@ -669,6 +670,10 @@ def _apply_v2_connectivity(pf: dict[str, Any], conn: dict[str, Any]) -> None:
             continue
         if isinstance(v, str) and not v.strip():
             continue
+        if src == "usageKB":
+            v = _coerce_int(v)
+            if v is None:
+                continue
         pf[dst] = v
 
 
@@ -763,6 +768,7 @@ def _build_subscription(
         ("companyCode", "company_code"),
         ("clientName", "client_name"),
         ("lastNetwork", "last_network"),
+        ("imsi", "imsi_raw"),
         ("imsiNumber", "imsi_number"),
         ("first_lu", "first_lu"),
         ("first_cdr", "first_cdr"),
@@ -771,8 +777,6 @@ def _build_subscription(
         ("firstcdrmonth", "firstcdrmonth"),
         ("imei", "imei"),
         ("autorenewal", "autorenewal"),
-        ("dataLimit", "data_limit_mb"),
-        ("smsLimit", "sms_limit"),
         ("numberOfRenewalsPlan", "number_of_renewals_plan"),
         ("remainingRenewalsPlan", "remaining_renewals_plan"),
         ("planStartDate", "plan_start_date"),
@@ -780,6 +784,22 @@ def _build_subscription(
     ]:
         if (v := sim_info.get(src_key)) is not None:
             provider_fields[dst_key] = v
+
+    for src_key, dst_key in [
+        ("dataLimit", "data_limit_mb"),
+        ("smsLimit", "sms_limit"),
+        ("smsLimitMo", "sms_limit_mo"),
+        ("smsLimitMt", "sms_limit_mt"),
+    ]:
+        if src_key in sim_info and (v := _coerce_int(sim_info.get(src_key))) is not None:
+            provider_fields[dst_key] = v
+
+    sms_limit_parts = [
+        provider_fields.get("sms_limit_mo"),
+        provider_fields.get("sms_limit_mt"),
+    ]
+    if "sms_limit" not in provider_fields and any(v is not None for v in sms_limit_parts):
+        provider_fields["sms_limit"] = sum(v or 0 for v in sms_limit_parts)
 
     # `services` is a slash-separated string in Moabits ("data/sms").
     # Preserve the raw value and expose a normalized list.
@@ -808,7 +828,7 @@ def _build_subscription(
     return Subscription(
         iccid=sim_info.get("iccid") or iccid,
         msisdn=sim_info.get("msisdn"),
-        imsi=sim_info.get("imsi") or sim_info.get("imsiNumber"),
+        imsi=sim_info.get("imsiNumber") or sim_info.get("imsi"),
         status=map_status(native_status),
         native_status=native_status,
         provider=Provider.MOABITS.value,

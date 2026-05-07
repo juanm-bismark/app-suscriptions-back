@@ -10,7 +10,11 @@ import pytest
 import respx
 
 from app.providers.tele2.adapter import Tele2Adapter
-from app.shared.errors import ProviderRateLimited, ProviderValidationError
+from app.shared.errors import (
+    ProviderRateLimited,
+    ProviderUnavailable,
+    ProviderValidationError,
+)
 from app.subscriptions.domain import AdministrativeStatus, SubscriptionSearchFilters
 
 
@@ -152,6 +156,26 @@ async def test_cisco_rate_limit_error_code_maps_to_rate_limited() -> None:
 
     assert exc_info.value.detail == "Rate Limit Exceeded"
     assert exc_info.value.extra["provider_error_code"] == "40000029"
+
+
+@pytest.mark.asyncio
+async def test_list_subscriptions_is_wrapped_by_circuit_breaker(monkeypatch) -> None:
+    adapter = Tele2Adapter()
+
+    async def fail_impl(*args, **kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(adapter, "_list_subscriptions_impl", fail_impl)
+
+    for _ in range(5):
+        with pytest.raises(RuntimeError):
+            await adapter.list_subscriptions({}, cursor=None, limit=10)
+
+    assert adapter.circuit_breaker.state == "OPEN"
+    with pytest.raises(ProviderUnavailable) as exc_info:
+        await adapter.list_subscriptions({}, cursor=None, limit=10)
+
+    assert "circuit breaker is OPEN" in exc_info.value.detail
 
 
 @respx.mock

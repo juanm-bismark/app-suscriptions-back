@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     # When enabled, after the v1 simList page is built the adapter calls
     # /api/v2/sim/{iccids} and /api/v2/sim/connectivity/{iccids} in parallel
     # to enrich each Subscription. v2 failures degrade to v1-only data without
-    # failing the request. Off by default until the proveedor confirms quotas.
-    moabits_v2_enrichment_enabled: bool = False
+    # failing the request.
+    moabits_v2_enrichment_enabled: bool = True
     moabits_v2_base_url: str = "https://apiv2.myorion.co"
     moabits_v2_max_batch: int = 50
     moabits_v2_max_concurrent_chunks: int = 4

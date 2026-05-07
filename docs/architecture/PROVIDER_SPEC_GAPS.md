@@ -107,7 +107,7 @@ The `purge()` method delegates to `set_administrative_status()` to avoid duplica
 
 ## Moabits
 
-Moabits has two separate Orion API surfaces. The adapter uses the older Orion v1 API for authorization, company discovery, per-SIM detail, usage, presence and lifecycle writes. For provider-scoped listing, it uses v1 `simList` as the source of ICCIDs and can optionally enrich that page with Orion Gateway API v2 detail/connectivity behind `MOABITS_V2_ENRICHMENT_ENABLED` (ADR-011).
+Moabits has two separate Orion API surfaces. The adapter uses the older Orion v1 API for authorization, company discovery, per-SIM detail, usage, presence and lifecycle writes. For provider-scoped listing, it uses v1 `simList` as the source of ICCIDs and attempts Orion Gateway API v2 detail/connectivity enrichment for the paginated ICCIDs by default (`MOABITS_V2_ENRICHMENT_ENABLED=true`; see ADR-011).
 
 The dedicated v2 reference for this backend is [MOABITS_ORION_GATEWAY_API_V2.md](MOABITS_ORION_GATEWAY_API_V2.md). It intentionally documents only the needed read endpoints plus `active`, `suspend`, and `purge`.
 
@@ -123,9 +123,9 @@ Documented by Swagger but not used by current backend code:
 - `PUT /api/v2/sim/suspend`
 - `PUT /api/v2/sim/purge`
 
-Current backend gaps in the v2 enrichment mapper:
-- `smsLimitMo` and `smsLimitMt` are documented by v2 but are not preserved separately yet.
-- v2 connectivity fields such as `mcc`, `mnc`, `dataSessionId`, `dateOpened`, `chargeTowards` and `usageKB` remain in `provider_fields`; they are not promoted into `normalized`.
+Current backend behavior in the v2 enrichment mapper:
+- `smsLimitMo` and `smsLimitMt` are preserved separately as `sms_limit_mo` and `sms_limit_mt`; when v2 does not provide a total `smsLimit`, the backend exposes `sms_limit` as their sum.
+- v2 connectivity fields such as `mcc`, `mnc`, `dataSessionId`, `dateOpened`, `chargeTowards`, `usageKB` and connectivity `imsi` remain in `provider_fields` (`mcc`, `mnc`, `data_session_id`, `session_started_at`, `charge_towards`, `usage_kb`, `connectivity_imsi_raw`). They are provider-specific/diagnostic and are not promoted into `normalized`.
 - v2 enrichment failures are per-SIM (`provider_fields.enrichment_status`) and logs; they do not set top-level `SimListOut.partial`.
 
 ### Out of Scope for the Current Moabits v2 Reference

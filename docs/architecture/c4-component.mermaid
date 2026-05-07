@@ -18,7 +18,7 @@ C4Component
     Component(base, "SubscriptionProvider (Protocol)", "Interface", "Firmas canónicas: get_subscription, get_usage, get_presence, set_administrative_status, purge. Providers may expose networkReset/Edit Device Details/dedicated purge routes under the hood. Listing is performed by provider APIs scoped to the credentials.")
     Component(kite_a, "KiteAdapter", "Adapter", "client.py + dto.py + mappers.py + adapter.py. Circuit breaker + timeout. Mapea icc→iccid, lifeCycleStatus→AdministrativeStatus, etc.")
     Component(tele2_a, "Tele2Adapter", "Adapter", "Idem pero para API v1 de Tele2. Soporta purge (Edit Device {PURGED}); network_reset no soportado.")
-    Component(moabits_a, "MoabitsAdapter", "Adapter", "Orion v1 + enrichment v2 opcional. Mapea purge canónico a PUT /api/sim/purge/ con iccidList; v1 usa Bearer/JWT, v2 usa X-API-KEY.")
+    Component(moabits_a, "MoabitsAdapter", "Adapter", "Orion v1 simList + enrichment v2 por defecto para ICCIDs paginados. Mapea purge canónico a PUT /api/sim/purge/ con iccidList; v1 usa Bearer/JWT, v2 usa X-API-KEY.")
   }
 
   Rel(api_app, fetcher, "GET /v1/sims/{iccid}")

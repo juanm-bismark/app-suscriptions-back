@@ -93,14 +93,12 @@
       "auth_v1": "X-API-KEY exchanged for Bearer/JWT through /integrity/authorization-token",
       "auth_v2": "X-API-KEY direct",
       "company_scope": "provider_source_configs.settings.company_codes configured via discover + admin PUT company-codes",
-      "listing": "v1 /api/company/simList/{companyCode}; local offset pagination",
-      "v2_enrichment": "optional detail/connectivity enrichment behind MOABITS_V2_ENRICHMENT_ENABLED",
+      "listing": "v1 /api/company/simList/{companyCode}; local offset pagination; v2 detail/connectivity enrichment attempted by default for page ICCIDs",
+      "v2_enrichment": "enabled by default through MOABITS_V2_ENRICHMENT_ENABLED=true; false keeps legacy v1-only listing",
       "writes": "active/suspend/purge v1 endpoints, gated by LIFECYCLE_WRITES_ENABLED",
       "known_gaps": [
-        "Confirm whether v2 uses the same X-API-KEY as v1",
         "Confirm v2 batch/rate limits",
-        "smsLimitMo/smsLimitMt not preserved separately yet",
-        "v2 connectivity fields remain in provider_fields, not normalized",
+        "v2 provider-specific connectivity fields remain in provider_fields, not normalized",
         "v2 enrichment failures do not set SimListOut.partial"
       ]
     }

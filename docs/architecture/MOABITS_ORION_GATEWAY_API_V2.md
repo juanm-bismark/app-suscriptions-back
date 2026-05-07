@@ -19,9 +19,41 @@ This document captures the Moabits second API contract needed by this backend. I
 The v2 API declares a single security scheme: `apiKey` in the `X-API-KEY` header. Unlike the older Moabits API currently reflected in some code/docs, this API does not document a JWT bootstrap endpoint.
 
 Backend integration status: `GET /v1/sims?provider=moabits` uses v1
-`/api/company/simList/{companyCode}` for listing and uses v2 only as
-optional enrichment of the paginated ICCIDs. See
+`/api/company/simList/{companyCode}` for listing and, by default, attempts
+v2 detail/connectivity enrichment for the ICCIDs in the returned page. See
 [ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md).
+
+## Backend Listing Flow
+
+Moabits does not expose a v2 listing endpoint by `companyCode`, so v1 remains
+the source of the SIM universe. The backend listing flow is:
+
+1. Call v1 `GET /api/company/simList/{companyCode}` to discover ICCIDs plus
+   `simStatus`, `dataService`, and `smsService`.
+2. Page locally over those v1 rows.
+3. For the ICCIDs in the requested page, call v2 in batches:
+   - `GET /api/v2/sim/{iccidList}` for detail data.
+   - `GET /api/v2/sim/connectivity/{iccidList}` for live connectivity data.
+4. Merge v1 and v2 into one canonical `SubscriptionOut`.
+
+This enrichment is enabled by default with `MOABITS_V2_ENRICHMENT_ENABLED=true`.
+Setting it to `false` keeps the legacy v1-only listing behavior. v2 failures are
+degradable: a failed detail/connectivity batch logs
+`moabits_v2_enrichment_chunk_failed` and the endpoint still returns the v1 rows.
+
+Common fields go under `normalized`; provider-specific or diagnostic fields stay
+under `provider_fields`. Notable Moabits mappings:
+
+| Source | Output |
+|--------|--------|
+| v1 `simStatus` | top-level `status` plus `native_status` |
+| v1 `dataService`, `smsService` | `provider_fields.data_service`, `provider_fields.sms_service`, `provider_fields.services` |
+| v2 detail `imsiNumber` | top-level `imsi` and `provider_fields.imsi_number` |
+| v2 detail `imsi` | `provider_fields.imsi_raw` |
+| v2 detail `dataLimit` | `provider_fields.data_limit_mb` as integer |
+| v2 detail `smsLimitMo`, `smsLimitMt` | `provider_fields.sms_limit_mo`, `provider_fields.sms_limit_mt`; summed into `sms_limit` when no total is provided |
+| v2 connectivity `network`, `country`, `rat`, `privateIp` | `provider_fields.operator`, `country`, `rat_type`, `ip_address` |
+| v2 connectivity `mcc`, `mnc`, `dataSessionId`, `dateOpened`, `chargeTowards`, `usageKB`, `imsi` | `provider_fields.mcc`, `mnc`, `data_session_id`, `session_started_at`, `charge_towards`, `usage_kb`, `connectivity_imsi_raw` |
 
 ## Supported Endpoints
 

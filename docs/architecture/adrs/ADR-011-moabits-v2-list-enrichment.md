@@ -1,4 +1,4 @@
-# ADR-011 — Moabits: enrichment v2 opcional para `GET /v1/sims`
+# ADR-011 — Moabits: enrichment v2 por defecto para `GET /v1/sims`
 
 - **Estado**: Accepted
 - **Fecha**: 2026-05-07
@@ -27,13 +27,14 @@ fuente del universo de SIMs.
 ## Decisión
 
 Mantener v1 como fuente de descubrimiento y estado administrativo del
-listado, y usar v2 sólo como enrichment opcional de la página ya
-paginada. El flujo implementado es:
+listado, y usar v2 como enrichment degradable de la página ya paginada.
+El flujo implementado es:
 
 1. `list_subscriptions` consulta v1 `simList` por cada `company_code`
    hasta llenar la página solicitada.
 2. Si `MOABITS_V2_ENRICHMENT_ENABLED=false`, devuelve exactamente la
-   forma legacy v1-only.
+   forma legacy v1-only. El default operativo es `true`: se intenta v2
+   para enriquecer cada página obtenida desde v1.
 3. Si el flag está activo, toma los ICCIDs de la página y llama en
    batches a:
    - `GET /api/v2/sim/{iccids}`
@@ -59,7 +60,7 @@ Valores actuales en `app/config.py`:
 
 | Variable | Default | Uso |
 |---|---:|---|
-| `MOABITS_V2_ENRICHMENT_ENABLED` | `false` | Activa enrichment en listado Moabits |
+| `MOABITS_V2_ENRICHMENT_ENABLED` | `true` | Activa enrichment en listado Moabits |
 | `MOABITS_V2_BASE_URL` | `https://apiv2.myorion.co` | Host v2 global |
 | `MOABITS_V2_MAX_BATCH` | `50` | ICCIDs por request v2 |
 | `MOABITS_V2_MAX_CONCURRENT_CHUNKS` | `4` | Concurrencia máxima de chunks |
