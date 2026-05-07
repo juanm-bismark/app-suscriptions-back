@@ -18,6 +18,11 @@ This document captures the Moabits second API contract needed by this backend. I
 
 The v2 API declares a single security scheme: `apiKey` in the `X-API-KEY` header. Unlike the older Moabits API currently reflected in some code/docs, this API does not document a JWT bootstrap endpoint.
 
+Backend integration status: `GET /v1/sims?provider=moabits` uses v1
+`/api/company/simList/{companyCode}` for listing and uses v2 only as
+optional enrichment of the paginated ICCIDs. See
+[ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md).
+
 ## Supported Endpoints
 
 | Method | Path | Operation | Purpose |
@@ -246,3 +251,24 @@ Notes:
 - Dates are plain strings without declared `date-time` format or timezone semantics.
 - Product and client examples conflict with their declared schemas.
 - Product error messages mention bearer auth, but the declared security model only includes `X-API-KEY`.
+
+## Backend Mapping Notes
+
+Current implementation details compared with this contract:
+
+- v2 detail and connectivity are called with the same `x_api_key` stored
+  for v1. No separate `x_api_key_v2` is modeled yet.
+- v2 base URL is configured through `MOABITS_V2_BASE_URL`, not per
+  tenant credentials.
+- `smsLimitMo` and `smsLimitMt` are documented by v2 but are not yet
+  preserved separately by the adapter; current normalized limits still
+  rely on legacy `smsLimit` when present.
+- Connectivity fields `mcc`, `mnc`, `chargeTowards`, `dataSessionId`,
+  `dateOpened` and `usageKB` are preserved in `provider_fields` as
+  `mcc`, `mnc`, `charge_towards`, `data_session_id`,
+  `session_started_at` and `usage_kb`; they are not yet promoted into
+  `normalized.network` or `normalized.usage`.
+- v2 enrichment degradation is represented per SIM through
+  `provider_fields.enrichment_status` (`full`, `detail_only`,
+  `connectivity_only`, `v1_only`) and `detail_enriched`, not through
+  top-level `SimListOut.partial`.

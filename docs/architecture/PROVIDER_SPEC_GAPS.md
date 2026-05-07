@@ -1,6 +1,6 @@
 # Provider Specification Gaps & Unsupported Features
 
-**Status**: 2026-05-06 | Informational reference document for implemented provider contract details and unimplemented provider capabilities.
+**Status**: 2026-05-07 | Informational reference document for implemented provider contract details and unimplemented provider capabilities.
 
 ## Overview
 
@@ -107,19 +107,26 @@ The `purge()` method delegates to `set_administrative_status()` to avoid duplica
 
 ## Moabits
 
-Moabits has two separate Orion API surfaces. The current adapter still reflects the older API 1 shape in code, while the second API is documented by the Orion Gateway API v2 Swagger at `https://apiv2.myorion.co/v3/api-docs`.
+Moabits has two separate Orion API surfaces. The adapter uses the older Orion v1 API for authorization, company discovery, per-SIM detail, usage, presence and lifecycle writes. For provider-scoped listing, it uses v1 `simList` as the source of ICCIDs and can optionally enrich that page with Orion Gateway API v2 detail/connectivity behind `MOABITS_V2_ENRICHMENT_ENABLED` (ADR-011).
 
 The dedicated v2 reference for this backend is [MOABITS_ORION_GATEWAY_API_V2.md](MOABITS_ORION_GATEWAY_API_V2.md). It intentionally documents only the needed read endpoints plus `active`, `suspend`, and `purge`.
 
 Confirmed API v2 paths in scope:
 - `GET /api/v2/sim/{iccidList}`
-- `GET /api/v2/sim/service-status/{iccidList}`
 - `GET /api/v2/sim/connectivity/{iccidList}`
+
+Documented by Swagger but not used by current backend code:
+- `GET /api/v2/sim/service-status/{iccidList}`
 - `GET /api/v2/product/product-list/{id}`
 - `GET /api/v2/client/children`
 - `PUT /api/v2/sim/active`
 - `PUT /api/v2/sim/suspend`
 - `PUT /api/v2/sim/purge`
+
+Current backend gaps in the v2 enrichment mapper:
+- `smsLimitMo` and `smsLimitMt` are documented by v2 but are not preserved separately yet.
+- v2 connectivity fields such as `mcc`, `mnc`, `dataSessionId`, `dateOpened`, `chargeTowards` and `usageKB` remain in `provider_fields`; they are not promoted into `normalized`.
+- v2 enrichment failures are per-SIM (`provider_fields.enrichment_status`) and logs; they do not set top-level `SimListOut.partial`.
 
 ### Out of Scope for the Current Moabits v2 Reference
 

@@ -9,7 +9,7 @@
 
 Cada `Company` (tenant) puede operar con uno o más proveedores. Para cada (`Company`, `Provider`) hace falta guardar:
 - Credenciales (token, user/pass, certificado).
-- Scope de cuenta del proveedor (Kite `endCustomerId`, Tele2 `accountId`, Moabits `companyCodes`).
+- Scope de cuenta del proveedor (Kite `endCustomerId`, Tele2 `accountId`; Moabits usa `parent_company_code` en la credencial y `provider_source_configs.settings.company_codes` para la selección operativa).
 - Estado (activa/inactiva).
 - Auditoría de rotación.
 
@@ -29,7 +29,7 @@ CREATE TABLE company_provider_credentials (
     company_id      uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
     provider        text NOT NULL,
     credentials_enc text NOT NULL,                 -- Fernet token
-    account_scope   jsonb NOT NULL DEFAULT '{}',   -- NO sensible: endCustomerId, accountId, companyCodes, cert_expires_at
+    account_scope   jsonb NOT NULL DEFAULT '{}',   -- NO sensible: endCustomerId, accountId, cert_expires_at, environment
     active          boolean NOT NULL DEFAULT true,
     rotated_at      timestamptz,
     created_at      timestamptz NOT NULL DEFAULT now()
@@ -46,9 +46,9 @@ CREATE UNIQUE INDEX company_provider_credentials_active_idx
 - Librería: `cryptography.Fernet`.
 - Estructura cifrada (antes de cifrar): `{"username": "...", "password": "...", "token": "..."}` — JSON serializado, sólo los campos que aplican al provider.
 - Kite PFX se guarda en este JSON como `client_cert_pfx_b64` y `client_cert_password`.
-- `account_scope` queda sólo para metadata no secreta: `environment`, `end_customer_id`, `account_id`, `company_codes`, `cert_expires_at`.
+- `account_scope` queda sólo para metadata no secreta: `environment`, `end_customer_id`, `account_id`, `cert_expires_at`. Para Moabits, `company_codes` vive en `provider_source_configs.settings.company_codes`, no en `account_scope`.
 
-### 3. Resolución con caché TTL corta
+### 3. Resolución de credenciales
 
 ```python
 class CredentialResolver:
@@ -56,7 +56,9 @@ class CredentialResolver:
     async def resolve(self, company_id: UUID, provider: Provider) -> ProviderCredentials: ...
 ```
 
-TTL = 60 s. Se invalida explícitamente al rotar.
+Diseño objetivo: TTL = 60 s e invalidación explícita al rotar. Estado
+actual: el router usa helpers que leen, desencriptan y enriquecen las
+credenciales por request; no hay caché TTL de credenciales implementado.
 
 ### 4. Gestión y rotación
 
@@ -65,15 +67,20 @@ TTL = 60 s. Se invalida explícitamente al rotar.
   - `GET /v1/companies/me/credentials/{provider}` — `manager` y `admin`, sólo metadata.
   - `POST /v1/companies/me/credentials/{provider}/test` — `manager` y `admin`, valida conectividad sin persistir secretos nuevos.
   - `PATCH /v1/companies/me/credentials/{provider}` — `manager` y `admin`, crea o rota credenciales propias del tenant.
+  - `GET /v1/companies/me/credentials/moabits/companies/discover` — `manager` y `admin`, descubre subcompañías visibles sin persistir cambios.
+  - `PUT /v1/companies/me/credentials/moabits/company-codes` — `admin` only, persiste el scope efectivo de Moabits en `provider_source_configs`.
   - `DELETE /v1/companies/me/credentials/{provider}` — `admin` only, desactiva la credencial activa.
-- La rotación (`PATCH`) debe:
+- La rotación (`PATCH`) actualmente:
   1. Marca el registro activo como `active = false`.
   2. Inserta nuevo registro con `active = true`.
-  3. Invalida la entrada cacheada del resolver.
-  4. Escribe en `audit_log` (ADR-008).
+  3. Prueba la credencial antes de persistir.
+  4. Devuelve metadata sin secretos.
+
+Pendiente: escribir una fila genérica en `audit_log` para rotación/desactivación de credenciales e invalidar caché cuando exista.
 - Mantener registros viejos `inactive` 30 días para forensics, luego cron de purga.
 - `manager` puede gestionar credenciales **sólo de su propia Company** porque el endpoint usa `companies/me`. No puede elegir otro `company_id`, cambiar roles, ni ejecutar writes destructivos de SIM (`purge`, cambios de estado).
-- `PATCH` y `DELETE` requieren `Idempotency-Key`; `POST /test` no persiste secretos y puede auditar sólo metadata (`provider`, `outcome`, `error_code`).
+- Para Moabits, `company_codes` no se considera secreto y no vive en `credentials_enc`: se guarda en `provider_source_configs.settings.company_codes` como configuración no sensible de la fuente. Cambiarlo sí queda restringido a `admin`, porque altera qué subcompañías/SIMs participan en el listado operativo.
+- `PATCH` y `DELETE` no requieren `Idempotency-Key` en el código actual; la idempotencia obligatoria está implementada para writes de SIM (`PUT /v1/sims/{iccid}/status`, `POST /v1/sims/{iccid}/purge`). `POST /test` no persiste secretos.
 
 ### 5. Lo que **NO** se hace
 

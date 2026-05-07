@@ -5,7 +5,7 @@
 flowchart LR
     subgraph SYSTEM ["Subscriptions API (modular monolith)"]
         IAM["Identity & Access<br/><i>existing</i><br/>users, profiles, refresh_tokens"]
-        TEN["Tenancy<br/><i>extended</i><br/>companies, company_provider_credentials"]
+        TEN["Tenancy<br/><i>extended</i><br/>companies, company_provider_credentials, provider_source_configs"]
         SUB["Subscription Aggregation<br/><i>new</i><br/>Subscription, SIM Routing Map"]
         PRV["Provider Integration<br/><i>new — technical context</i><br/>SubscriptionProvider Protocol + Adapters"]
     end
@@ -13,7 +13,7 @@ flowchart LR
     subgraph EXTERNAL ["External providers (out of our control)"]
         KITE["Kite API<br/>SOAP/REST style<br/>vocab: icc, lifeCycleStatus"]
         TELE2["Tele2 API<br/>REST v1<br/>vocab: iccid, status, ratePlan"]
-        MOABITS["Moabits Orion API<br/>REST 2.0.0<br/>vocab: iccid, simStatus"]
+        MOABITS["Moabits Orion API<br/>v1 + Gateway v2<br/>vocab: iccid, simStatus"]
     end
 
     %% Inter-context relationships

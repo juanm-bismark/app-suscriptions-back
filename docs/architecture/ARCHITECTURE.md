@@ -13,7 +13,7 @@ Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaci
 | **Estado** | Accepted — listo para implementación del primer proveedor (mitigaciones de seguridad AP-1, AP-8 implementadas) |
 | **Autores** | Equipo backend + solution architect |
 | **Depth del ejercicio** | comprehensive (Phases 1–8) |
-| **Últimas actualizaciones** | 2026-05-07: bootstrap explícito de `company_codes` Moabits — eliminado el auto-scope por nombre en `_list_via_provider_search` (ADR-010). El listado responde 412 si `company_codes` está vacío, apuntando a `discover` + `PUT company-codes`. 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 `GET /v1/sims?provider=tele2` enriquece hasta 5 SIMs por página con `Get Device Details`. 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
+| **Últimas actualizaciones** | 2026-05-07: Moabits v2 enrichment opcional para `GET /v1/sims?provider=moabits` detrás de `MOABITS_V2_ENRICHMENT_ENABLED` (ADR-011). Bootstrap explícito de `company_codes` Moabits — eliminado el auto-scope por nombre en `_list_via_provider_search` (ADR-010). El listado responde 412 si `company_codes` está vacío, apuntando a `discover` + `PUT company-codes`; la selección se persiste en `provider_source_configs` y el `PUT` es admin-only. 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 `GET /v1/sims?provider=tele2` enriquece hasta 5 SIMs por página con `Get Device Details`. 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
 
 ---
 
@@ -44,7 +44,7 @@ fan-out indiscriminado a todos los proveedores. Ver `migrations/001_sim_routing_
 y `migrations/002_company_provider_credentials.sql`.
 
 ### Technical context
-- Stack existente: FastAPI (async) + SQLAlchemy 2.0 + asyncpg + PyJWT + bcrypt + httpx (declarado, no usado aún).
+- Stack existente: FastAPI (async) + SQLAlchemy 2.0 + asyncpg + PyJWT + bcrypt + httpx.
 - Multi-tenant por `Company` con RBAC (`admin`/`manager`/`member`/`public`).
 - Desplegado en Docker. Postgres managed (tipo Supabase o equivalente).
 
@@ -71,6 +71,7 @@ Detalle completo en [adrs/](adrs/).
 | ADR-008 | JWT existente reutilizado + RBAC + scope por `Company` + `audit_log` | [ADR-008](adrs/ADR-008-auth-rbac-audit.md) | Accepted |
 | ADR-009 | Pirámide de tests + golden files de mappers + contract tests + FakeProvider | [ADR-009](adrs/ADR-009-testing-strategy.md) | Accepted |
 | ADR-010 | Moabits: bootstrap explícito de `company_codes` (sin auto-scope por nombre) | [ADR-010](adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md) | Accepted |
+| ADR-011 | Moabits: enrichment v2 opcional para listado provider-scoped | [ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md) | Accepted |
 
 ---
 
@@ -114,7 +115,7 @@ Dentro del sistema: `FastAPI App` (routers + middleware), `Subscription Aggregat
 ### C4 Level 3 — Components
 Ver [c4-component.mermaid](c4-component.mermaid).
 
-Dentro de Subscription Aggregation: `SubscriptionFetcher`, `SubscriptionSearchService`, `SubscriptionOperationService`, `ProviderRegistry`, tabla `sim_routing_map`. Dentro de Provider Adapters: `SubscriptionProvider` Protocol + `KiteAdapter` / `Tele2Adapter` / `MoabitsAdapter`.
+Dentro de Subscription Aggregation: los use cases `SubscriptionFetcher`, `SubscriptionSearchService` y `SubscriptionOperationService` están implementados hoy como helpers/rutas en `app/subscriptions/routers/sims.py`; `ProviderRegistry` y `sim_routing_map` sí existen como componentes explícitos. Dentro de Provider Adapters: `SubscriptionProvider` Protocol + `KiteAdapter` / `Tele2Adapter` / `MoabitsAdapter`.
 
 ### Patrones (resumen por dimensión)
 
@@ -139,14 +140,19 @@ Tabla completa en [nfr-analysis.md](nfr-analysis.md).
 | Performance | P50 ≤ 800 ms, P95 ≤ 3 s, P99 ≤ 8 s (GET iccid) · P95 ≤ 5 s (provider-scoped listing / routing-map page) |
 | Availability | 99.5% mensual; caída de un proveedor no genera 5xx para SIMs de otros |
 | Scalability | 20 concurrentes en 1 worker; horizontal N workers sin cambios de código |
-| Security | CORS explícito · refresh tokens hasheados · Fernet en credenciales · `audit_log` 100% en mutaciones · rate limit 60 req/s por tenant |
-| Observability | 100% requests con `request_id` · logs JSON · métricas Prometheus · trazas OTel opcional |
+| Security | CORS explícito · refresh tokens hasheados · Fernet en credenciales · lifecycle writes auditados · rate limit 60 req/s por tenant pendiente |
+| Observability | `request_id` middleware y `structlog` activos · métricas Prometheus y trazas OTel pendientes |
 | Maintainability | Cobertura 80% global, 90% mappers · import-linter contratos · nuevo provider sin tocar dominio |
 | Cost | 1 servicio, 1 DB, cero brokers; sin fan-out cross-provider por defecto |
 
-**Blockers declarados** (deben cerrarse antes de exponer a producción):
-- **NFR-Sec2**: hashear refresh tokens ([app/models/refresh_token.py](../../app/models/refresh_token.py)).
-- **NFR-Sec3**: CORS explícito, no `*` con `credentials=true` ([app/main.py:26-32](../../app/main.py#L26-L32)).
+**Blockers ya cerrados**:
+- **NFR-Sec2**: refresh tokens se guardan como sha256.
+- **NFR-Sec3**: CORS usa `settings.cors_origins`, no `*` con credentials.
+
+**Pendientes antes de endurecer producción**:
+- Rate limiting por tenant.
+- Métricas/alertas operativas.
+- Auditoría genérica para rotación/desactivación de credenciales y denegaciones 403; los writes de SIM ya usan `lifecycle_change_audit`.
 
 ---
 
@@ -162,7 +168,7 @@ Detalle en [nfr-analysis.md §2](nfr-analysis.md) y [ADR-008](adrs/ADR-008-auth-
 | Data at rest | SIM data no persiste. Credenciales de proveedor cifradas con Fernet usando `FERNET_KEY`. Refresh tokens sha256. |
 | Secrets | `JWT_SECRET`, `DATABASE_URL`, `FERNET_KEY` en env vars gestionadas por orquestador |
 | Log hygiene | Scrubber obligatorio sobre campos `password`, `token`, `Authorization`, `credentials`, `secret`, `key` |
-| Audit | Toda mutación + toda denegación 403 sobre mutaciones → `audit_log` con actor, request_id, outcome |
+| Audit | Writes de SIM → `lifecycle_change_audit`; `audit_log` existe para auditoría genérica, pero falta middleware/decorador general para todas las mutaciones y 403 |
 | Abuse control | Rate limit por `company_id` (token bucket) · `Idempotency-Key` obligatorio en `POST /v1/sims/{iccid}/purge` |
 
 **Matriz de permisos** (ADR-008):
@@ -171,6 +177,8 @@ Detalle en [nfr-analysis.md §2](nfr-analysis.md) y [ADR-008](adrs/ADR-008-auth-
 |---|:-:|:-:|:-:|
 | Lecturas sobre SIMs | ✓ | ✓ | ✓ |
 | Ver/probar/rotar credenciales propias del tenant | ✗ | ✓ | ✓ |
+| Descubrir subcompañías Moabits | ✗ | ✓ | ✓ |
+| Seleccionar `company_codes` Moabits | ✗ | ✗ | ✓ |
 | Desactivar credenciales del tenant | ✗ | ✗ | ✓ |
 | Control operation `purge` | ✗ | ✗ | ✓ |
 
@@ -185,12 +193,13 @@ Detalle en [nfr-analysis.md §2](nfr-analysis.md) y [ADR-008](adrs/ADR-008-auth-
 | `users`, `profiles`, `refresh_tokens` | Identity & Access | existente |
 | `companies`, `company_settings` | Tenancy | existente |
 | `company_provider_credentials` | Credenciales cifradas por (Company × Provider) | **nueva** — ADR-006 |
+| `provider_source_configs` | Configuración no secreta por fuente proveedor, p.ej. `moabits.company_codes` | **nueva** — ADR-010 |
 | `sim_routing_map` | `iccid → provider, company_id, last_seen_at` | **nueva** — ADR-002 |
 | `audit_log` | Bitácora de mutaciones y denegaciones | **nueva** — ADR-008 |
 | `idempotency_keys` | `(company_id, key)` → respuesta cacheada 24 h | **nueva** — ADR-007 |
 | `lifecycle_change_audit` | Bitácora específica de writes de lifecycle/purge | **nueva** — implementación |
 
-**Modelo de ruteo**: el único estado compartido sobre SIMs es el `SimRoutingMap`. No es caché, no es espejo, es **ruteo** (qué proveedor atender para este iccid). Carga inicial: CSV de los proveedores (opción sana) o *lazy discovery* en la primera consulta. `[REQUIRES INPUT]`
+**Modelo de ruteo**: el único estado compartido sobre SIMs es el `SimRoutingMap`. No es caché, no es espejo, es **ruteo** (qué proveedor atender para este iccid). Se puebla por `POST /v1/sims/import` o por lazy upsert cuando se ejecuta un listing provider-scoped exitoso (`GET /v1/sims?provider=<name>`).
 
 **Índices críticos**:
 - `sim_routing_map(iccid PK)` — lookup O(1).
@@ -219,6 +228,8 @@ GET    /v1/companies/me/credentials                     # manager/admin — meta
 GET    /v1/companies/me/credentials/{provider}          # manager/admin — metadata only
 POST   /v1/companies/me/credentials/{provider}/test     # manager/admin — no secret persistence
 PATCH  /v1/companies/me/credentials/{provider}          # manager/admin — rotate/create
+GET    /v1/companies/me/credentials/moabits/companies/discover  # manager/admin — read-only discovery
+PUT    /v1/companies/me/credentials/moabits/company-codes       # admin — configure Moabits source scope
 DELETE /v1/companies/me/credentials/{provider}          # admin — deactivate
 GET    /v1/providers/{provider}/capabilities             # supported / not_supported / feature-flag / confirmation
 
@@ -325,16 +336,15 @@ Detalle en [patterns-decisions.md D7](patterns-decisions.md) y [ADR-005](adrs/AD
 
 ### Ola 0 — Paydown de deuda técnica bloqueante (antes de tocar nada de subscriptions)
 Blockers de seguridad (NFR-Sec2, NFR-Sec3):
-- Fix CORS en [app/main.py:26-32](../../app/main.py#L26-L32).
-- Hashear refresh tokens en [app/models/refresh_token.py](../../app/models/refresh_token.py) + migración que re-emite tokens.
+- CORS explícito y refresh tokens hasheados ya están implementados.
 - Prefijar routers existentes con `/v1/` ([app/main.py:44-47](../../app/main.py#L44-L47)).
 - Introducir logger estructurado (`structlog`) + middleware de `request_id`.
 - Introducir `DomainError` + handler global RFC 7807.
 - Reorganizar carpetas a paquetes por bounded context (`identity/`, `tenancy/`, `shared/`) sin cambio funcional.
 
 ### Ola 1 — Fundación del dominio de suscripciones (primer proveedor: Kite)
-- DDL: `001_sim_routing_map.sql`, `002_company_provider_credentials.sql`, `003_audit_log.sql`, `004_idempotency_keys.sql`, `005_lifecycle_change_audit.sql`.
-- `app/subscriptions/` con aggregate canónico + `SubscriptionFetcher` + `SubscriptionSearchService` + `SubscriptionOperationService`.
+- DDL: `001_sim_routing_map.sql`, `002_company_provider_credentials.sql`, `003_audit_log.sql`, `004_idempotency_keys.sql`, `005_lifecycle_change_audit.sql`, `006_provider_source_configs.sql`.
+- `app/subscriptions/` con aggregate canónico y use cases implementados en router/helpers.
 - `app/providers/base.py` con Protocol + errores.
 - `app/providers/kite/` completo (client, dto, mappers, adapter) + tests Capa 1 y 2.
 - Endpoints `/v1/sims/**` funcionales sólo para SIMs de Kite.
@@ -363,7 +373,7 @@ Capturadas durante el proceso; ninguna bloquea el diseño, algunas bloquean impl
 | # | Pregunta | Bloquea |
 |---|---|---|
 | OQ-1 | `SIM Routing Map`: ¿bootstrap por CSV de los proveedores o descubrimiento lazy? | Ola 2 |
-| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / `companyCodes` (Moabits). ¿Estructura exacta en `account_scope`? | Ola 1 — *Moabits resuelto en ADR-010: `company_codes` se persiste explícitamente en `credentials_enc` vía `PUT /v1/companies/me/credentials/moabits/company-codes`; sin auto-scope por nombre.* |
+| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / `companyCodes` (Moabits). ¿Estructura exacta en `account_scope`? | Ola 1 — *Moabits resuelto en ADR-010: `company_codes` se persiste explícitamente en `provider_source_configs.settings` vía `PUT /v1/companies/me/credentials/moabits/company-codes` admin-only; sin auto-scope por nombre.* |
 | OQ-3 | ¿Alguno de los proveedores ofrece sandbox para E2E? | Capa 5 de testing (opcional) |
 | OQ-4 | Stack de observabilidad: ¿Prometheus/Grafana propio, Datadog, New Relic? | Ola 3 |
 | OQ-5 | Retención legal de `audit_log` | Ola 3 |
@@ -376,23 +386,25 @@ Capturadas durante el proceso; ninguna bloquea el diseño, algunas bloquean impl
 
 ## Next Steps (priorizado, accionable)
 
+> **Nota de estado (2026-05-07)**: esta sección conserva la secuencia original de implementación. Varios puntos de Ola 0/Ola 1 ya están hechos; los pendientes reales están resumidos en `DOCS_CODE_ALIGNMENT_AUDIT.md` y `IMPLEMENTATION_PLAN.md`.
+
 **Orden sugerido de ejecución**:
 
 1. **Ola 0 — deuda bloqueante** *(días, 1 dev)*
-   1. [PR] Fix CORS explícito.
-   2. [PR] Hashear refresh tokens (+ migración).
-   3. [PR] Prefijar routers existentes con `/v1/`.
-   4. [PR] `structlog` + middleware `request_id`.
-   5. [PR] `DomainError` + handler global RFC 7807.
-   6. [PR] Reorganizar a paquetes por bounded context (refactor sin cambio funcional).
-   7. [PR] `import-linter` con contratos.
+   1. [done] CORS explícito.
+   2. [done] Refresh tokens hasheados.
+   3. [done] Routers existentes bajo `/v1/`.
+   4. [done] `structlog` + middleware `request_id`.
+   5. [done] `DomainError` + handler global RFC 7807.
+   6. [done] Reorganizar a paquetes por bounded context.
+   7. [pending] `import-linter` con contratos.
 
 2. **Ola 1 — primer proveedor (Kite)** *(semanas, 1–2 devs)*
-   1. [PR] SQL migrations: `001_sim_routing_map`, `002_company_provider_credentials`, `003_audit_log`, `004_idempotency_keys`, `005_lifecycle_change_audit`.
-   2. [PR] `app/providers/base.py` — Protocol + errores.
-   3. [PR] `app/subscriptions/` — aggregate + services + routers.
-   4. [PR] `app/providers/kite/` completo + golden files + contract tests.
-   5. [PR] Rate limit + circuit breaker + cache + métricas Prometheus + `/ready`.
+   1. [done] SQL migrations: `001` a `006`.
+   2. [done] `app/providers/base.py` — Protocol + errores.
+   3. [done] `app/subscriptions/` — aggregate + routers/use cases.
+   4. [done] `app/providers/kite/` completo + tests.
+   5. [partial] Circuit breaker + `/ready` hechos; rate limit genérico, cache genérica y métricas Prometheus pendientes.
    6. [PR] Matriz RBAC + `audit_log` middleware.
    7. [PR] Endpoints `companies/me/credentials` para alta/rotación por `manager`/`admin` y desactivación por `admin`.
 

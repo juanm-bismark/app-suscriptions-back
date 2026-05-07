@@ -1,6 +1,6 @@
 """Circuit Breaker Implementation Status - ADR-005 Resilience Pattern
 
-DATE COMPLETED: 2024-01-[TBD]
+DATE COMPLETED: 2026-05-06
 STATUS: IMPLEMENTED ✅
 
 ## Implementation Summary
@@ -10,7 +10,7 @@ Circuit breaker pattern has been implemented across all three provider adapters
 
 ### Files Modified
 
-1. **app/providers/adapter_base.py** (NEW)
+1. **app/providers/adapter_base.py**
    - BaseAdapter class with circuit breaker initialization
    - Provides _call_with_breaker() method for wrapping async operations
 
@@ -49,7 +49,7 @@ Circuit breaker pattern has been implemented across all three provider adapters
      * set_administrative_status() → _set_administrative_status_impl()
      * purge() → _purge_impl()
 
-6. **tests/test_resilience.py** (NEW)
+6. **tests/test_resilience.py**
    - 10 unit tests covering:
      * State transitions (CLOSED → OPEN → HALF_OPEN → CLOSED)
      * Failure threshold triggering
@@ -168,7 +168,7 @@ The following ADR-005 requirements have deferred implementation:
 3. **Metrics Exposure**
    - Circuit breaker state per provider
    - Failure rates, state transitions
-   - Integration: Prometheus metrics via /metrics endpoint
+   - Future integration: Prometheus metrics via `/metrics`
    - Note: Not blocking circuit breaker (can implement independently)
 
 ### Integration Notes

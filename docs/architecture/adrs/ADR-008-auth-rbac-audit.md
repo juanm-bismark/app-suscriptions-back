@@ -41,13 +41,15 @@ Hay que definir: qué roles pueden ejecutar las **operaciones mutantes** de subs
 | Ver capabilities proveedor | `GET /v1/providers/{provider}/capabilities` | ✓ | ✓ | ✓ |
 | Ver credenciales configuradas, sin secretos | `GET /v1/companies/me/credentials/**` | ✗ | ✓ | ✓ |
 | Probar / crear / rotar credenciales propias | `POST/PATCH /v1/companies/me/credentials/**` | ✗ | ✓ | ✓ |
+| Descubrir subcompañías Moabits | `GET /v1/companies/me/credentials/moabits/companies/discover` | ✗ | ✓ | ✓ |
+| Seleccionar `company_codes` Moabits | `PUT /v1/companies/me/credentials/moabits/company-codes` | ✗ | ✗ | ✓ |
 | Desactivar credencial activa | `DELETE /v1/companies/me/credentials/{provider}` | ✗ | ✗ | ✓ |
 | Cambiar estado administrativo | `PUT /v1/sims/{iccid}/status` | ✗ | ✗ | ✓ |
 | **Purge (control op)** | `POST /v1/sims/{iccid}/purge` | ✗ | ✗ | ✓ |
 
 `public` (rol del usuario que se acaba de auto-registrar y no fue confirmado por un admin) **no tiene acceso** a ningún endpoint de subscriptions.
 
-`manager` puede gestionar credenciales sólo bajo `companies/me`; no hay endpoint con `{company_id}` para que pueda operar otro tenant. Los secrets nunca se devuelven en responses.
+`manager` puede gestionar credenciales sólo bajo `companies/me`; no hay endpoint con `{company_id}` para que pueda operar otro tenant. Los secrets nunca se devuelven en responses. La selección de `company_codes` Moabits queda reservada a `admin` porque define el scope operativo de la fuente Moabits, aunque no sea un secreto.
 
 ### 4. Tenant scoping
 

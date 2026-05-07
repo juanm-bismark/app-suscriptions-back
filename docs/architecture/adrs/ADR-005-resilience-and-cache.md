@@ -24,10 +24,11 @@ Cuatro mecanismos combinados, configurables por adapter:
 | Circuit breaker por adapter | Implementado | `BaseAdapter` usa `CircuitBreaker` en memoria por proceso. |
 | Tele2/Jasper fair-use limiter | Implementado | Serializa llamadas Tele2 por cuenta en proceso y respeta `max_tps` (default 1, Advantage típico 5). |
 | Cisco `40000029` / HTTP 429 | Implementado | Ambos se traducen a `ProviderRateLimited`; el limiter aumenta backoff temporal. |
-| Timeouts configurables por adapter | Parcial | Los adapters usan timeouts `httpx`, pero no todos los valores están externalizados por settings. |
+| Timeouts por adapter | Parcial | Los adapters usan timeouts `httpx`; Moabits v2 detail/connectivity tiene settings dedicados, pero no todos los timeouts v1/Kite/Tele2 están externalizados. |
 | Retry con backoff idempotente | No aplicado | Evitado por ahora para no amplificar cuotas/TPS sin métricas reales. |
 | Caché L1 TTL + single-flight | No aplicado | Documentado como siguiente paso; no hay cache anti-stampede todavía. |
-| Semáforo genérico por adapter | No aplicado | Tele2 tiene limiter específico; Kite/Moabits no tienen bulkhead dedicado aún. |
+| Semáforo genérico por adapter | No aplicado | Tele2 tiene limiter específico; Moabits v2 enrichment tiene semáforo por chunks; Kite/Moabits v1 no tienen bulkhead genérico aún. |
+| Métricas Prometheus | No aplicado | No existe `/metrics` ni exportador de estado del circuit breaker todavía. |
 | Redis/shared limiter | No aplicado | Requerido antes de múltiples workers/containers con TPS estricto. |
 
 ### 1. Timeouts duros en `httpx.AsyncClient`
@@ -41,16 +42,16 @@ Valores por adapter en `Settings` (env-overridable). El read timeout es el más 
 ### 2. Retry con backoff exponencial (sólo idempotentes)
 
 - Sólo en métodos `GET` y en errores reintentables: `httpx.TimeoutException`, `httpx.ConnectError`, status 502/503/504.
-- Política: 3 intentos máximo, backoff `0.2s, 0.6s, 1.8s` con jitter ±25%.
-+- Implementación: `tenacity` o decorador propio chico. **NO** retry en mutaciones (operaciones de control canónicas: `purge`) — hasta confirmar idempotencia explícita del proveedor. Nota: la API implementada expone `POST /v1/sims/{iccid}/purge`; los adapters deben mapear la operación canónica al endpoint proveedor apropiado.
+- Política objetivo: 3 intentos máximo, backoff `0.2s, 0.6s, 1.8s` con jitter ±25%.
+- Implementación pendiente: `tenacity` o decorador propio chico. **NO** retry en mutaciones (operaciones de control canónicas: `purge`) hasta confirmar idempotencia explícita del proveedor. La API implementada expone `POST /v1/sims/{iccid}/purge`; los adapters mapean la operación canónica al endpoint proveedor apropiado.
 
 ### 3. Circuit breaker por adapter
 
 - Estados: `closed → open → half_open → closed`.
 - Apertura: ≥ 5 fallos en ventana de 30 s, o ≥ 50% de fallos sobre ≥ 20 requests.
 - Tiempo en `open`: 30 s. Luego `half_open` con 1 sonda. Si OK, vuelve a `closed`.
-- Estado en memoria (proceso único). Métrica Prometheus expuesta.
-- Implementación: `purgatory-circuitbreaker` o `aiobreaker`.
+- Estado en memoria (proceso único). Métrica Prometheus pendiente.
+- Implementación actual: `app/shared/resilience.py::CircuitBreaker`.
 - Cuando está abierto: la request del cliente recibe `503 ProviderUnavailable` en < 10 ms.
 
 ### 4. Caché L1 in-memory con TTL ≤ 5 s (anti-stampede)
@@ -83,13 +84,13 @@ Este mecanismo protege un solo proceso. Si se ejecutan varios workers o réplica
 **Positivas**
 - Latencia acotada: peor caso = `read_timeout` (≤ 8 s) por proveedor, **no** segundos sin techo.
 - Una caída de proveedor abre el circuito en < 30 s y deja de propagar latencia.
-- Stampede de 50 requests concurrentes al mismo `iccid` = 1 sola llamada al proveedor.
-- Cuota del proveedor protegida (relevante porque suele estar facturada).
+- Cuando se implemente el caché single-flight, un stampede de 50 requests concurrentes al mismo `iccid` debería producir 1 sola llamada al proveedor. Hoy esto sigue pendiente salvo limitadores específicos como Tele2.
+- Cuota del proveedor parcialmente protegida: Tele2 tiene limiter específico; el resto depende de timeouts/circuit breaker y de futuros bulkheads/caches.
 
 **Negativas / mitigaciones**
 - Caché in-memory no se comparte entre workers de uvicorn → duplicación parcial si hay >1 worker → **mitigación**: aceptable a 15–20 concurrentes; si pesa, mover a Redis con `aiocache(redis)`.
 - Circuit breaker es per-process → **mitigación**: igual; un breaker abierto en un worker no afecta a otro, lo que de hecho da degradación gradual. Si pesa, breaker compartido vía Redis.
-- TTL de 5 s puede confundir a usuarios que "dispararon una acción y consultan inmediatamente" → **mitigación**: el endpoint mutante (operación de control canónica `purge`) **invalida la caché** del `iccid` afectado al volver.
+- Cuando exista caché TTL, las mutaciones deberán invalidar la entrada del `iccid` afectado. Hoy no hay caché genérico que invalidar.
 
 ## Alternativas consideradas
 

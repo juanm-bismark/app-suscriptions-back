@@ -61,6 +61,7 @@ from app.tenancy.credential_expiry import (
 )
 from app.tenancy.models.credentials import CompanyProviderCredentials
 from app.tenancy.models.idempotency import IdempotencyKey
+from app.tenancy.models.provider_source_config import ProviderSourceConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -100,6 +101,17 @@ async def _load_credentials(
     creds["account_scope"] = row.account_scope or {}
     if row.provider == "tele2" and (row.account_scope or {}).get("max_tps") is not None:
         creds["max_tps"] = (row.account_scope or {})["max_tps"]
+    if row.provider == Provider.MOABITS.value:
+        result = await db.execute(
+            select(ProviderSourceConfig).where(
+                ProviderSourceConfig.provider == Provider.MOABITS.value,
+            )
+        )
+        source_config = result.scalar_one_or_none()
+        source_company_codes = _configured_company_codes(
+            (source_config.settings or {}) if source_config is not None else {}
+        )
+        creds["company_codes"] = source_company_codes
     return creds
 
 
@@ -243,7 +255,7 @@ def _custom_fields(provider_fields: dict[str, Any]) -> dict[str, Any]:
 
 def _detail_level(data: dict[str, Any]) -> str:
     provider_fields = data.get("provider_fields") or {}
-    if data.get("provider") == Provider.TELE2.value:
+    if "detail_enriched" in provider_fields:
         return "detail" if provider_fields.get("detail_enriched") is True else "summary"
     return "detail"
 
@@ -359,8 +371,8 @@ def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
             "active": services,
             "basic": _first_present(provider_fields, "basic_services"),
             "supplementary": _first_present(provider_fields, "supplementary_services"),
-            "data_service": _first_present(provider_fields, "data_service"),
-            "sms_service": _first_present(provider_fields, "sms_service"),
+            "data_service": _boolish(_first_present(provider_fields, "data_service")),
+            "sms_service": _boolish(_first_present(provider_fields, "sms_service")),
         },
         "limits": {
             "data": _first_present(provider_fields, "data_limit_mb"),

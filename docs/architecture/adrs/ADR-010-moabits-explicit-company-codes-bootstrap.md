@@ -3,14 +3,17 @@
 - **Estado**: Accepted
 - **Fecha**: 2026-05-07
 - **Decisores**: equipo backend
-- **Relacionado**: ADR-003 (ACL/adapter), ADR-005 (resiliencia y caché), ADR-006 (credenciales cifradas)
+- **Relacionado**: ADR-003 (ACL/adapter), ADR-005 (resiliencia y caché), ADR-006 (credenciales cifradas), ADR-008 (RBAC)
 
 ## Contexto
 
 Moabits (Orion) requiere acotar las consultas de SIMs por una lista de
 `company_codes` (subcompañías hijas asociadas al `x-api-key`). Esa lista
-se persiste como secreto en `company_provider_credentials.credentials_enc`
-junto con `base_url` y `x_api_key`. El adapter usa ese campo en
+se persiste como configuración no secreta en `provider_source_configs`
+para el provider `moabits`. Las credenciales sensibles (`base_url`,
+`x_api_key`, `parent_company_code`) siguen viviendo cifradas en
+`company_provider_credentials.credentials_enc`. El router combina ambas
+fuentes antes de llamar al adapter, que usa `company_codes` en
 `list_subscriptions` para iterar por code.
 
 Hasta esta versión, `app/subscriptions/routers/sims.py` exponía una
@@ -53,11 +56,12 @@ coincidiría con el `companyName` que devuelve Moabits.
 ## Decisión
 
 Eliminar el auto-scope. `company_codes` Moabits debe estar **persistido
-explícitamente** en `company_provider_credentials.credentials_enc` antes
-de poder listar. El flujo de onboarding queda:
+explícitamente** en `provider_source_configs.settings.company_codes`
+antes de poder listar. El flujo de onboarding queda:
 
 1. **Crear/rotar credencial**: `PATCH /v1/companies/me/credentials/moabits`
-   con `base_url`, `x_api_key`, y opcionalmente `company_codes` iniciales.
+   con `base_url`, `x_api_key` y `parent_company_code`. No se guardan
+   `company_codes` dentro del blob cifrado de credenciales.
 2. **Descubrir subcompañías** (read-only):
    `GET /v1/companies/me/credentials/moabits/companies/discover`
    devuelve la lista de subcompañías visibles para el `x-api-key`,
@@ -65,10 +69,17 @@ de poder listar. El flujo de onboarding queda:
 3. **Persistir selección**:
    `PUT /v1/companies/me/credentials/moabits/company-codes` con la lista
    final. Valida contra Moabits que todos los codes existan y los guarda
-   cifrados.
+   en `provider_source_configs.settings.company_codes`.
 4. **Listar SIMs**: `GET /v1/sims?provider=moabits` lee directamente
-   `credentials.company_codes` de BD y delega al adapter. Sin llamadas
-   extra de discovery.
+   `provider_source_configs.settings.company_codes`, lo inyecta en las
+   credenciales resueltas para esa llamada y delega al adapter. Sin
+   llamadas extra de discovery.
+
+El `PUT /v1/companies/me/credentials/moabits/company-codes` es
+**admin-only**. Aunque no persiste secretos, cambia el scope efectivo del
+origen Moabits y por tanto qué SIMs entran al listado operativo. Esa
+decisión se trata como configuración de fuente, no como rotación ordinaria
+de credenciales delegable a `manager`.
 
 Si `company_codes` está vacío al listar, el router responde
 `412 ListingPreconditionFailed` con un mensaje accionable que apunta a
@@ -87,7 +98,8 @@ los pasos 2 y 3:
 - Listado de SIMs Moabits hace **una** request a Moabits en lugar de dos.
 - Comportamiento determinístico y auditable: la lista efectiva de codes
   es exactamente lo que la BD dice — `SELECT ... FROM
-  company_provider_credentials` es la fuente de verdad.
+  provider_source_configs WHERE provider = 'moabits'` es la fuente de
+  verdad.
 - Desaparece el acoplamiento implícito `Company.name` ↔ `companyName`
   Moabits. Renombrar el tenant local no rompe el listado.
 - El error de configuración aparece en el primer listado con un mensaje
@@ -103,7 +115,13 @@ los pasos 2 y 3:
   funciona sin antes haber persistido `company_codes`.
   - **Mitigación**: el endpoint `/companies/discover` ya existe para que
     el frontend muestre la lista al usuario y haga el `PUT` con la
-    selección. Es 1 click adicional al setup, una sola vez por tenant.
+    selección. Es 1 click adicional al setup, una sola vez por fuente.
+- **Sólo admin puede persistir la selección**: un `manager` puede descubrir
+  subcompañías, pero no cambiar el scope efectivo.
+  - **Mitigación**: esto evita ampliar o reducir el universo operativo de
+    SIMs sin una persona con permiso administrativo. La credencial se
+    puede crear/rotar por `manager`, pero el alcance final de Moabits
+    queda bajo control de `admin`.
 - **No se autodescubren nuevas subcompañías**: si Moabits agrega una
   child company después del setup, no aparece automáticamente en el
   listado.
@@ -146,7 +164,7 @@ los pasos 2 y 3:
 |---|---|---|
 | Llamadas upstream por listado | 1 (solo el listado) | 2 (discover + listado) |
 | Determinismo | Alto (BD = verdad) | Bajo (depende de runtime) |
-| Auditabilidad | `SELECT credentials_enc` muestra todo | Hay que reproducir el match |
+| Auditabilidad | `SELECT provider_source_configs` muestra todo | Hay que reproducir el match |
 | Robustez ante renombres | Inmune | Frágil |
 | Pasos de onboarding | discover + PUT (1 click) | Cero, si los nombres matchean |
 | Diagnóstico de fallos | Mensaje accionable directo | "no match" críptico |
@@ -179,6 +197,14 @@ Cambios en este ADR:
   - `test_moabits_listing_uses_persisted_company_codes` (listado normal
     cuando ya están guardados; el adapter no recibe llamadas de
     discovery extra).
+- `app/tenancy/routers/credentials.py`: `PUT
+  /v1/companies/me/credentials/moabits/company-codes` usa `AdminProfile`,
+  valida los codes contra Moabits y persiste la selección en
+  `provider_source_configs`.
+- `tests/test_credentials_router.py`: agregado
+  `test_only_admin_can_select_moabits_company_codes` para asegurar `403`
+  a `manager` y cero commits.
 
-Sin migraciones de BD. El campo `company_codes` ya existía en el JSON
-cifrado y es la única fuente de verdad ahora.
+Migración de BD: `006_provider_source_configs.sql`. `company_codes` deja
+de formar parte del JSON cifrado de credenciales y pasa a ser
+configuración no secreta, provider-wide, de la fuente Moabits.

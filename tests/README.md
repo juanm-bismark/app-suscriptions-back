@@ -1,143 +1,90 @@
 # Testing Strategy — Subscriptions API
 
-**Status**: 2026-04-30 | Test pyramid structure per ADR-009
+**Status date:** 2026-05-07
+**ADR:** `docs/architecture/adrs/ADR-009-testing-strategy.md`
 
-## Overview
+The suite follows a fast test pyramid: domain/schema unit tests, provider
+mapper/adapter tests with mocked HTTP, router/component tests with fake
+dependencies, and resilience/control-flow tests. Real provider sandbox tests are
+not part of the default suite.
 
-The test suite follows a **testing pyramid** strategy (ADR-009) with three layers:
+## Current Tree
 
-1. **Unit Tests** — Fast, isolated tests of individual components
-2. **Contract Tests** — Validate adapter protocol compliance
-3. **Integration Tests** — End-to-end API flows (marked `@pytest.mark.skip` for CI)
-
-## Directory Structure
-
-```
+```text
 tests/
-├── __init__.py
-├── conftest.py                    # Shared fixtures
-├── test_domain.py                 # Domain model tests
-├── test_schemas.py                # Pydantic schema tests
+├── conftest.py
+├── test_domain.py
+├── test_schemas.py
+├── test_provider_capabilities.py
+├── test_credentials_router.py
+├── test_sims_router_controls.py
+├── test_resilience.py
 └── providers/
-    ├── __init__.py
-    ├── test_kite_adapter.py        # Kite status mapping + behavior
-    ├── test_tele2_adapter.py       # Tele2 status mapping + behavior
-    └── test_moabits_adapter.py     # Moabits adapter (unit + fixtures)
+    ├── test_provider_contract.py
+    ├── test_kite_adapter.py
+    ├── test_kite_faults.py
+    ├── test_kite_mappers.py
+    ├── test_kite_writes.py
+    ├── test_tele2_adapter.py
+    ├── test_tele2_status_map.py
+    ├── test_moabits_adapter.py
+    └── test_moabits_writes.py
 ```
 
-## Test Categories
+## Coverage Areas
 
-### Layer 1: Unit Tests (Fast, Mocked)
+Current tests cover:
 
-**Domain Model** (`test_domain.py`):
-- Enum correctness (AdministrativeStatus, ConnectivityState)
-- Aggregate immutability (Subscription)
-- Value object creation (UsageSnapshot, ConnectivityPresence)
+- Domain enums and value objects.
+- Pydantic API schemas.
+- Provider capability reporting.
+- Credential router behavior, including Moabits company-code controls.
+- SIM router controls, idempotency and provider resolution.
+- Provider contract conformance.
+- Kite mapper, fault and write behavior.
+- Tele2 adapter/status behavior.
+- Moabits adapter, usage, listing and write behavior.
+- Resilience helpers such as circuit breaker behavior.
 
-**Status Mappings** (`providers/test_*.py`):
-- Bidirectional mapping: `native ↔ canonical`
-- Coverage of all provider states
-- Fallback to UNKNOWN for unrecognized values
-- Reverse mapping validation (unsupported transitions raise UnsupportedOperation)
+## Mocking Strategy
 
-**Schemas** (`test_schemas.py`):
-- Pydantic model validation
-- OpenAPI enum typing for `AdministrativeStatus`
-- `from_attributes=True` configuration (ORM compatibility)
-- Optional field handling (data_service, sms_service in StatusChangeIn)
+Provider tests use local fixtures/mocks and `pytest-httpx` / `pytest-asyncio`
+from `requirements-dev.txt`. Adapter behavior tests are no longer broadly
+skipped pending HTTP mocking setup.
 
-### Layer 2: Adapter Behavior Tests (Mocked HTTP)
-
-Marked with `@pytest.mark.skip` pending `responses` or `httpx-mock` setup.
-
-**Kite Adapter**:
-- SOAP/XML parsing for getSubscriptionDetail
-- Consumption data extraction (daily/monthly blocks)
-- Presence level handling (known levels → logging for unknowns)
-- UnsupportedOperation for lifecycle changes
-
-**Tele2 Adapter**:
-- REST/JSON parsing for device endpoints
-- date_activated / date_modified extraction
-- Idempotency-Key header forwarding
-- purge() delegation to set_administrative_status(PURGED)
-- HTTP 404 detection via exc.detail
-- Cisco/Jasper Search Devices contract:
-  - required `modifiedSince`
-  - strict `yyyy-MM-ddTHH:mm:ssZ`
-  - max one-year lookback
-  - `pageSize` clamp/default 50 and `modifiedTill = modifiedSince + 1 year`
-- Cisco fair-use handling:
-  - `40000029 Rate Limit Exceeded` maps to `ProviderRateLimited`
-  - Tele2 credentials can carry `account_scope.max_tps` for Advantage-style 5 TPS
-  - in-process limiter serializes Tele2 calls per account key
-
-**Moabits Adapter**:
-- Parallel API calls (getSimDetails + getServiceStatus)
-- services normalization (slash-separated → list)
-- Selective data/SMS service control
-- Local pagination warning + behavior
-- Idempotency-Key header forwarding
-
-### Layer 3: Integration Tests (Optional, E2E)
-
-Not included in current suite; can be added if provider sandboxes become available.
+Real provider payloads should be added as golden fixtures when captured from
+Kite, Tele2 or Moabits. Those fixtures should verify mapper drift without
+requiring live provider credentials in normal CI.
 
 ## Running Tests
 
-### All tests:
+Install development dependencies, then run:
+
 ```bash
 pytest tests/
 ```
 
-### Only unit tests (skip skipped tests):
-```bash
-pytest tests/ -m "not skip"
-```
+Useful focused runs:
 
-### Specific file:
 ```bash
 pytest tests/test_domain.py -v
-pytest tests/providers/test_kite_adapter.py -v
+pytest tests/test_sims_router_controls.py -v
+pytest tests/providers/test_moabits_adapter.py -v
+pytest tests/providers/test_provider_contract.py -v
 ```
 
-### Coverage:
+Coverage:
+
 ```bash
 pytest tests/ --cov=app --cov-report=term-missing
 ```
 
-## Next Steps: Mocking Setup
+## Remaining Test Gaps
 
-To unlock Layer 2 tests, install and configure:
-
-```bash
-pip install responses httpx-mock pytest-asyncio
-```
-
-Then update fixtures:
-```python
-@pytest.mark.asyncio
-async def test_get_subscription_parses_soap(moabits_creds):
-    """Mock SOAP response and test parsing."""
-    from responses import matchers, mock
-
-    with mock.mock():
-        # Register responses, call adapter, assert results
-        pass
-```
-
-## Future: Contract Tests
-
-Once API documentation is final, consider:
-- `pact` library for provider contract testing
-- Golden files for provider payloads (verified against spec)
-- Snapshot tests for Subscription serialization
-
-## Known Issues
-
-**Layer 2 tests currently skipped** due to:
-- Lack of mock HTTP client setup in CI
-- Complexity of mocking async httpx calls
-- SOAP/XML parsing requires realistic payload samples
-
-**Recommendation**: Set up `pytest-asyncio` + `httpx-mock` in next phase.
+- Live sandbox tests are intentionally absent until providers supply stable
+  sandbox access and rate limits.
+- Moabits v2 enrichment should keep tests for full, detail-only,
+  connectivity-only, timeout and batch-boundary behavior as the provider
+  contract is confirmed.
+- Metrics/OpenTelemetry and generic provider-call audit need tests when those
+  features are implemented.

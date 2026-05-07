@@ -1,6 +1,8 @@
 {
   "project_type": "brownfield",
   "depth": "comprehensive",
+  "status_date": "2026-05-07",
+  "status_note": "Estado actualizado contra el código y la documentación vigente. Los documentos de Phase 1-8 quedan como histórico/justificación; la fuente de verdad operativa está en ARCHITECTURE.md, DOCS_CODE_ALIGNMENT_AUDIT.md, ADR-010 y ADR-011.",
   "focus_areas": [
     "analysis",
     "DDD",
@@ -9,47 +11,116 @@
     "diagrams",
     "NFR",
     "security",
-    "migration"
+    "migration",
+    "provider-integration",
+    "documentation-alignment"
   ],
-  "system_description": "API que centraliza la consulta y operación de SIMs/suscripciones provenientes de tres proveedores externos (Kite, Tele2, Moabits) bajo un modelo de dominio canónico. Sólo proxy en tiempo real: no persiste el estado del SIM.",
+  "system_description": "API FastAPI multi-tenant que centraliza consulta, uso, presencia y operaciones de control de SIMs/suscripciones M2M/IoT de Kite, Tele2 y Moabits bajo una fachada canónica /v1/sims/**. Opera como proxy en tiempo real: no persiste estado canónico de SIM; sólo persiste ruteo, credenciales/configuración, idempotencia y auditoría operativa.",
   "tech_constraints": {
     "language": "Python 3.12+",
-    "framework": "FastAPI (async)",
+    "framework": "FastAPI async",
     "orm": "SQLAlchemy 2.0 async + asyncpg",
     "http_client": "httpx",
-    "auth": "JWT propio (PyJWT + bcrypt) con RBAC; persistencia en Postgres",
-    "db": "PostgreSQL (gestionado en Supabase o equivalente)",
-    "deploy": "Docker (docker-compose ya presente)"
+    "auth": "JWT propio HS256 (PyJWT + bcrypt) con RBAC por AppRole y scope por Profile.company_id",
+    "db": "PostgreSQL",
+    "deploy": "Docker / docker-compose",
+    "secrets": "Credenciales proveedor cifradas con Fernet en company_provider_credentials.credentials_enc",
+    "logging": "structlog + RequestIDMiddleware",
+    "feature_flags": [
+      "LIFECYCLE_WRITES_ENABLED",
+      "MOABITS_V2_ENRICHMENT_ENABLED"
+    ]
   },
   "team_size": "<5 ingenieros [ASSUMPTION]",
   "scale_requirements": {
     "sims_total": 134612,
     "concurrent_users": "15-20",
     "batch_jobs": "ninguno",
-    "mode": "real-time proxy (sin sincronización ni almacén canónico de SIMs)"
+    "mode": "real-time proxy (sin sincronización ni almacén canónico de SIMs)",
+    "moabits_estimated_sims_per_tenant": "~134k [ASSUMPTION]"
+  },
+  "implementation_status": {
+    "routers_versioned_under_v1": true,
+    "providers_registered": [
+      "kite",
+      "tele2",
+      "moabits"
+    ],
+    "provider_capabilities_endpoint": "GET /v1/providers/{provider}/capabilities",
+    "sim_routing_map": "implemented",
+    "encrypted_credentials": "implemented",
+    "provider_source_configs": "implemented for Moabits company_codes",
+    "lifecycle_writes": "implemented but gated by LIFECYCLE_WRITES_ENABLED",
+    "lifecycle_change_audit": "implemented for SIM status/purge writes",
+    "generic_audit_log": "migration exists; generic audit middleware/decorators pending",
+    "circuit_breaker": "implemented per adapter in memory",
+    "generic_cache_singleflight": "pending",
+    "generic_adapter_bulkhead": "pending",
+    "metrics_endpoint": "pending",
+    "opentelemetry": "pending",
+    "tenant_rate_limit": "pending"
   },
   "decisions_made": [
     "D1 → ADR-001: Modular Monolith",
-    "D2+D7 → ADR-005: HTTP sync + asyncio.gather + timeout/retry/circuit breaker + cache TTL ≤ 5s",
-    "D3 → ADR-002: Real-time proxy, SIM Routing Map only persisted artifact",
-    "D4 → ADR-007: REST + /v1/sims URL versioning + cursor pagination + RFC 7807",
-    "D5 → ADR-008: Reuse existing JWT + RBAC + Company scope + audit_log",
-    "D6 → ADR-009: Test pyramid + golden files + contract tests + fake providers",
-    "D8 → ADR-006: Encrypted credentials table (not JSONB)",
-    "D9 → ADR-004: Canonical error hierarchy → RFC 7807",
-    "D-transversal → ADR-003: ACL + Provider Adapter pattern + Provider Registry"
+    "D3 → ADR-002: Real-time proxy; no canonical SIM store; SIM Routing Map is the only persisted SIM artifact",
+    "D-transversal → ADR-003: Anti-Corruption Layer + Provider Adapter pattern + Provider Registry",
+    "D9 → ADR-004: Canonical error hierarchy → RFC 7807 Problem Details",
+    "D2+D7 → ADR-005: HTTP sync + adapter circuit breaker; retry/cache/generic bulkhead remain target/pending except provider-specific limiters",
+    "D8 → ADR-006: Encrypted company_provider_credentials table; provider_source_configs for non-secret source config",
+    "D4 → ADR-007: REST + /v1 URL versioning + cursor pagination + Idempotency-Key for SIM writes",
+    "D5 → ADR-008: Reuse existing JWT + RBAC + Company scope + lifecycle audit for SIM writes",
+    "D6 → ADR-009: Test pyramid + provider contract tests + golden/realistic payload tests",
+    "ADR-010: Moabits company_codes bootstrap is explicit; selected codes live in provider_source_configs.settings.company_codes, not credentials_enc",
+    "ADR-011: Moabits v2 enrichment is optional for GET /v1/sims?provider=moabits; v1 simList remains source of ICCIDs"
   ],
+  "current_provider_behaviour": {
+    "kite": {
+      "auth": "certificate/PFX credentials; WS-Security UsernameToken optional when username/password configured",
+      "listing": "SearchableProvider via Kite getSubscriptions",
+      "writes": "set_administrative_status subset + canonical purge mapped to networkReset, gated by LIFECYCLE_WRITES_ENABLED",
+      "notes": [
+        "networkReset does not change lifeCycleStatus",
+        "status history support is advertised by capabilities"
+      ]
+    },
+    "tele2": {
+      "auth": "HTTP Basic using username:api_key",
+      "listing": "Search Devices requires modified_since; adapter enriches first 5 rows with Get Device Details",
+      "rate_limit": "in-process per-account limiter using max_tps (default 1)",
+      "writes": "status writes via Edit Device Details; canonical purge maps to status PURGED, gated by LIFECYCLE_WRITES_ENABLED"
+    },
+    "moabits": {
+      "auth_v1": "X-API-KEY exchanged for Bearer/JWT through /integrity/authorization-token",
+      "auth_v2": "X-API-KEY direct",
+      "company_scope": "provider_source_configs.settings.company_codes configured via discover + admin PUT company-codes",
+      "listing": "v1 /api/company/simList/{companyCode}; local offset pagination",
+      "v2_enrichment": "optional detail/connectivity enrichment behind MOABITS_V2_ENRICHMENT_ENABLED",
+      "writes": "active/suspend/purge v1 endpoints, gated by LIFECYCLE_WRITES_ENABLED",
+      "known_gaps": [
+        "Confirm whether v2 uses the same X-API-KEY as v1",
+        "Confirm v2 batch/rate limits",
+        "smsLimitMo/smsLimitMt not preserved separately yet",
+        "v2 connectivity fields remain in provider_fields, not normalized",
+        "v2 enrichment failures do not set SimListOut.partial"
+      ]
+    }
+  },
   "open_questions": [
-    "¿Qué proveedor se considera 'autoridad' cuando un mismo ICCID aparece en más de uno? (caso esperado: nunca, pero hay que definirlo)",
-    "¿Existe un identificador estable de cliente/cuenta por proveedor (Kite endCustomerId, Tele2 accountId, Moabits companyCodes) que se mapee a Company del sistema?",
-    "¿La carga inicial del mapping ICCID→provider la entregan los proveedores en CSV o se descubre llamando sus listados?",
-    "¿Qué SLA de uptime contractual exigen los proveedores externos? Determina la agresividad del circuit breaker"
+    "¿Qué proveedor se considera autoridad si un mismo ICCID aparece en más de uno? Caso esperado: nunca, pero falta política explícita.",
+    "¿La carga inicial del mapping ICCID→provider será por CSV/import admin o por listados provider-scoped operados manualmente?",
+    "¿Qué SLA/quotas reales tienen Kite, Tele2 y Moabits para calibrar timeouts, circuit breaker y rate limiting?",
+    "¿Moabits v2 reutiliza siempre la misma X-API-KEY que v1 o requiere x_api_key_v2 por tenant?",
+    "¿Cuál es el batch máximo y rate limit real de Moabits v2?",
+    "¿Las degradaciones de Moabits v2 deben propagarse a SimListOut.partial/failed_providers o basta provider_fields.enrichment_status?",
+    "¿Cuál es la retención legal requerida para audit_log y lifecycle_change_audit?",
+    "¿Qué stack de observabilidad se usará para métricas/alertas/trazas?"
   ],
   "assumptions": [
     "team_size < 5 ingenieros",
-    "El sistema sólo se invoca desde un frontend interno autenticado; no hay clientes públicos",
-    "Las credenciales de cada proveedor son por-cuenta-empresa (cada Company puede tener sus propias credenciales para uno o más proveedores)",
-    "El operador del sistema acepta que la latencia de la API quede acotada por la latencia del proveedor más lento involucrado en una operación"
+    "El sistema se invoca desde un frontend interno autenticado; no hay clientes públicos anónimos",
+    "Las credenciales de cada proveedor son por cuenta/tenant; cada Company puede tener sus propias credenciales para uno o más proveedores",
+    "El operador acepta que la latencia de la API quede acotada por la latencia del proveedor involucrado",
+    "El producto prioriza frescura en tiempo real sobre cache largo o almacenamiento canónico local"
   ],
   "component_names": {
     "api_service": "Subscriptions API",
@@ -61,8 +132,14 @@
     "domain_event": "StatusChange",
     "anti_corruption_layer": "Provider Adapter",
     "provider_interface": "SubscriptionProvider (Protocol)",
+    "provider_listing_capability": "SearchableProvider (Protocol)",
     "provider_registry": "Provider Registry",
     "routing_table": "SIM Routing Map",
+    "provider_source_config_table": "provider_source_configs",
+    "credentials_table": "company_provider_credentials",
+    "generic_audit_table": "audit_log",
+    "lifecycle_audit_table": "lifecycle_change_audit",
+    "idempotency_table": "idempotency_keys",
     "providers": [
       "Kite",
       "Tele2",
@@ -71,30 +148,35 @@
     "auth_subject": "Profile",
     "tenant": "Company"
   },
-  "phases_to_run": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8
-  ],
+  "docs_status": {
+    "current_summary": "docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md",
+    "main_architecture": "docs/architecture/ARCHITECTURE.md",
+    "moabits_v2_contract": "docs/architecture/MOABITS_ORION_GATEWAY_API_V2.md",
+    "moabits_v2_decision": "docs/architecture/adrs/ADR-011-moabits-v2-list-enrichment.md",
+    "moabits_company_codes_decision": "docs/architecture/adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md",
+    "historical_phase_docs": [
+      "docs/architecture/arch-analysis.md",
+      "docs/architecture/patterns-decisions.md",
+      "docs/architecture/_phase7_consistency_check.md"
+    ]
+  },
+  "phases_to_run": [],
   "delivery_batches": {
-    "batch_1": [
+    "completed_or_partially_completed": [
       "Phase 1",
       "Phase 2",
-      "Phase 3"
-    ],
-    "batch_2": [
+      "Phase 3",
       "Phase 4",
       "Phase 5",
-      "Phase 6"
-    ],
-    "batch_3": [
+      "Phase 6",
       "Phase 7",
       "Phase 8"
+    ],
+    "current_work": [
+      "Documentation/code alignment",
+      "Moabits v2 production validation",
+      "Provider call audit design",
+      "Observability/rate-limit hardening"
     ]
   }
 }

@@ -10,14 +10,14 @@ C4Context
 
   System_Ext(kite, "Kite", "Plataforma M2M de Telefónica. REST/SOAP. Vocabulario: icc, lifeCycleStatus, consumption*.")
   System_Ext(tele2, "Tele2 IoT", "API REST v1. Vocabulario: iccid, status, ratePlan, Get Device Usage.")
-  System_Ext(moabits, "Moabits Orion", "API REST 2.0.0. Vocabulario: iccid, simStatus, simUsage.")
+  System_Ext(moabits, "Moabits Orion", "API v1 + Gateway API v2. Vocabulario: iccid, simStatus, simUsage.")
 
-  SystemDb(pgdb, "PostgreSQL", "Tenancy, identity, SIM Routing Map, audit_log, idempotency_keys. NO persiste estado de SIM.")
+  SystemDb(pgdb, "PostgreSQL", "Tenancy, identity, SIM Routing Map, provider_source_configs, audit_log, lifecycle_change_audit, idempotency_keys. NO persiste estado de SIM.")
 
   Rel(user, api, "HTTPS + JWT", "HTTPS")
   Rel(api, pgdb, "SQL (asyncpg)", "TCP")
   Rel(api, kite, "HTTPS + auth propio de Kite", "HTTPS")
   Rel(api, tele2, "HTTPS + auth propio de Tele2", "HTTPS")
-  Rel(api, moabits, "HTTPS + JWT de Moabits", "HTTPS")
+  Rel(api, moabits, "HTTPS + v1 Bearer/JWT + v2 X-API-KEY", "HTTPS")
 
   UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

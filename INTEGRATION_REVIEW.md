@@ -1,5 +1,13 @@
 # Multi-Provider IoT/M2M Integration Review
 
+> **Reference / historical provider research.** This review preserves the
+> provider evidence and reasoning collected during adapter remediation. For the
+> current implementation status and remaining gaps, use
+> `docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md`,
+> `docs/architecture/PROVIDER_SPEC_GAPS.md`, `IMPLEMENTATION_PLAN.md`, and the
+> active ADRs. Moabits source selection and v2 listing enrichment are governed
+> by ADR-010 and ADR-011.
+
 **Status:** Updated after provider-adapter remediation, with documented evidence from both vendor notebooks.
 **Date:** 2026-05-05
 **Scope:** Kite (Telefónica UNICA), Tele2 (Cisco Control Center / Jasper), Moabits (Orion API 2.0)

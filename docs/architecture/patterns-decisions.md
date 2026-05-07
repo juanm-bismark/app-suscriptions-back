@@ -1,5 +1,11 @@
 # Phase 3 — Selección de Patrones
 
+> **Historical architecture phase artifact.** This file records the pattern
+> selection reasoning that fed the ADRs. Some implementation details have
+> evolved since the phase write-up; the current alignment snapshot is
+> `DOCS_CODE_ALIGNMENT_AUDIT.md`, and binding decisions live in
+> `ARCHITECTURE.md` plus `adrs/`.
+
 > Una decisión por dimensión. Cada una con: pattern elegido, alternativas consideradas, trade-offs, condiciones de invalidación. Los items marcados con (→ ADR-NNN) generarán un ADR formal en Phase 4.
 
 ---

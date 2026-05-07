@@ -1,10 +1,11 @@
 """Moabits / Orion API 2.0 provider adapter — REST/JSON over HTTPS.
 
 Credentials dict keys:
-    base_url (str): API base, e.g. "https://www.api.myorion.co".
-    x_api_key (str): Orion Web Client application key. The adapter calls
-        GET /integrity/authorization-token and uses info.authorizationToken as
-        the Bearer token for provider calls.
+    base_url (str): v1 API base, e.g. "https://www.api.myorion.co".
+    x_api_key (str): Orion application key. v1 paths exchange it for a Bearer
+        token via GET /integrity/authorization-token. v2 paths
+        (/api/v2/sim/{iccids}, /api/v2/sim/connectivity/{iccids}) accept the
+        same key directly as the X-API-KEY header — no token exchange.
     company_codes (list[str]): Company codes owned by this tenant.
     company_id (str): Injected by the service layer — not a stored credential.
 
@@ -31,6 +32,8 @@ Orion API 2.0.0 paths used here are documented in the public Swagger:
     GET /api/company/simList/{companyCodes}
     GET /api/company/simListDetail/{companyCodes}
     GET /api/sim/connectivityStatus/{iccidList}
+    GET /api/v2/sim/{iccidList}                 (v2, X-API-KEY directly)
+    GET /api/v2/sim/connectivity/{iccidList}    (v2, X-API-KEY directly)
     PUT /api/sim/active/
     PUT /api/sim/suspend/
     PUT /api/sim/purge/
@@ -39,6 +42,7 @@ Orion API 2.0.0 paths used here are documented in the public Swagger:
 import asyncio
 import base64
 import calendar
+import dataclasses
 import json
 import time
 from dataclasses import dataclass
@@ -47,6 +51,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 import httpx
+import structlog
 
 from app.config import get_settings
 from app.providers.adapter_base import BaseAdapter
@@ -78,6 +83,8 @@ _TOKEN_STALE_GRACE_SECONDS = 30
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}
 _TOKEN_LOCKS: dict[str, asyncio.Lock] = {}
 MOABITS_DEFAULT_PARENT_COMPANY_CODE = "48123"
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -321,6 +328,40 @@ def _first_from(data: Any, *keys: str) -> Any:
     return None
 
 
+def _list_from(data: Any, *keys: str) -> list[Any]:
+    """Navigate nested dict keys and return the final list, or an empty list."""
+    node: Any = data
+    for key in keys:
+        if not isinstance(node, dict):
+            return []
+        node = cast(dict[str, Any], node).get(key)
+    return node if isinstance(node, list) else []
+
+
+def _status_row_from(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        return {"iccid": value.strip()}
+    return None
+
+
+def _service_fields_from_status_row(row: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {"detail_enriched": False}
+    enabled_services: list[str] = []
+    if (v := row.get("dataService")) is not None:
+        fields["data_service"] = v
+        if str(v).strip().lower() == "enabled":
+            enabled_services.append("data")
+    if (v := row.get("smsService")) is not None:
+        fields["sms_service"] = v
+        if str(v).strip().lower() == "enabled":
+            enabled_services.append("sms")
+    if "data_service" in fields or "sms_service" in fields:
+        fields["services"] = enabled_services
+    return fields
+
+
 def _normalize_services(raw: Any) -> list[str] | None:
     """Moabits returns `services` as a slash-separated string (e.g. "data/sms").
 
@@ -370,6 +411,334 @@ def _coerce_bool(v: Any) -> bool | None:
         if s in ("false", "0", "no", "n", "inactive", "disabled"):
             return False
     return None
+
+
+@dataclass(frozen=True)
+class _V2Settings:
+    enabled: bool
+    base_url: str
+    max_batch: int
+    max_concurrent_chunks: int
+    detail_timeout_seconds: float
+    connectivity_timeout_seconds: float
+
+
+def _v2_settings_from_app_settings() -> _V2Settings:
+    s = get_settings()
+    return _V2Settings(
+        enabled=s.moabits_v2_enrichment_enabled,
+        base_url=s.moabits_v2_base_url.rstrip("/"),
+        max_batch=max(int(s.moabits_v2_max_batch), 1),
+        max_concurrent_chunks=max(int(s.moabits_v2_max_concurrent_chunks), 1),
+        detail_timeout_seconds=float(s.moabits_v2_detail_timeout_seconds),
+        connectivity_timeout_seconds=float(s.moabits_v2_connectivity_timeout_seconds),
+    )
+
+
+def _v2_check(resp: httpx.Response, label: str) -> bool:
+    """Return True for 200, False for 404 (treated as 'not found, empty result').
+
+    Other statuses raise canonical provider errors. 401 is fatal: a misconfigured
+    X-API-KEY would degrade every call silently otherwise.
+    """
+    if resp.status_code == 200:
+        return True
+    if resp.status_code == 404:
+        return False
+    if resp.status_code == 401:
+        raise ProviderAuthFailed(
+            detail=f"Moabits v2 X-API-KEY is invalid or missing ({label})"
+        )
+    if resp.status_code == 403:
+        raise ProviderForbidden(
+            detail=f"Moabits v2 {label} access denied"
+        )
+    if resp.status_code == 429:
+        raise ProviderRateLimited(
+            detail=f"Moabits v2 {label} rate limit exceeded"
+        )
+    if resp.status_code >= 500:
+        raise ProviderUnavailable(
+            detail=f"Moabits v2 {label} HTTP {resp.status_code}"
+        )
+    if resp.status_code >= 400:
+        raise ProviderProtocolError(
+            detail=f"Moabits v2 {label} HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+    return True
+
+
+async def _v2_get(
+    base_url: str, x_api_key: str, path: str, *, timeout: float, label: str
+) -> Any | None:
+    """v2 GET using X-API-KEY directly. Returns parsed JSON, or None on 404.
+
+    No Bearer token exchange — v2 endpoints accept the application key as-is.
+    Raises ProviderUnavailable on network/timeouts.
+    """
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        headers={"X-API-KEY": x_api_key, "Accept": "application/json"},
+        timeout=timeout,
+    ) as client:
+        try:
+            resp = await client.get(path)
+        except httpx.TimeoutException as exc:
+            raise ProviderUnavailable(
+                detail=f"Moabits v2 {label} timeout"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ProviderUnavailable(
+                detail=f"Moabits v2 {label} network error: {exc}"
+            ) from exc
+    if not _v2_check(resp, label):
+        return None
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise ProviderProtocolError(
+            detail=f"Moabits v2 {label} non-JSON response"
+        ) from exc
+
+
+async def _v2_fetch_details_chunk(
+    base_url: str, x_api_key: str, iccids: list[str], timeout: float
+) -> dict[str, dict[str, Any]]:
+    """Fetch a single batch of v2 sim details. Returns {iccid: simInfo row}.
+
+    404 from v2 means none of the iccids in the batch exist there → {}.
+    """
+    if not iccids:
+        return {}
+    path = f"/api/v2/sim/{','.join(iccids)}"
+    data = await _v2_get(
+        base_url, x_api_key, path, timeout=timeout, label="sim detail"
+    )
+    if data is None:
+        return {}
+    rows = _list_from(data, "info", "simInfo")
+    return {
+        str(row["iccid"]): row
+        for row in rows
+        if isinstance(row, dict) and row.get("iccid")
+    }
+
+
+async def _v2_fetch_connectivity_chunk(
+    base_url: str, x_api_key: str, iccids: list[str], timeout: float
+) -> dict[str, dict[str, Any]]:
+    """Fetch a single batch of v2 connectivity. Returns {iccid: row}.
+
+    The published v2 example returns a top-level array; tolerate also the
+    legacy v1-style {info.connectivityStatus[]} envelope and a single-object
+    response (in case the documented schema is delivered for a 1-iccid query).
+    """
+    if not iccids:
+        return {}
+    path = f"/api/v2/sim/connectivity/{','.join(iccids)}"
+    data = await _v2_get(
+        base_url, x_api_key, path, timeout=timeout, label="sim connectivity"
+    )
+    if data is None:
+        return {}
+    rows: list[Any]
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        info_rows = _list_from(data, "info", "connectivityStatus")
+        if info_rows:
+            rows = info_rows
+        elif data.get("iccid"):
+            rows = [data]
+        else:
+            rows = []
+    else:
+        rows = []
+    return {
+        str(row["iccid"]): row
+        for row in rows
+        if isinstance(row, dict) and row.get("iccid")
+    }
+
+
+async def _fetch_v2_enrichment(
+    *,
+    v2_base_url: str,
+    x_api_key: str,
+    iccids: list[str],
+    settings: _V2Settings,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Fetch v2 details + connectivity in parallel, chunked, with graceful degradation.
+
+    Failures (timeouts, 5xx, 401, 403, rate limits) are logged and produce an
+    empty map for the affected chunk. A failure on one chunk does NOT abort
+    sibling chunks — callers see the union of what succeeded and decide
+    per-iccid whether enrichment is full, partial, or missing.
+    """
+    if not iccids:
+        return {}, {}
+    chunks = [
+        iccids[i : i + settings.max_batch]
+        for i in range(0, len(iccids), settings.max_batch)
+    ]
+    sem = asyncio.Semaphore(settings.max_concurrent_chunks)
+
+    swallow = (
+        ProviderUnavailable,
+        ProviderProtocolError,
+        ProviderRateLimited,
+        ProviderForbidden,
+        ProviderAuthFailed,
+    )
+
+    async def _detail(chunk: list[str]) -> dict[str, dict[str, Any]]:
+        async with sem:
+            try:
+                return await _v2_fetch_details_chunk(
+                    v2_base_url,
+                    x_api_key,
+                    chunk,
+                    settings.detail_timeout_seconds,
+                )
+            except swallow as exc:
+                logger.warning(
+                    "moabits_v2_enrichment_chunk_failed",
+                    label="sim_detail",
+                    chunk_size=len(chunk),
+                    error=str(exc),
+                )
+                return {}
+
+    async def _conn(chunk: list[str]) -> dict[str, dict[str, Any]]:
+        async with sem:
+            try:
+                return await _v2_fetch_connectivity_chunk(
+                    v2_base_url,
+                    x_api_key,
+                    chunk,
+                    settings.connectivity_timeout_seconds,
+                )
+            except swallow as exc:
+                logger.warning(
+                    "moabits_v2_enrichment_chunk_failed",
+                    label="sim_connectivity",
+                    chunk_size=len(chunk),
+                    error=str(exc),
+                )
+                return {}
+
+    detail_lists, conn_lists = await asyncio.gather(
+        asyncio.gather(*(_detail(c) for c in chunks)),
+        asyncio.gather(*(_conn(c) for c in chunks)),
+    )
+
+    detail_map: dict[str, dict[str, Any]] = {}
+    for d in detail_lists:
+        detail_map.update(d)
+    conn_map: dict[str, dict[str, Any]] = {}
+    for c in conn_lists:
+        conn_map.update(c)
+    return detail_map, conn_map
+
+
+_V2_CONNECTIVITY_FIELD_MAP: dict[str, str] = {
+    "network": "operator",
+    "country": "country",
+    "rat": "rat_type",
+    "privateIp": "ip_address",
+    "mcc": "mcc",
+    "mnc": "mnc",
+    "chargeTowards": "charge_towards",
+    "dataSessionId": "data_session_id",
+    "dateOpened": "session_started_at",
+    "usageKB": "usage_kb",
+}
+
+
+def _apply_v2_connectivity(pf: dict[str, Any], conn: dict[str, Any]) -> None:
+    """Map v2 connectivity payload onto provider_fields with canonical keys.
+
+    Keys here align with the `network.*` block built in
+    `app/subscriptions/routers/sims.py::_normalized_subscription`. Empty
+    strings and None are dropped so a partial payload does not overwrite
+    information already supplied by v1 or v2 detail.
+    """
+    for src, dst in _V2_CONNECTIVITY_FIELD_MAP.items():
+        v = conn.get(src)
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        pf[dst] = v
+
+
+def _build_listing_subscription(
+    *,
+    v1_row: dict[str, Any],
+    v2_detail: dict[str, Any] | None,
+    v2_connectivity: dict[str, Any] | None,
+    v2_attempted: bool,
+    company_id: str,
+) -> Subscription:
+    """Build a Subscription from v1 simList row plus optional v2 enrichment.
+
+    Layering rules:
+    - v1 is the authoritative source of `simStatus` and current service flags
+      (dataService/smsService) — the active-state view.
+    - v2 detail provides identity (msisdn, imsi, imei), plan, customer, dates.
+      If absent, the Subscription stays at `detail_level=summary`.
+    - v2 connectivity provides real-time network info. If absent, network.*
+      stays empty; callers must not assume it.
+    - `services` (active list) is derived from v1's enabled/disabled flags, not
+      from v2 detail's administrative `services` string. v2's `services_raw` is
+      kept under provider_fields for inspection.
+
+    `v2_attempted=False` means the v2 enrichment flag is off; in that case the
+    output is identical to the v1-only legacy listing (no `enrichment_status`
+    key, no v2-derived fields). This preserves the pre-flag contract exactly.
+    """
+    iccid = str(v1_row.get("iccid") or "")
+
+    if not v2_attempted:
+        native_status = v1_row.get("simStatus", "Unknown")
+        return Subscription(
+            iccid=iccid,
+            msisdn=None,
+            imsi=None,
+            status=map_status(native_status),
+            native_status=native_status,
+            provider=Provider.MOABITS.value,
+            company_id=company_id,
+            activated_at=None,
+            updated_at=None,
+            provider_fields=_service_fields_from_status_row(v1_row),
+        )
+
+    sub = _build_subscription(v2_detail or {}, v1_row, iccid, company_id)
+
+    pf: dict[str, Any] = dict(sub.provider_fields)
+    v1_service_fields = _service_fields_from_status_row(v1_row)
+    if "services" in v1_service_fields:
+        pf["services"] = v1_service_fields["services"]
+    if "data_service" in v1_service_fields:
+        pf["data_service"] = v1_service_fields["data_service"]
+    if "sms_service" in v1_service_fields:
+        pf["sms_service"] = v1_service_fields["sms_service"]
+
+    if v2_connectivity:
+        _apply_v2_connectivity(pf, v2_connectivity)
+
+    pf["detail_enriched"] = v2_detail is not None
+    if v2_detail and v2_connectivity:
+        pf["enrichment_status"] = "full"
+    elif v2_detail:
+        pf["enrichment_status"] = "detail_only"
+    elif v2_connectivity:
+        pf["enrichment_status"] = "connectivity_only"
+    else:
+        pf["enrichment_status"] = "v1_only"
+
+    return dataclasses.replace(sub, provider_fields=pf)
 
 
 def _build_subscription(
@@ -733,69 +1102,66 @@ class MoabitsAdapter(BaseAdapter):
         if not creds.company_codes:
             return [], None
 
-        all_rows: list[dict[str, Any]] = []
-        detail_rows_by_iccid: dict[str, dict[str, Any]] = {}
-        status_rows_by_iccid: dict[str, dict[str, Any]] = {}
-        for company_code in creds.company_codes:
-            details_data, status_data = await asyncio.gather(
-                _get(creds, f"/api/company/simListDetail/{company_code}"),
-                _get(creds, f"/api/company/simList/{company_code}"),
-            )
-
-            detail_rows: list[Any] = cast(list[Any], (cast(dict[str, Any], details_data.get("info") or {}).get("simInfo") or []))
-            rows: list[Any] = cast(list[Any], (cast(dict[str, Any], status_data.get("info") or {}).get("iccidList") or []))
-            if rows:
-                all_rows.extend(rows)
-            for detail_row in detail_rows:
-                if isinstance(detail_row, dict) and detail_row.get("iccid"):  # type: ignore[union-attr]
-                    detail_rows_by_iccid[str(detail_row["iccid"])] = cast(dict[str, Any], detail_row)  # type: ignore[arg-type]
-            for status_row in rows:
-                if isinstance(status_row, dict) and status_row.get("iccid"):  # type: ignore[union-attr]
-                    status_rows_by_iccid[str(status_row["iccid"])] = cast(dict[str, Any], status_row)  # type: ignore[arg-type]
-
-        # Local pagination — Moabits returns all SIMs at once.
         try:
             offset = max(int(cursor or "0"), 0)
         except ValueError:
             offset = 0
         page_size = min(max(limit, 1), 500)
-        page = all_rows[offset : offset + page_size]
+        page: list[dict[str, Any]] = []
+        rows_seen = 0
+        has_more = False
+
+        for company_index, company_code in enumerate(creds.company_codes):
+            status_data = await _get(creds, f"/api/company/simList/{company_code}")
+            rows = [
+                row
+                for row in (
+                    _status_row_from(value)
+                    for value in _list_from(status_data, "info", "iccidList")
+                )
+                if row is not None and row.get("iccid")
+            ]
+            if rows_seen + len(rows) <= offset:
+                rows_seen += len(rows)
+                continue
+
+            start = max(offset - rows_seen, 0)
+            remaining = page_size - len(page)
+            page.extend(rows[start : start + remaining])
+            rows_seen += len(rows)
+
+            if len(page) >= page_size:
+                has_more_in_company = start + remaining < len(rows)
+                has_more_companies = company_index < len(creds.company_codes) - 1
+                has_more = has_more_in_company or has_more_companies
+                break
+
+        v2_settings = _v2_settings_from_app_settings()
+        detail_map: dict[str, dict[str, Any]] = {}
+        conn_map: dict[str, dict[str, Any]] = {}
+        if v2_settings.enabled and page:
+            page_iccids = [
+                str(row["iccid"]) for row in page if row.get("iccid")
+            ]
+            detail_map, conn_map = await _fetch_v2_enrichment(
+                v2_base_url=v2_settings.base_url,
+                x_api_key=creds.x_api_key,
+                iccids=page_iccids,
+                settings=v2_settings,
+            )
 
         subs: list[Subscription] = []
         for row in page:
-            iccid = row.get("iccid", "")
-            detail_row = detail_rows_by_iccid.get(iccid, {})
-            status_row = status_rows_by_iccid.get(iccid, row)
-            if detail_row:
-                subs.append(
-                    _build_subscription(detail_row, status_row, iccid, company_id)
+            iccid = str(row.get("iccid") or "")
+            subs.append(
+                _build_listing_subscription(
+                    v1_row=row,
+                    v2_detail=detail_map.get(iccid),
+                    v2_connectivity=conn_map.get(iccid),
+                    v2_attempted=v2_settings.enabled,
+                    company_id=company_id,
                 )
-            else:
-                native_status = row.get("simStatus", "Unknown")
-                pf: dict[str, Any] = {}
-                if (v := row.get("dataService")) is not None:
-                    pf["data_service"] = v
-                if (v := row.get("smsService")) is not None:
-                    pf["sms_service"] = v
+            )
 
-                subs.append(
-                    Subscription(
-                        iccid=iccid,
-                        msisdn=None,
-                        imsi=None,
-                        status=map_status(native_status),
-                        native_status=native_status,
-                        provider=Provider.MOABITS.value,
-                        company_id=company_id,
-                        activated_at=None,
-                        updated_at=None,
-                        provider_fields=pf,
-                    )
-                )
-
-        next_cursor = (
-            str(offset + len(page))
-            if offset + len(page) < len(all_rows)
-            else None
-        )
+        next_cursor = str(offset + len(page)) if has_more else None
         return subs, next_cursor

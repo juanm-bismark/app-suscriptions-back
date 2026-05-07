@@ -9,11 +9,11 @@ C4Container
   System_Boundary(api_sys, "Subscriptions API (modular monolith)") {
     Container(api_app, "FastAPI App", "Python 3.12 · FastAPI · Uvicorn", "HTTP handlers, routers, middleware (request_id, CORS, auth, problem+json). Single deployable.")
     Container(domain, "Subscription Aggregation Module", "Python package", "Aggregate Subscription, services (Fetcher, Search, Purge), Provider Registry. No conoce vocabulario de proveedores.")
-    Container(providers, "Provider Adapters", "Python packages (kite, tele2, moabits)", "Anti-Corruption Layer. httpx clients + DTOs + mappers + circuit breaker + cache TTL≤5s + retry/timeout.")
+    Container(providers, "Provider Adapters", "Python packages (kite, tele2, moabits)", "Anti-Corruption Layer. httpx clients + DTOs + mappers + circuit breaker + provider-specific timeout/limiters.")
     Container(iam, "Identity & Tenancy Module", "Python package", "users, profiles, companies, company_provider_credentials, refresh_tokens, JWT, RBAC, credential resolver (Fernet).")
   }
 
-  SystemDb(pg, "PostgreSQL", "asyncpg · SQLAlchemy 2.0 async", "Tenancy + Identity + SIM Routing Map + audit_log + idempotency_keys")
+  SystemDb(pg, "PostgreSQL", "asyncpg · SQLAlchemy 2.0 async", "Tenancy + Identity + SIM Routing Map + provider_source_configs + audit_log + lifecycle_change_audit + idempotency_keys")
 
   System_Ext(kite, "Kite")
   System_Ext(tele2, "Tele2 IoT")
@@ -23,10 +23,10 @@ C4Container
   Rel(api_app, iam, "Auth + tenant scope", "in-process")
   Rel(api_app, domain, "Use cases", "in-process")
   Rel(domain, providers, "SubscriptionProvider Protocol", "in-process")
-  Rel(domain, pg, "SIM Routing Map, audit_log", "SQL")
+  Rel(domain, pg, "SIM Routing Map, lifecycle audit, idempotency", "SQL")
   Rel(iam, pg, "users, companies, credentials cifradas", "SQL")
   Rel(providers, kite, "HTTPS", "REST/SOAP")
   Rel(providers, tele2, "HTTPS", "REST")
-  Rel(providers, moabits, "HTTPS", "REST + JWT interno del proveedor")
+  Rel(providers, moabits, "HTTPS", "REST v1 Bearer/JWT + v2 X-API-KEY")
 
   UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

@@ -1,5 +1,10 @@
 # Phase 7 — Reporte de consistency check
 
+> **Historical consistency check.** This was useful during the Phase 7 doc pass,
+> but it is not the live source of truth. Use
+> `docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md` for the current
+> docs-vs-code alignment state.
+
 ## 1. Component names registry — verificación
 
 Nombres canónicos registrados en `_context_state.json.component_names` y su uso en cada documento:

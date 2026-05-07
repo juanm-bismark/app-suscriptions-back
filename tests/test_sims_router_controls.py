@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -11,13 +12,24 @@ from app.database import get_db
 from app.identity.dependencies import get_current_profile
 from app.identity.models.profile import AppRole, Profile
 from app.providers.registry import ProviderRegistry
+from app.shared.crypto import encrypt_credentials
 from app.shared.errors import DomainError
 from app.subscriptions.domain import AdministrativeStatus, Subscription
 from app.subscriptions.routers import sims
 from app.subscriptions.schemas.sim import SimListOut
+from app.tenancy.models.credentials import CompanyProviderCredentials
+from app.tenancy.models.provider_source_config import ProviderSourceConfig
 
 COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
+
+
+class _ScalarResult:
+    def __init__(self, row):
+        self._row = row
+
+    def scalar_one_or_none(self):
+        return self._row
 
 
 class _Routing:
@@ -123,6 +135,52 @@ def test_global_listing_rejects_filters_without_provider() -> None:
 
     assert response.status_code == 409
     assert response.json()["code"] == "provider.unsupported_operation"
+
+
+@pytest.mark.asyncio
+async def test_load_moabits_credentials_uses_only_global_source_config() -> None:
+    fernet_key = Fernet.generate_key().decode()
+    credentials_row = CompanyProviderCredentials(
+        company_id=COMPANY_ID,
+        provider="moabits",
+        credentials_enc=encrypt_credentials(
+            {
+                "base_url": "https://www.api.myorion.co",
+                "x_api_key": "secret-key",
+                "parent_company_code": "48123",
+                "company_codes": ["stale-from-credential"],
+            },
+            fernet_key,
+        ),
+        account_scope={"company_codes": ["stale-from-account-scope"]},
+        active=True,
+        created_at=datetime.now(),
+    )
+    source_config = ProviderSourceConfig(
+        provider="moabits",
+        settings={},
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+
+    class _Db:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, stmt):
+            self.calls += 1
+            if self.calls == 1:
+                return _ScalarResult(credentials_row)
+            return _ScalarResult(source_config)
+
+    loaded = await sims._load_credentials(
+        COMPANY_ID,
+        "moabits",
+        _Db(),
+        Settings(fernet_key=fernet_key),
+    )
+
+    assert loaded["company_codes"] == []
 
 
 def test_provider_listing_builds_canonical_filters(monkeypatch) -> None:
@@ -236,6 +294,36 @@ def test_subscription_output_includes_normalized_blocks() -> None:
     assert out.normalized["customer"]["account_id"] == "100020620"
     assert out.normalized["hardware"]["shipped_at"] == "2016-06-27T07:00:00Z"
     assert out.normalized["custom_fields"] == {"account_custom_1": "78"}
+
+
+def test_moabits_summary_output_normalizes_minimal_simlist_fields() -> None:
+    out = sims._to_out(
+        Subscription(
+            iccid="8910300000001880253",
+            msisdn=None,
+            imsi=None,
+            status=AdministrativeStatus.SUSPENDED,
+            native_status="Suspended",
+            provider="moabits",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=None,
+            provider_fields={
+                "detail_enriched": False,
+                "data_service": "Disabled",
+                "sms_service": "Enabled",
+                "services": ["sms"],
+            },
+        )
+    )
+
+    assert out.detail_level == "summary"
+    assert out.normalized["identity"]["iccid"] == "8910300000001880253"
+    assert out.normalized["status"]["value"] == "suspended"
+    assert out.normalized["status"]["native"] == "Suspended"
+    assert out.normalized["services"]["active"] == ["sms"]
+    assert out.normalized["services"]["data_service"] is False
+    assert out.normalized["services"]["sms_service"] is True
 
 
 @pytest.mark.asyncio
@@ -376,8 +464,8 @@ async def test_moabits_listing_requires_persisted_company_codes(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_moabits_listing_uses_persisted_company_codes(monkeypatch) -> None:
-    """When company_codes are already persisted, the listing path delegates to
-    the adapter directly with no extra Moabits call for discovery.
+    """When company_codes come from source config, the listing path delegates to
+    the adapter with that global provider configuration.
     """
     class _Db:
         def __init__(self) -> None:

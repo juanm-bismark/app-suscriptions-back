@@ -153,12 +153,14 @@ global. Ver `migrations/001_sim_routing_map.sql` y
 routing y se guardan las credenciales por tenant.
 
 Bootstrap note (Moabits `company_codes`): el listado provider-scoped de
-Moabits requiere `company_codes` persistidos en `credentials_enc` antes
-del primer listado. Si el campo está vacío, el router responde
+Moabits requiere `company_codes` persistidos en
+`provider_source_configs.settings.company_codes` antes del primer listado.
+Si el campo está vacío, el router responde
 `412 ListingPreconditionFailed` apuntando al flujo
 `GET /v1/companies/me/credentials/moabits/companies/discover` +
-`PUT /v1/companies/me/credentials/moabits/company-codes`. No hay
-auto-scope por nombre. Ver ADR-010.
+`PUT /v1/companies/me/credentials/moabits/company-codes`. El `GET` puede
+usarlo `manager`/`admin`; el `PUT` es `admin` only porque cambia el scope
+operativo de la fuente Moabits. No hay auto-scope por nombre. Ver ADR-010.
 
 ### 2. **Provider Adapters** — implementación por proveedor
 
@@ -186,12 +188,16 @@ Inyectado vía `Depends` en los services del dominio. Los routers nunca importan
 Cada adapter recibe credenciales específicas-del-tenant en cada llamada (no se "instancia un adapter por tenant"). El service hace:
 
 ```python
-creds = await credential_resolver.resolve(company_id, provider)
-async with provider_registry.get(provider).with_credentials(creds) as p:
-    return await p.get_subscription(iccid)
+creds = await load_credentials(company_id, provider)
+adapter = provider_registry.get(provider)
+return await adapter.get_subscription(iccid, creds)
 ```
 
-`with_credentials` devuelve un wrapper que inyecta auth headers/tokens en las llamadas de esa request. El adapter en sí permanece stateless y reusable.
+El código actual pasa credenciales como `dict` por llamada. Cada adapter
+convierte ese `dict` a su dataclass interno y decide cómo autenticar. El
+adapter en sí permanece stateless y reusable; cualquier estado técnico
+como circuit breaker, token cache Moabits v1 o limiter Tele2 vive dentro
+del adapter y no contiene datos canónicos de SIM.
 
 ## Consecuencias
 

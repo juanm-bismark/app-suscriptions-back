@@ -1,3 +1,10 @@
+> **Reference / historical Orion v1 notes.** This file captures the Orion API
+> 2.0.0 Swagger/v1-style Moabits surface used by the current adapter. It is not
+> the current Moabits Gateway API v2 enrichment decision record. For v2 listing
+> enrichment use `docs/architecture/MOABITS_ORION_GATEWAY_API_V2.md` and
+> `docs/architecture/adrs/ADR-011-moabits-v2-list-enrichment.md`. For current
+> implementation alignment use `docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md`.
+
 Actualización basada en Swagger Orion API 2.0.0 (`https://www.api.myorion.co/api-doc`).
 
 - Server declarado: `https://www.api.myorion.co/`. No se declara sandbox separado.

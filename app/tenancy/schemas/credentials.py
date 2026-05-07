@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from app.tenancy.credential_expiry import CredentialExpiryStatus
 
@@ -58,19 +58,18 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
             "header to GET /integrity/authorization-token, caches the returned "
             "JWT, and refreshes/retries once when a provider business endpoint "
             "returns 401. parent_company_code is used to discover child companies "
-            "through GET /api/company/childs/{companyCode}; company_codes limits "
-            "SIM listing to the selected Moabits company codes."
+            "through GET /api/company/childs/{companyCode}. Configure selected "
+            "Moabits company codes through the admin-only PUT /moabits/company-codes; "
+            "the selection is stored as non-secret provider source config."
         ),
         "value": {
             "credentials": {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "MOABITS_ORION_X_API_KEY",
                 "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
-                "company_codes": ["MOABITS_COMPANY_CODE"],
             },
             "account_scope": {
                 "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
-                "company_codes": ["MOABITS_COMPANY_CODE"],
                 "environment": "production",
             },
         },
@@ -110,20 +109,47 @@ class CredentialTestOut(BaseModel):
 
 
 class MoabitsCompanyOut(BaseModel):
-    company_code: str
-    company_name: str
+    company_code: str = Field(serialization_alias="companyCode")
+    company_name: str = Field(serialization_alias="companyName")
     clie_id: int | None = None
-    selected: bool = False
-    matches_current_company: bool = False
 
 
 class MoabitsCompanyDiscoveryOut(BaseModel):
     current_company_name: str
+    selected_company_codes: list[str] = Field(
+        default_factory=list,
+        description="Moabits company codes already configured for this source.",
+    )
+    selected_companies: list[MoabitsCompanyOut] = Field(
+        default_factory=list,
+        description=(
+            "Discovered Moabits companies whose companyCode is already configured "
+            "for this source."
+        ),
+    )
     companies: list[MoabitsCompanyOut]
 
 
+class MoabitsCompanySelectionItemIn(BaseModel):
+    company_code: str = Field(
+        validation_alias=AliasChoices("companyCode", "company_code"),
+        serialization_alias="companyCode",
+        description="Moabits company code selected for this source.",
+    )
+    company_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("companyName", "company_name"),
+        serialization_alias="companyName",
+        description="Optional Moabits company name from the discovery response.",
+    )
+    clie_id: int | None = None
+
+
 class MoabitsCompanySelectionIn(BaseModel):
-    company_codes: list[str] = Field(
+    company_codes: list[MoabitsCompanySelectionItemIn] = Field(
         min_length=1,
-        description="Moabits company codes selected for this local company.",
+        description=(
+            "Moabits companies selected for this source, using the objects "
+            "returned by discovery."
+        ),
     )

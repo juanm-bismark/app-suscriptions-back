@@ -78,8 +78,8 @@ DB real (Postgres en docker-compose) para `SimRoutingMap` y `audit_log`. **Sin m
 
 `fastapi.testclient.TestClient` con dependency overrides para inyectar `FakeProviderRegistry`. Tests:
 
-+- `POST /v1/sims/{iccid}/purge` sin `Idempotency-Key` → 400.
-+- `POST /v1/sims/{iccid}/purge` con rol `manager` → 403 + auditado.
+- `POST /v1/sims/{iccid}/purge` sin `Idempotency-Key` → 400.
+- `POST /v1/sims/{iccid}/purge` con rol `manager` → 403 + auditado.
 - Errores se serializan a Problem Details con `Content-Type: application/problem+json`.
 
 ### Capa 5 — End-to-end (opcional, CI nightly)

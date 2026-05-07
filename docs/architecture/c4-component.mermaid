@@ -4,26 +4,26 @@
 C4Component
   title Component Diagram — Subscription Aggregation & Provider Adapters
 
-  Container(api_app, "FastAPI App (routers)", "routers/sims.py, routers/admin_credentials.py")
+  Container(api_app, "FastAPI App (routers)", "subscriptions/routers/sims.py, tenancy/routers/credentials.py")
 
   Container_Boundary(agg, "Subscription Aggregation Module") {
-    Component(fetcher, "SubscriptionFetcher", "Domain Service", "iccid → resuelve provider en SIM Routing Map → invoca adapter → devuelve Subscription canónica.")
-    Component(search, "SubscriptionSearchService", "Domain Service", "Provider-scoped native listing or routing-map-backed global page. Cursor pagination + partial failure metadata; no provider fan-out by default.")
-    Component(ops, "SubscriptionOperationService", "Domain Service", "purge (canonical control op — adapters map provider verbs to it). RBAC, Idempotency-Key, cache invalidation, audit_log.")
+    Component(fetcher, "SubscriptionFetcher (conceptual)", "Router helper/use case", "iccid → resuelve provider en SIM Routing Map → invoca adapter → devuelve Subscription canónica.")
+    Component(search, "SubscriptionSearchService (conceptual)", "Router helper/use case", "Provider-scoped native listing or routing-map-backed global page. Cursor pagination + partial failure metadata; no provider fan-out by default.")
+    Component(ops, "SubscriptionOperationService (conceptual)", "Router helper/use case", "status/purge. RBAC, Idempotency-Key, lifecycle_change_audit.")
     Component(registry, "ProviderRegistry", "Factory", "Resuelve Provider enum → instancia de SubscriptionProvider.")
     ComponentDb(routing, "sim_routing_map", "Postgres table", "iccid PK, provider, company_id, last_seen_at")
   }
 
   Container_Boundary(adapters, "Provider Adapters (ACL)") {
     Component(base, "SubscriptionProvider (Protocol)", "Interface", "Firmas canónicas: get_subscription, get_usage, get_presence, set_administrative_status, purge. Providers may expose networkReset/Edit Device Details/dedicated purge routes under the hood. Listing is performed by provider APIs scoped to the credentials.")
-    Component(kite_a, "KiteAdapter", "Adapter", "client.py + dto.py + mappers.py + adapter.py. Circuit breaker + retry/timeout + cache L1 TTL≤5s. Mapea icc→iccid, lifeCycleStatus→AdministrativeStatus, etc.")
+    Component(kite_a, "KiteAdapter", "Adapter", "client.py + dto.py + mappers.py + adapter.py. Circuit breaker + timeout. Mapea icc→iccid, lifeCycleStatus→AdministrativeStatus, etc.")
     Component(tele2_a, "Tele2Adapter", "Adapter", "Idem pero para API v1 de Tele2. Soporta purge (Edit Device {PURGED}); network_reset no soportado.")
-    Component(moabits_a, "MoabitsAdapter", "Adapter", "Idem para Orion 2.0.0. Mapea purge canónico a PUT /api/sim/purge/ con iccidList; usa Bearer/JWT.")
+    Component(moabits_a, "MoabitsAdapter", "Adapter", "Orion v1 + enrichment v2 opcional. Mapea purge canónico a PUT /api/sim/purge/ con iccidList; v1 usa Bearer/JWT, v2 usa X-API-KEY.")
   }
 
   Rel(api_app, fetcher, "GET /v1/sims/{iccid}")
   Rel(api_app, search, "GET /v1/sims")
-  Rel(api_app, ops, "POST /v1/sims/{iccid}/purge (canonical control op 'purge')")
+  Rel(api_app, ops, "PUT /v1/sims/{iccid}/status; POST /v1/sims/{iccid}/purge")
 
   Rel(fetcher, routing, "SELECT provider WHERE iccid=…")
   Rel(fetcher, registry, "get(provider)")

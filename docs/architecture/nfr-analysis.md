@@ -39,6 +39,20 @@
 
 Leyenda: `done` = implementado. `plan` = a implementar en la primera fase. `blocker` = debe pagarse antes de exponer la API a producción.
 
+### Estado observado al 2026-05-07
+
+La tabla anterior conserva NFRs objetivo. Contra el código actual:
+
+- `done`: CORS explícito, refresh tokens hasheados, `X-Request-ID`,
+  `structlog`, circuit breaker por adapter, `lifecycle_change_audit` para
+  writes de SIM, idempotency keys para `status`/`purge`.
+- `parcial`: timeouts por adapter, aislamiento de fallos, tenant
+  isolation, auditoría. El `audit_log` genérico existe, pero falta un
+  middleware/decorador que cubra toda mutación y toda denegación 403.
+- `pendiente`: caché TTL/single-flight genérico, semáforo genérico por
+  adapter, `/metrics`, OpenTelemetry, rate limit por `company_id`,
+  import-linter/coverage gates como enforcement de CI.
+
 ---
 
 ## 2. Arquitectura de seguridad
@@ -56,7 +70,7 @@ Leyenda: `done` = implementado. `plan` = a implementar en la primera fase. `bloc
 
 - **RBAC por `AppRole`** (`public` / `member` / `manager` / `admin`).
 - **Tenant isolation** implícito por `Profile.company_id`.
-- **Matriz de permisos** definida en ADR-008 §3 — `member` sólo lectura; `manager` puede probar/crear/rotar credenciales de su propia Company; `admin` añade `purge`, cambios de estado y desactivación de credenciales.
+- **Matriz de permisos** definida en ADR-008 §3 — `member` sólo lectura; `manager` puede probar/crear/rotar credenciales de su propia Company y descubrir subcompañías Moabits; `admin` añade `purge`, cambios de estado, desactivación de credenciales y selección de `company_codes` Moabits.
 - **Fail-closed**: `require_roles(*roles)` levanta 403 si el rol no está en la lista explícita. Nunca permitir por default.
 
 ### 2.3 Data protection

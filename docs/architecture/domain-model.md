@@ -1,6 +1,8 @@
 # Phase 2 — Modelo de Dominio
 
 > **Principio**: el modelo expresa el **negocio** (gestión de SIMs/suscripciones M2M/IoT), no la suma de los APIs de Kite, Tele2 y Moabits. Cada proveedor expone vocabulario propio; este modelo lo absorbe en uno solo.
+>
+> **Estado de implementación (2026-05-07)**: el dominio canónico existe en `app/subscriptions/domain.py` y la vista HTTP se deriva en `app/subscriptions/routers/sims.py`. Este documento mezcla modelo conceptual y notas de implementación; cuando haya diferencia, las notas de estado actual tienen prioridad sobre las secciones históricas de fase.
 
 ---
 
@@ -9,9 +11,9 @@
 | Bounded Context | Responsabilidad | Owner | Persistencia |
 |---|---|---|---|
 | **Identity & Access** | Autenticación, sesiones, roles. *(existente)* | Backend | Postgres (`users`, `profiles`, `refresh_tokens`) |
-| **Tenancy** | Compañías cliente, configuración de tenant, vínculo a credenciales de proveedor. *(parcialmente existente — falta `company_provider_credentials`)* | Backend | Postgres (`companies`, `company_settings`, `company_provider_credentials`) |
-| **Subscription Aggregation** | Modelo canónico de suscripción/SIM, agregación read-only en tiempo real desde proveedores, operaciones de control (purge). *(nuevo)* | Backend | Postgres sólo para enrutamiento (`sim_routing_map`) — **NO** persiste estado del SIM |
-| **Provider Integration** | Adapters HTTP por proveedor (Kite, Tele2, Moabits). Anti-corruption layer. *(nuevo)* | Backend | sin estado propio (clients HTTP + cache TTL en memoria/Redis opcional) |
+| **Tenancy** | Compañías cliente, settings, credenciales cifradas por tenant y configuración no secreta de fuente. | Backend | Postgres (`companies`, `company_settings`, `company_provider_credentials`, `provider_source_configs`) |
+| **Subscription Aggregation** | Modelo canónico de suscripción/SIM, agregación read-only en tiempo real desde proveedores, operaciones de control (`status`, `purge`). | Backend | Postgres sólo para ruteo y auditoría operativa (`sim_routing_map`, `idempotency_keys`, `lifecycle_change_audit`) — **NO** persiste estado del SIM |
+| **Provider Integration** | Adapters HTTP/SOAP por proveedor (Kite, Tele2, Moabits). Anti-corruption layer. | Backend | sin estado de dominio propio; conserva estado técnico in-memory como circuit breaker, token Moabits v1 y limiter Tele2 |
 
 > Tres contextos de dominio + un contexto técnico (Provider Integration). El último existe porque sin un anti-corruption layer explícito, la traducción se filtra al dominio.
 
@@ -26,14 +28,14 @@ Esta sección es **normativa**: cuando aparezca uno de estos términos en códig
 | **Subscription** | Una línea M2M/IoT identificada por su `iccid`. Aggregate root del contexto Subscription Aggregation. | Kite `subscriptionData` / Tele2 `device` / Moabits `simInfo` |
 | **iccid** | Identificador físico único de la SIM. **Es la clave canónica del sistema.** | Kite `icc` / Tele2 `iccid` / Moabits `iccid` |
 | **imsi**, **msisdn**, **imei** | Identificadores secundarios. Se exponen pero no se usan como clave primaria. | iguales en los tres |
-| **AdministrativeStatus** | Estado del ciclo de vida administrativo: `ACTIVE`, `TEST`, `SUSPENDED`, `DEACTIVATED`, `PURGED`, `UNKNOWN`. | Kite `lifeCycleStatus` (ACTIVE/TEST/DEACTIVATED) · Tele2 `status` (ACTIVATED/PURGED) · Moabits `simStatus` (Active/Ready/Suspended) |
-| **ConnectivityPresence** | Presencia técnica en la red en un instante: `level` (UNKNOWN/GSM/GPRS/IP), `online: bool`, `country`, `network`, `rat`, `rat_type`, `ip`, `apn`, `timestamp`. | Kite `presenceDetailData` · Tele2 (no expone) · Moabits `connectivityStatus` |
+| **AdministrativeStatus** | Estado de ciclo de vida administrativo canónico. Valores actuales: `active`, `in_test`, `suspended`, `inactive_new`, `activation_pendant`, `activation_ready`, `terminated`, `purged`, `inventory`, `replaced`, `retired`, `restore`, `pending`, `unknown`. | Kite `lifeCycleStatus` · Tele2 `status` · Moabits `simStatus` |
+| **ConnectivityPresence** | Presencia técnica puntual: `state` (`online`/`offline`/`unknown`), `ip_address`, `country_code`, `rat_type`, `network_name`, `last_seen_at`. | Kite `presenceDetailData` · Tele2 `sessionDetails` · Moabits `connectivityStatus` |
 | **UsageSnapshot** | Consumo agregado en una ventana de tiempo: totales conveniencia `voice_seconds`, `sms_count`, `data_used_bytes`, más `provider_metrics` (bloque crudo del proveedor) y `usage_metrics[]` (lista normalizada de métricas). | Kite `consumptionDaily/Monthly` · Tele2 `Get Device Usage` · Moabits `getSimUsage` |
 | **UsageMetric** | Métrica individual normalizada de consumo. Campos típicos: `name`, `value`, `unit`, `kind` y opcionalmente `period_start`/`period_end`. | Normaliza las métricas específicas de cada provider hacia un formato estable. |
 | **ConsumptionLimit** | Límite configurado y comportamiento al excederse: `value`, `unit`, `enabled`, `trafficCut: bool`. | Kite anidado en `consumption*` · Tele2 `overageLimitOverride` · Moabits `dataLimit/smsLimit` |
 | **CommercialPlan** | Plan/tarifa asignado: `code`, `name`, `start_date`, `end_date`. | Kite `commercialGroup` · Tele2 `ratePlan` + `communicationPlan` · Moabits `product_*` + `planStartDate/planExpirationDate` |
 | **NormalizedSubscriptionView** | Bloques de respuesta pensados para frontend: `identity`, `status`, `plan`, `customer`, `network`, `hardware`, `services`, `limits`, `dates`, `custom_fields`. Se deriva en el borde HTTP; no se persiste. | Traduce campos útiles de `provider_fields` a una estructura homogénea. |
-| **detail_level** | Nivel de completitud de una fila de listado: `summary` cuando viene de un endpoint liviano del proveedor, `detail` cuando fue enriquecida con un endpoint de detalle. | Tele2 `Search Devices` vs `Get Device Details`. Kite/Moabits suelen devolver detalle rico. |
+| **detail_level** | Nivel de completitud de una fila HTTP: `summary` cuando viene de un endpoint liviano, `detail` cuando fue enriquecida con un endpoint de detalle. Es derivado en el router, no campo persistido del dataclass de dominio. | Tele2 `Search Devices` vs `Get Device Details`; Moabits v1 `simList` vs enrichment v2 opcional. |
 | **StatusChange** | Evento histórico de cambio de estado: `from_state`, `to_state`, `at`, `automatic: bool`, `reason`, `actor`. Sólo Kite expone histórico nativo; los demás generarán este evento sintético si se sincroniza alguna vez. | Kite `getStatusHistory` |
 | **ControlOperation (Purge)** | Operación canónica de control sobre una SIM que el sistema expone para acciones administrativas o de red. En la práctica un único comando canónico (nombrado `purge` en el dominio) se mapea a distintas APIs proveedoras que por motivos históricos usan verbos diferentes (`networkReset`, `Edit Device {status: PURGED}`, rutas dedicadas de purga). Parámetros típicos: `iccid`, `technologies?`, `idempotency_key?`. | Kite `networkReset(network2g3g, network4g)` · Tele2 `Edit Device Details {status: PURGED}` · Moabits `PUT /api/sim/purge/` |
 | **Provider** | Origen externo de los datos. Enum: `KITE`, `TELE2`, `MOABITS`. Toda Subscription tiene exactamente un Provider asignado. | n/a (es del modelo canónico) |
@@ -55,8 +57,8 @@ Subscription {
   status: AdministrativeStatus
   native_status?: string
   provider_fields: Map<string, string>   # campos extensibles del proveedor (mapeados pero no interpretados)
-  detail_level: "summary" | "detail"     # nivel de enriquecimiento de la fila HTTP
-  normalized: NormalizedSubscriptionView  # vista derivada para consumo UI
+  # detail_level y normalized se calculan en el borde HTTP (SubscriptionOut),
+  # no viven en el dataclass de dominio.
   activated_at?: timestamp
   updated_at?: timestamp
 }
@@ -95,7 +97,7 @@ CompanyProviderCredentials {
   account_scope: {                      # qué cuenta/grupo del proveedor representa esta credencial
     kite?: { end_customer_id: string, cert_expires_at?: date, environment?: string }
     tele2?: { account_id: string }
-    moabits?: { company_codes: [string] }
+    moabits?: { parent_company_code?: string, environment?: string }
   }
   active: bool
   rotated_at: timestamp
@@ -103,6 +105,7 @@ CompanyProviderCredentials {
 ```
 
 > Tabla nueva. **NO** reutiliza `company_settings.settings` JSONB (ver Phase 1 AP-7).
+> Para Moabits, `company_codes` ya no vive en `credentials_enc` ni en `account_scope`; se persiste como configuración no secreta en `provider_source_configs.settings.company_codes` (ADR-010).
 
 ### SimRoutingMap (Subscription Aggregation context)
 
@@ -123,11 +126,11 @@ SimRoutingMap {
 
 | Servicio | Responsabilidad | Pertenece a |
 |---|---|---|
-| `SubscriptionFetcher` | Dado un `iccid`, resolver `provider` vía `SimRoutingMap`, invocar el adapter correspondiente, devolver `Subscription` canónica. Sin caché aquí — caché es decisión del adapter. | Subscription Aggregation |
-| `SubscriptionSearchService` | Dado un criterio de búsqueda + `company_id`, ejecutar listing provider-scoped cuando exista `?provider`, o paginar `sim_routing_map` para la vista global. Aplica filtros sólo cuando el adapter los soporta documentalmente. | Subscription Aggregation |
-| `SubscriptionOperationService` | Dado un `iccid` + comando (`ControlOperation`), resolver provider, invocar comando idempotente, devolver resultado canónico. Verifica RBAC (matriz en ADR-008) y escribe `audit_log`. | Subscription Aggregation |
+| `SubscriptionFetcher` | Servicio conceptual implementado hoy dentro del router: dado un `iccid`, resolver `provider` vía `SimRoutingMap`, invocar el adapter correspondiente, devolver `Subscription` canónica. | Subscription Aggregation |
+| `SubscriptionSearchService` | Servicio conceptual implementado hoy dentro del router: provider-scoped listing con adapter nativo, o página global sobre `sim_routing_map`. Aplica filtros sólo cuando el adapter los soporta documentalmente. | Subscription Aggregation |
+| `SubscriptionOperationService` | Servicio conceptual implementado hoy dentro del router: dado un `iccid` + comando (`set_status`/`purge`), resolver provider, reclamar idempotency key, invocar adapter, escribir `lifecycle_change_audit`. | Subscription Aggregation |
 | `ProviderRegistry` | Resuelve `Provider → SubscriptionProvider` (instancia de adapter inyectada vía `Depends`). | Provider Integration |
-| `CredentialResolver` | Dado `(company_id, provider)`, devuelve credencial desencriptada con caché TTL corta. | Tenancy |
+| `CredentialResolver` | Servicio conceptual implementado hoy como helper `_load_credentials`: dado `(company_id, provider)`, lee credencial activa, desencripta y agrega scope no secreto. No hay caché TTL de credenciales implementado. | Tenancy |
 
 ---
 
@@ -221,6 +224,12 @@ Para Tele2, `GET /v1/sims?provider=tele2` usa `Search Devices` como
 listado base y enriquece como máximo las primeras 5 SIMs de la página con
 `Get Device Details`, respetando el rate limit configurado. Las SIMs
 restantes se devuelven como `detail_level=summary`.
+
+Para Moabits, `GET /v1/sims?provider=moabits` usa v1
+`/api/company/simList/{companyCode}` como listado base. Por defecto las
+filas son `summary`. Si `MOABITS_V2_ENRICHMENT_ENABLED=true`, el adapter
+llama v2 detail/connectivity para los ICCIDs de la página y marca cada
+fila como `detail` sólo cuando v2 detail respondió para ese ICCID.
 
 ---
 

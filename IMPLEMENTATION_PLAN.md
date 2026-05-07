@@ -139,6 +139,7 @@
 **Cambios:**
 - Flujo operativo para actualizar `company_provider_credentials.credentials_enc` con `client_cert_pfx_b64` y `client_cert_password`.
 - Endpoints `GET/POST/PATCH /v1/companies/me/credentials/**` disponibles para `manager` y `admin`; `DELETE` sólo para `admin`.
+- Moabits: `GET /companies/me/credentials/moabits/companies/discover` disponible para `manager`/`admin`; `PUT /companies/me/credentials/moabits/company-codes` sólo para `admin` porque cambia el scope operativo de la fuente. Los `company_codes` se guardan en `provider_source_configs`, no en `credentials_enc`.
 - Usar siempre `companies/me` para que un `manager` no pueda operar otro tenant.
 - Actualizar `rotated_at`.
 - Guardar en `account_scope` sólo metadata no secreta: `environment`, `end_customer_id`, `cert_expires_at`.
@@ -177,7 +178,27 @@ Estas operaciones existen en documentos fuente o resúmenes, pero no forman part
 
 ---
 
-## 12. Validación con proveedores
+## 12. PR-16 · Moabits v2 enrichment para listado
+
+**Estado:** implementado detrás de feature flag. Documentado en [ADR-011](docs/architecture/adrs/ADR-011-moabits-v2-list-enrichment.md).
+
+**Decisión:** `GET /v1/sims?provider=moabits` conserva v1 `GET /api/company/simList/{companyCode}` como fuente del universo de SIMs y usa Orion Gateway v2 sólo para enriquecer los ICCIDs de la página ya paginada.
+
+**Implementado:**
+- [app/config.py](app/config.py) — `MOABITS_V2_ENRICHMENT_ENABLED`, `MOABITS_V2_BASE_URL`, `MOABITS_V2_MAX_BATCH`, `MOABITS_V2_MAX_CONCURRENT_CHUNKS`, `MOABITS_V2_DETAIL_TIMEOUT_SECONDS`, `MOABITS_V2_CONNECTIVITY_TIMEOUT_SECONDS`.
+- [app/providers/moabits/adapter.py](app/providers/moabits/adapter.py) — cliente v2 con `X-API-KEY` directo, detail/connectivity bulk por chunks, semáforo de concurrencia y merge por ICCID.
+- [tests/providers/test_moabits_adapter.py](tests/providers/test_moabits_adapter.py) — cobertura de flag apagado, enrichment completo, fallos parciales, 404 detail, 5xx connectivity, chunking y header `X-API-KEY` sin Bearer.
+
+**Pendientes / incongruencias detectadas contra la propuesta técnica:**
+- La propuesta sugiere `base_url_v2` y posible `x_api_key_v2` dentro de credenciales cifradas; el código actual usa `MOABITS_V2_BASE_URL` global y reutiliza `x_api_key`.
+- La propuesta pide propagar fallos de v2 en `partial=true` / `failed_providers`; el código actual degrada por SIM con `provider_fields.enrichment_status` y logs, pero `SimListOut.partial` sigue en `false` para el listado provider-scoped.
+- La propuesta menciona `smsLimitMo` y `smsLimitMt`; el mapper actual preserva sólo `smsLimit` como `sms_limit`, por lo que los límites MO/MT de v2 aún no quedan expuestos.
+- La propuesta lista `usage.last_data_kb` y varios campos de red como canónicos; el código actual los conserva en `provider_fields` (`usage_kb`, `mcc`, `mnc`, `data_session_id`, etc.) y `_normalized_subscription` no los eleva.
+- La propuesta habla de registrar `enrich_sim_v2_detail` y `enrich_sim_v2_connectivity` en `provider_call_audit`; PR-15 sigue pendiente y no existe esa tabla.
+
+---
+
+## 13. Validación con proveedores
 
 | Tarea | Proveedor | Bloquea |
 |---|---|---|
@@ -191,10 +212,12 @@ Estas operaciones existen en documentos fuente o resúmenes, pero no forman part
 | Obtener payload real `serviceStatus` | Moabits | PR-8 |
 | Confirmar límites de paginación/rate limit en company list | Moabits | listing en producción |
 | Confirmar payload/unidades de `simUsage` y `companyUsage` | Moabits | métricas y futura analítica |
+| Confirmar si v2 reutiliza la misma `X-API-KEY` que v1 | Moabits | PR-16 en producción |
+| Confirmar batch máximo y rate limit v2 | Moabits | PR-16 en producción |
 
 ---
 
-## 13. Secuencia recomendada
+## 14. Secuencia recomendada
 
 ```text
 Semana 1   PR-8  Moabits status casing
@@ -210,11 +233,13 @@ Semana 3   PR-13 límites/planes como payload tipado
 
 Bloqueado  PR-7  rename de unidades públicas
            (espera confirmación unidad voz Tele2 o requiere versión de API)
+
+Hecho      PR-16 Moabits v2 enrichment detrás de feature flag
 ```
 
 ---
 
-## 14. Criterios de aceptación
+## 15. Criterios de aceptación
 
 - [ ] No se introduce lógica `if provider` en frontend.
 - [ ] Cada endpoint público mantiene vocabulario canónico.
@@ -227,12 +252,14 @@ Bloqueado  PR-7  rename de unidades públicas
 
 ---
 
-## 15. Riesgos pendientes
+## 16. Riesgos pendientes
 
 | Riesgo | Probabilidad | Impacto | Mitigación |
 |---|---|---|---|
 | Unidad de voz Tele2 no confirmada | Media | Métricas mal normalizadas | Bloquear rename público o preservar campo nativo. |
 | Moabits emite status con casing distinto | Media | Estado `unknown` | Mapper tolerante + payload real. |
 | Moabits company listing no documenta paginación nativa | Media | Memoria/latencia en cuentas grandes | Mantener paginación local acotada; pedir límite/paginación oficial al proveedor. |
+| Moabits v2 puede requerir key distinta a v1 | Media | Enrichment 401/403 en producción | Confirmar con proveedor; si aplica, agregar `x_api_key_v2` cifrada. |
+| Moabits v2 failures no aparecen en `failed_providers` | Media | UI no ve degradación parcial | Usar `provider_fields.enrichment_status` hoy; evaluar propagación a `SimListOut.partial`. |
 | Certificado Kite expira por tenant | Alta | Caída total de ese tenant | `cert_expires_at` + alertas 30/15/7 días. |
 | Endpoints opcionales se mezclan con core | Media | UI compleja y contratos ambiguos | Capability protocols y `not_supported`. |

@@ -1,7 +1,9 @@
 # Phase 1 — Análisis del Código Existente
 
 > **Tipo de proyecto**: brownfield
-> **Alcance**: el repositorio `back/` contiene la base FastAPI sobre la que se va a construir la integración con los proveedores (Kite, Tele2, Moabits). Ese módulo de proveedores aún no existe — esta fase analiza la base sobre la que va a apoyarse y los riesgos que arrastra.
+> **Alcance original**: en la fecha de esta fase, el repositorio `back/` contenía la base FastAPI sobre la que se iba a construir la integración con los proveedores (Kite, Tele2, Moabits). En ese momento el módulo de proveedores aún no existía; esta fase analizaba la base y los riesgos iniciales.
+>
+> **Nota de estado (2026-05-07)**: este archivo es una foto histórica del estado pre-integración. Desde entonces se implementaron los paquetes `app/providers`, `app/subscriptions`, `app/shared`, `app/tenancy`, el prefijo `/v1`, CORS explícito, refresh tokens hasheados, circuit breaker, credenciales cifradas, routing map, lifecycle audit y los adapters Kite/Tele2/Moabits. Para estado actual ver `DOCS_CODE_ALIGNMENT_AUDIT.md` y `ARCHITECTURE.md`.
 
 ---
 

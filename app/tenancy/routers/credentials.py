@@ -1,4 +1,3 @@
-import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from urllib.parse import urlparse
@@ -20,6 +19,7 @@ from app.shared.errors import DomainError
 from app.tenancy.credential_expiry import credential_expiry_status
 from app.tenancy.models.company import Company
 from app.tenancy.models.credentials import CompanyProviderCredentials
+from app.tenancy.models.provider_source_config import ProviderSourceConfig
 from app.tenancy.schemas.credentials import (
     PROVIDER_CREDENTIAL_EXAMPLES,
     CredentialMetadataOut,
@@ -71,20 +71,6 @@ def _metadata(row: CompanyProviderCredentials) -> CredentialMetadataOut:
         account_scope=row.account_scope or {},
         expiry_status=credential_expiry_status(row.account_scope),
     )
-
-
-def _normalize_match_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value)
-    ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    return " ".join(ascii_text.casefold().split())
-
-
-def _company_matches(local_name: str, provider_name: str) -> bool:
-    local = _normalize_match_text(local_name)
-    provider = _normalize_match_text(provider_name)
-    if not local or not provider:
-        return False
-    return local == provider or local in provider or provider in local
 
 
 def _tele2_base_url(value: str) -> str:
@@ -202,6 +188,18 @@ async def _active_credential(
     return result.scalar_one_or_none()
 
 
+async def _provider_source_config(
+    provider: Provider,
+    db: AsyncSession,
+) -> ProviderSourceConfig | None:
+    result = await db.execute(
+        select(ProviderSourceConfig).where(
+            ProviderSourceConfig.provider == provider.value,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def _current_company(company_id: UUID | None, db: AsyncSession) -> Company:
     if company_id is None:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -220,11 +218,27 @@ def _decrypt_active_credentials(
     return decrypt_credentials(row.credentials_enc, fernet_key)
 
 
-def _selected_company_codes(credentials: dict[str, Any]) -> set[str]:
+def _selected_company_codes(credentials: dict[str, Any]) -> list[str]:
     raw_codes = credentials.get("company_codes", [])
     if isinstance(raw_codes, str):
         raw_codes = [raw_codes]
-    return {str(code) for code in raw_codes}
+    if not isinstance(raw_codes, list):
+        return []
+
+    selected_codes: list[str] = []
+    seen_codes: set[str] = set()
+    for raw_code in raw_codes:
+        code = str(raw_code).strip()
+        if code and code not in seen_codes:
+            selected_codes.append(code)
+            seen_codes.add(code)
+    return selected_codes
+
+
+def _source_config_settings(row: ProviderSourceConfig | None) -> dict[str, Any]:
+    if row is None:
+        return {}
+    return row.settings or {}
 
 
 async def _live_test_credentials(
@@ -287,36 +301,39 @@ async def discover_moabits_companies(
         raise HTTPException(status_code=404, detail="Moabits credential not found")
     local_company = await _current_company(current.company_id, db)
     credentials = _decrypt_active_credentials(row, settings)
-    selected_codes = _selected_company_codes(credentials)
+    source_config = await _provider_source_config(Provider.MOABITS, db)
+    selected_company_codes = _selected_company_codes(
+        _source_config_settings(source_config)
+    )
+    selected_company_code_set = set(selected_company_codes)
 
     companies: list[MoabitsCompanyOut] = []
+    selected_companies: list[MoabitsCompanyOut] = []
     for item in await fetch_child_companies(credentials):
         company_code = str(item.get("companyCode") or "").strip()
         company_name = str(item.get("companyName") or "").strip()
         if not company_code or not company_name:
             continue
         clie_id = item.get("clie_id", item.get("clieId"))
-        companies.append(
-            MoabitsCompanyOut(
-                company_code=company_code,
-                company_name=company_name,
-                clie_id=clie_id if isinstance(clie_id, int) else None,
-                selected=company_code in selected_codes,
-                matches_current_company=_company_matches(
-                    local_company.name, company_name
-                ),
-            )
+        company = MoabitsCompanyOut(
+            company_code=company_code,
+            company_name=company_name,
+            clie_id=clie_id if isinstance(clie_id, int) else None,
         )
+        companies.append(company)
+        if company_code in selected_company_code_set:
+            selected_companies.append(company)
 
     companies.sort(
         key=lambda company: (
-            not company.matches_current_company,
             company.company_name.casefold(),
             company.company_code,
         )
     )
     return MoabitsCompanyDiscoveryOut(
         current_company_name=local_company.name,
+        selected_company_codes=selected_company_codes,
+        selected_companies=selected_companies,
         companies=companies,
     )
 
@@ -324,7 +341,7 @@ async def discover_moabits_companies(
 @router.put("/moabits/company-codes", response_model=CredentialMetadataOut)
 async def select_moabits_company_codes(
     body: MoabitsCompanySelectionIn,
-    current: ManagerOrAdminProfile,
+    current: AdminProfile,
     db: DbSession,
     settings: SettingsDep,
 ) -> CredentialMetadataOut:
@@ -333,7 +350,9 @@ async def select_moabits_company_codes(
         raise HTTPException(status_code=404, detail="Moabits credential not found")
     fernet_key = _require_fernet_key(settings)
     credentials = decrypt_credentials(row.credentials_enc, fernet_key)
-    requested_codes = [code.strip() for code in body.company_codes if code.strip()]
+    requested_codes = [
+        code for item in body.company_codes if (code := item.company_code.strip())
+    ]
     if not requested_codes:
         raise HTTPException(
             status_code=422,
@@ -354,15 +373,25 @@ async def select_moabits_company_codes(
             },
         )
 
-    credentials["company_codes"] = requested_codes
-    row.credentials_enc = encrypt_credentials(credentials, fernet_key)
-    row.account_scope = {
-        **(row.account_scope or {}),
-        "company_codes": requested_codes,
-    }
-    row.rotated_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    source_config = await _provider_source_config(Provider.MOABITS, db)
+    if source_config is None:
+        source_config = ProviderSourceConfig(
+            provider=Provider.MOABITS.value,
+            settings={"company_codes": requested_codes},
+            updated_at=now,
+            created_at=now,
+        )
+        db.add(source_config)
+    else:
+        source_config.settings = {
+            **(source_config.settings or {}),
+            "company_codes": requested_codes,
+        }
+        source_config.updated_at = now
+
     await db.commit()
-    await db.refresh(row)
+    await db.refresh(source_config)
     return _metadata(row)
 
 
