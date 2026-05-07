@@ -2,10 +2,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from cryptography.fernet import Fernet
 
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -14,6 +14,7 @@ from app.identity.models.profile import AppRole, Profile
 from app.shared.crypto import decrypt_credentials, encrypt_credentials
 from app.shared.errors import DomainError, ProviderAuthFailed
 from app.tenancy.credential_expiry import credential_expiry_status
+from app.tenancy.models.company import Company
 from app.tenancy.models.credentials import CompanyProviderCredentials
 from app.tenancy.routers import credentials as credentials_router
 
@@ -23,30 +24,36 @@ FERNET_KEY = Fernet.generate_key().decode()
 
 
 class _Scalars:
-    def __init__(self, rows: list[CompanyProviderCredentials]) -> None:
+    def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
-    def all(self) -> list[CompanyProviderCredentials]:
+    def all(self) -> list[Any]:
         return self._rows
 
 
 class _Result:
-    def __init__(self, rows: list[CompanyProviderCredentials]) -> None:
+    def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
     def scalars(self) -> _Scalars:
         return _Scalars(self._rows)
 
-    def scalar_one_or_none(self) -> CompanyProviderCredentials | None:
+    def scalar_one_or_none(self) -> Any | None:
         if not self._rows:
             return None
         return self._rows[0]
 
 
 class _Db:
-    def __init__(self, rows: list[CompanyProviderCredentials] | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[CompanyProviderCredentials] | None = None,
+        *,
+        company_name: str = "Bismark Colombia",
+    ) -> None:
         self.rows = rows or []
         self.commits = 0
+        self.company = Company(id=COMPANY_ID, name=company_name)
 
     async def execute(self, statement: Any) -> _Result:
         if getattr(statement, "__visit_name__", "") == "update":
@@ -54,6 +61,8 @@ class _Db:
                 if row.company_id == COMPANY_ID and row.active:
                     row.active = False
             return _Result([])
+        if "FROM companies" in str(statement):
+            return _Result([self.company])
         return _Result(
             [row for row in self.rows if row.company_id == COMPANY_ID and row.active]
         )
@@ -98,14 +107,18 @@ class _Registry:
 
 
 def _row(
-    provider: str = "tele2", account_scope: dict[str, Any] | None = None
+    provider: str = "tele2",
+    account_scope: dict[str, Any] | None = None,
+    credentials: dict[str, Any] | None = None,
 ) -> CompanyProviderCredentials:
     now = datetime.now(UTC)
     return CompanyProviderCredentials(
         id=uuid.uuid4(),
         company_id=COMPANY_ID,
         provider=provider,
-        credentials_enc=encrypt_credentials({"api_key": "old-secret"}, FERNET_KEY),
+        credentials_enc=encrypt_credentials(
+            credentials or {"api_key": "old-secret"}, FERNET_KEY
+        ),
         account_scope=account_scope or {},
         active=True,
         rotated_at=now,
@@ -332,6 +345,125 @@ def test_only_admin_can_deactivate_credentials() -> None:
     assert manager_response.status_code == 403
     assert admin_response.status_code == 204
     assert db.rows[0].active is False
+
+
+def test_discover_moabits_companies_matches_local_company(monkeypatch) -> None:
+    async def _children(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+        assert credentials["x_api_key"] == "secret-key"
+        return [
+            {
+                "companyCode": "48123-99",
+                "companyName": "3 POINTECH S.A.S.",
+                "clie_id": 2659,
+            },
+            {
+                "companyCode": "48123",
+                "companyName": "Bismark Colombia",
+                "clie_id": 132,
+            },
+        ]
+
+    monkeypatch.setattr(credentials_router, "fetch_child_companies", _children)
+    db = _Db(
+        [
+            _row(
+                provider="moabits",
+                account_scope={"company_codes": ["48123"]},
+                credentials={
+                    "base_url": "https://www.api.myorion.co",
+                    "x_api_key": "secret-key",
+                    "parent_company_code": "48123",
+                    "company_codes": ["48123"],
+                },
+            )
+        ],
+        company_name="Bismark Colombia",
+    )
+    client = _client(AppRole.manager, db)
+
+    response = client.get("/v1/companies/me/credentials/moabits/companies/discover")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["current_company_name"] == "Bismark Colombia"
+    assert payload["companies"][0] == {
+        "company_code": "48123",
+        "company_name": "Bismark Colombia",
+        "clie_id": 132,
+        "selected": True,
+        "matches_current_company": True,
+    }
+
+
+def test_select_moabits_company_codes_validates_and_persists(monkeypatch) -> None:
+    async def _children(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+        assert credentials["x_api_key"] == "secret-key"
+        return [
+            {
+                "companyCode": "48123",
+                "companyName": "Bismark Colombia",
+                "clie_id": 132,
+            },
+            {
+                "companyCode": "48123-99",
+                "companyName": "3 POINTECH S.A.S.",
+                "clie_id": 2659,
+            },
+        ]
+
+    monkeypatch.setattr(credentials_router, "fetch_child_companies", _children)
+    row = _row(
+        provider="moabits",
+        credentials={
+            "base_url": "https://www.api.myorion.co",
+            "x_api_key": "secret-key",
+            "parent_company_code": "48123",
+            "company_codes": [],
+        },
+    )
+    db = _Db([row])
+    client = _client(AppRole.admin, db)
+
+    response = client.put(
+        "/v1/companies/me/credentials/moabits/company-codes",
+        json={"company_codes": ["48123", "48123-99"]},
+    )
+
+    assert response.status_code == 200
+    assert db.commits == 1
+    assert row.account_scope["company_codes"] == ["48123", "48123-99"]
+    decrypted = decrypt_credentials(row.credentials_enc, FERNET_KEY)
+    assert decrypted["company_codes"] == ["48123", "48123-99"]
+    assert "secret-key" not in response.text
+
+
+def test_select_moabits_company_codes_rejects_unavailable_codes(monkeypatch) -> None:
+    async def _children(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"companyCode": "48123", "companyName": "Bismark Colombia"}]
+
+    monkeypatch.setattr(credentials_router, "fetch_child_companies", _children)
+    db = _Db(
+        [
+            _row(
+                provider="moabits",
+                credentials={
+                    "base_url": "https://www.api.myorion.co",
+                    "x_api_key": "secret-key",
+                    "parent_company_code": "48123",
+                },
+            )
+        ]
+    )
+    client = _client(AppRole.manager, db)
+
+    response = client.put(
+        "/v1/companies/me/credentials/moabits/company-codes",
+        json={"company_codes": ["48123-404"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["company_codes"] == ["48123-404"]
+    assert db.commits == 0
 
 
 def test_expiry_statuses() -> None:

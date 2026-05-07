@@ -53,20 +53,23 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
     "moabits": {
         "summary": "Moabits Orion credentials",
         "description": (
-            "Moabits uses Orion REST JWT auth. Provide x_api_key, the Orion "
+            "Moabits defaults to Orion v1 REST JWT auth. Provide x_api_key, the Orion "
             "Web Client application key. The adapter sends it as the x-api-key "
             "header to GET /integrity/authorization-token, caches the returned "
             "JWT, and refreshes/retries once when a provider business endpoint "
-            "returns 401. company_codes limits listing to the Moabits company "
-            "codes this tenant can access."
+            "returns 401. parent_company_code is used to discover child companies "
+            "through GET /api/company/childs/{companyCode}; company_codes limits "
+            "SIM listing to the selected Moabits company codes."
         ),
         "value": {
             "credentials": {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "MOABITS_ORION_X_API_KEY",
+                "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
                 "company_codes": ["MOABITS_COMPANY_CODE"],
             },
             "account_scope": {
+                "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
                 "company_codes": ["MOABITS_COMPANY_CODE"],
                 "environment": "production",
             },
@@ -104,3 +107,23 @@ class CredentialTestOut(BaseModel):
     provider: str
     ok: bool
     detail: str | None = None
+
+
+class MoabitsCompanyOut(BaseModel):
+    company_code: str
+    company_name: str
+    clie_id: int | None = None
+    selected: bool = False
+    matches_current_company: bool = False
+
+
+class MoabitsCompanyDiscoveryOut(BaseModel):
+    current_company_name: str
+    companies: list[MoabitsCompanyOut]
+
+
+class MoabitsCompanySelectionIn(BaseModel):
+    company_codes: list[str] = Field(
+        min_length=1,
+        description="Moabits company codes selected for this local company.",
+    )

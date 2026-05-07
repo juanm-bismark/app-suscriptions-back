@@ -57,6 +57,7 @@ _API_VERSION = "1"
 _REQUEST_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _DEFAULT_MAX_TPS = 1.0
 _MAX_CONFIGURABLE_TPS = 1000.0
+_DETAIL_ENRICHMENT_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,14 @@ class _Tele2RateLimiter:
         self._backoff_delay: dict[str, float] = {}
         self._guard = asyncio.Lock()
 
-    async def call(self, key: str, max_tps: float, fn, *args, **kwargs):
+    async def call(
+        self,
+        key: str,
+        max_tps: float,
+        fn: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         lock = await self._lock_for(key)
         async with lock:
             now = time.monotonic()
@@ -139,9 +147,7 @@ def _creds(d: dict[str, Any]) -> _Tele2Creds:
         )
     requested_api_version = str(d.get("api_version", _API_VERSION)).lstrip("v")
     if requested_api_version != _API_VERSION:
-        raise ProviderValidationError(
-            detail="10000024 Invalid apiVersion"
-        )
+        raise ProviderValidationError(detail="10000024 Invalid apiVersion")
     return _Tele2Creds(
         base_url=f"{parsed_base_url.scheme}://{parsed_base_url.netloc}",
         username=username,
@@ -167,7 +173,7 @@ def _max_tps(credentials: dict[str, Any]) -> float:
         return _DEFAULT_MAX_TPS
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return _DEFAULT_MAX_TPS
     return min(max(value, _DEFAULT_MAX_TPS), _MAX_CONFIGURABLE_TPS)
 
@@ -342,8 +348,23 @@ def _parse_subscription(data: dict[str, Any], company_id: str) -> Subscription:
             provider_fields[canonical_key] = v
 
     extra_fields = {
+        "imei": "imei",
+        "customer": "customer",
+        "endConsumerId": "end_consumer_id",
+        "accountId": "account_id",
+        "fixedIPAddress": "fixed_ip_address",
+        "fixedIpv6Address": "fixed_ipv6_address",
+        "ipv6Address": "ipv6_address",
         "deviceID": "device_id",
         "modemID": "modem_id",
+        "eid": "eid",
+        "euiccid": "euiccid",
+        "simProfileId": "sim_profile_id",
+        "simNotes": "sim_notes",
+        "mec": "mec",
+        "detail_enriched": "detail_enriched",
+        "dateAdded": "date_added",
+        "dateUpdated": "date_updated",
         "dateShipped": "date_shipped",
         "p5gCommercialStatus": "p5g_commercial_status",
         "ipAddress": "ip_address",
@@ -369,14 +390,16 @@ def _parse_subscription(data: dict[str, Any], company_id: str) -> Subscription:
 
     return Subscription(
         iccid=cast(str, data["iccid"]),  # type: ignore[arg-type]
-        msisdn=None,
-        imsi=None,
+        msisdn=cast(str | None, data.get("msisdn")),  # type: ignore[arg-type]
+        imsi=cast(str | None, data.get("imsi")),  # type: ignore[arg-type]
         status=map_status(native_status),
         native_status=native_status,
         provider=Provider.TELE2.value,
         company_id=company_id,
         activated_at=_parse_dt(cast(str | None, data.get("dateActivated"))),  # type: ignore[arg-type]
-        updated_at=_parse_dt(cast(str | None, data.get("dateModified"))),  # type: ignore[arg-type]
+        updated_at=_parse_dt(
+            cast(str | None, data.get("dateModified") or data.get("dateUpdated"))
+        ),  # type: ignore[arg-type]
         provider_fields=provider_fields,
     )
 
@@ -400,7 +423,7 @@ class Tele2Adapter(BaseAdapter):
     Circuit breaker: opens after 5 failures in 30s window, stays open for 30s.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("tele2")
         self._rate_limiter = _Tele2RateLimiter()
 
@@ -481,7 +504,9 @@ class Tele2Adapter(BaseAdapter):
                     detail="Tele2 usage date range requires both start_date and end_date"
                 )
             if end_date < start_date:
-                raise ProviderValidationError(detail="end_date must be after start_date")
+                raise ProviderValidationError(
+                    detail="end_date must be after start_date"
+                )
             if end_date - start_date > timedelta(days=30):
                 raise ProviderValidationError(
                     detail="Tele2 Get Device Usage range cannot exceed 30 days"
@@ -757,9 +782,7 @@ class Tele2Adapter(BaseAdapter):
             since_dt = filters.modified_since.astimezone(UTC).replace(microsecond=0)
             since = _format_request_dt(since_dt)
         if not since:
-            raise ProviderValidationError(
-                detail="10000003 ModifiedSince is required"
-            )
+            raise ProviderValidationError(detail="10000003 ModifiedSince is required")
         try:
             since_dt = _parse_request_dt(since)
         except ValueError as exc:
@@ -828,7 +851,39 @@ class Tele2Adapter(BaseAdapter):
 
         data = await self._limited_get(credentials, creds, "/devices", params)
         devices = data.get("devices", [])
-        subs = [_parse_subscription(d, company_id) for d in devices]
+        if not isinstance(devices, list):
+            devices = []
+
+        enriched_devices: list[dict[str, Any]] = []
+        for index, device in enumerate(devices):
+            if not isinstance(device, dict):
+                continue
+            if index >= _DETAIL_ENRICHMENT_LIMIT:
+                enriched_devices.append(cast(dict[str, Any], device))
+                continue
+            iccid = device.get("iccid")
+            if not iccid:
+                enriched_devices.append(cast(dict[str, Any], device))
+                continue
+            try:
+                detail = await self._limited_get(
+                    credentials,
+                    creds,
+                    f"/devices/{iccid}",
+                )
+            except Exception:
+                fallback = dict(cast(dict[str, Any], device))
+                fallback["detail_enriched"] = False
+                enriched_devices.append(fallback)
+                continue
+            if isinstance(detail, dict):
+                merged = dict(cast(dict[str, Any], device))
+                merged.update(cast(dict[str, Any], detail))
+                merged["detail_enriched"] = True
+                enriched_devices.append(merged)
+            else:
+                enriched_devices.append(cast(dict[str, Any], device))
+        subs = [_parse_subscription(d, company_id) for d in enriched_devices]
         if not data.get("lastPage", True):
             if till:
                 next_cursor = f"page:{page + 1}|since:{since}|till:{till}"

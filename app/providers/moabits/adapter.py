@@ -24,6 +24,7 @@ Usage snapshot exposes Moabits-specific raw fields under provider_metrics:
 
 Orion API 2.0.0 paths used here are documented in the public Swagger:
     GET /integrity/authorization-token
+    GET /api/company/childs/{companyCode}
     GET /api/sim/details/{iccidList}
     GET /api/sim/serviceStatus/{iccidList}
     GET /api/usage/simUsage
@@ -41,12 +42,13 @@ import calendar
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
 
 import httpx
 
+from app.config import get_settings
 from app.providers.adapter_base import BaseAdapter
 from app.providers.base import Provider
 from app.shared.errors import (
@@ -58,14 +60,13 @@ from app.shared.errors import (
     ProviderValidationError,
     UnsupportedOperation,
 )
-from app.config import get_settings
 from app.subscriptions.domain import (
     AdministrativeStatus,
     ConnectivityPresence,
     ConnectivityState,
-    UsageMetric,
     Subscription,
     SubscriptionSearchFilters,
+    UsageMetric,
     UsageSnapshot,
 )
 
@@ -73,8 +74,10 @@ from .status_map import map_status
 
 _TOKEN_REFRESH_MARGIN_SECONDS = 300
 _TOKEN_FALLBACK_TTL_SECONDS = 5 * 60 * 60 + 50 * 60
+_TOKEN_STALE_GRACE_SECONDS = 30
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}
 _TOKEN_LOCKS: dict[str, asyncio.Lock] = {}
+MOABITS_DEFAULT_PARENT_COMPANY_CODE = "48123"
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,34 @@ def _check(resp: httpx.Response, label: str = "Moabits") -> None:
         )
 
 
+def _parent_company_code(credentials: dict[str, Any], creds: _MoabitsCreds) -> str:
+    raw = (
+        credentials.get("parent_company_code")
+        or credentials.get("root_company_code")
+        or credentials.get("company_code")
+    )
+    if raw is None and creds.company_codes:
+        raw = creds.company_codes[0]
+    company_code = str(raw or MOABITS_DEFAULT_PARENT_COMPANY_CODE).strip()
+    return company_code or MOABITS_DEFAULT_PARENT_COMPANY_CODE
+
+
+async def fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return Moabits v1 child companies for the configured parent company."""
+    creds = _creds(credentials)
+    data = await _get(
+        creds,
+        f"/api/company/childs/{_parent_company_code(credentials, creds)}",
+    )
+    info = data.get("info") if isinstance(data, dict) else None
+    rows = info.get("companyChilds") if isinstance(info, dict) else None
+    if not isinstance(rows, list):
+        raise ProviderProtocolError(
+            detail="Moabits child companies response missing info.companyChilds"
+        )
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def _cache_key(creds: _MoabitsCreds) -> str:
     return f"{creds.base_url}|{creds.x_api_key}"
 
@@ -163,7 +194,7 @@ def _token_expires_at(token: str) -> float:
 async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
     async with httpx.AsyncClient(
         base_url=creds.base_url,
-        headers={"x-api-key": creds.x_api_key, "Accept": "application/json"},
+        headers={"X-API-KEY": creds.x_api_key, "Accept": "application/json"},
         timeout=30.0,
     ) as client:
         try:
@@ -183,6 +214,12 @@ async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
             detail="Moabits authorization response missing info.authorizationToken"
         )
     return str(token)
+
+
+def _cached_token_is_usable(cached: tuple[str, float] | None) -> bool:
+    if cached is None:
+        return False
+    return cached[1] + _TOKEN_STALE_GRACE_SECONDS > time.time()
 
 
 async def _authorization_token(
@@ -208,7 +245,12 @@ async def _authorization_token(
             and cached[1] - now > _TOKEN_REFRESH_MARGIN_SECONDS
         ):
             return cached[0]
-        token = await _fetch_authorization_token(creds)
+        try:
+            token = await _fetch_authorization_token(creds)
+        except (ProviderAuthFailed, ProviderProtocolError, ProviderUnavailable):
+            if cached is not None and _cached_token_is_usable(cached):
+                return cached[0]
+            raise
         _TOKEN_CACHE[key] = (token, _token_expires_at(token))
         return token
 
@@ -431,7 +473,7 @@ class MoabitsAdapter(BaseAdapter):
     Circuit breaker: opens after 5 failures in 30s window, stays open for 30s.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("moabits")
 
     async def get_subscription(
@@ -485,7 +527,7 @@ class MoabitsAdapter(BaseAdapter):
                 detail="Moabits usage metrics filtering is not documented"
             )
         creds = _creds(credentials)
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         start = start_date or now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end = end_date or now
         if end < start:

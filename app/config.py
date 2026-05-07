@@ -46,3 +46,24 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def require_fernet_key(settings: Settings) -> str:
+    """Return the configured FERNET_KEY or raise 500. Use in request handlers
+    that need to encrypt/decrypt credentials.
+    """
+    from fastapi import HTTPException, status
+
+    if not settings.fernet_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Missing FERNET_KEY configuration",
+        )
+    return settings.fernet_key
+
+
+def require_database_url(settings: Settings) -> str:
+    """Return the configured DATABASE_URL or raise RuntimeError at startup."""
+    if not settings.database_url:
+        raise RuntimeError("Missing DATABASE_URL configuration")
+    return settings.database_url

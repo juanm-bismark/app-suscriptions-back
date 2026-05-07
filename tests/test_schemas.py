@@ -36,6 +36,17 @@ class TestSubscriptionOutSchema:
         schema = SubscriptionOut.model_config
         assert schema.get("from_attributes") is True
 
+    def test_documents_summary_and_detail_examples(self):
+        """SubscriptionOut should document summary and enriched detail shapes."""
+        examples = SubscriptionOut.model_config["json_schema_extra"]["examples"]
+
+        assert {example["detail_level"] for example in examples} == {
+            "summary",
+            "detail",
+        }
+        assert examples[0]["normalized"]["identity"]["iccid"]
+        assert examples[1]["provider_fields"]["detail_enriched"] is True
+
 
 class TestUsageOutSchema:
     """Test UsageOut Pydantic model."""

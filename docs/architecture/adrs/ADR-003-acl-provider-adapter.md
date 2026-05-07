@@ -3,7 +3,7 @@
 - **Estado**: Accepted
 - **Fecha**: 2026-04-22
 - **Decisores**: equipo backend
-- **Relacionado**: ADR-001 (modular monolith), ADR-004 (modelo de errores), ADR-009 (testing)
+- **Relacionado**: ADR-001 (modular monolith), ADR-004 (modelo de errores), ADR-009 (testing), ADR-010 (bootstrap explícito de `company_codes` Moabits)
 
 ## Contexto
 
@@ -87,7 +87,7 @@ Pagination y rate limit son nativos del proveedor:
 | Proveedor | Cursor nativo | Límite máximo por request | Notas |
 |---|---|---|---|
 | Kite | `startIndex` (offset) | `maxBatchSize` ≤ 1000 | Adapter clamp; 429 → `ProviderRateLimited`. |
-| Tele2 | `pageNumber` (1-based) | `pageSize` ≤ 50 | `lastPage:true` cierra la paginación. |
+| Tele2 | `pageNumber` (1-based) | `pageSize` ≤ 50 | `lastPage:true` cierra la paginación. El adapter enriquece sólo las primeras 5 filas con `Get Device Details`; el resto queda como summary. |
 | Moabits | offset local | sin paginación nativa | `getSimListByCompany` devuelve todo; el adapter pagina en memoria. |
 
 Hoy los tres adaptadores (Kite, Tele2, Moabits) implementan
@@ -121,6 +121,12 @@ Comportamiento operativo recomendado:
     adapter; si el adapter implementa `SearchableProvider`, delegar la
     paginación nativa al proveedor.
 
+    Para Tele2, el listing nativo (`Search Devices`) devuelve un resumen
+    liviano. El adapter llama `Get Device Details` únicamente para las
+    primeras 5 SIMs de la página, respetando el rate limiter de cuenta.
+    El router serializa esas filas como `detail_level=detail`; las demás
+    filas conservan `detail_level=summary`.
+
 - Global listing (deshabilitado por defecto): sólo habilitado cuando el
     tenant tiene un `SimRoutingMap` inicializado (import admin o proceso
     de discovery controlado). Mientras no exista, el endpoint global debe
@@ -145,6 +151,14 @@ o construir `sim_routing_map` por tenant antes de habilitar la vista
 global. Ver `migrations/001_sim_routing_map.sql` y
 `migrations/002_company_provider_credentials.sql` para cómo se resuelve el
 routing y se guardan las credenciales por tenant.
+
+Bootstrap note (Moabits `company_codes`): el listado provider-scoped de
+Moabits requiere `company_codes` persistidos en `credentials_enc` antes
+del primer listado. Si el campo está vacío, el router responde
+`412 ListingPreconditionFailed` apuntando al flujo
+`GET /v1/companies/me/credentials/moabits/companies/discover` +
+`PUT /v1/companies/me/credentials/moabits/company-codes`. No hay
+auto-scope por nombre. Ver ADR-010.
 
 ### 2. **Provider Adapters** — implementación por proveedor
 

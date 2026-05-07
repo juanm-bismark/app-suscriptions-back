@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI, Request
@@ -47,7 +48,9 @@ def _profile(role: AppRole) -> Profile:
     return Profile(id=USER_ID, company_id=COMPANY_ID, role=role)
 
 
-def _client(role: AppRole, registry: ProviderRegistry | _Registry | None = None) -> TestClient:
+def _client(
+    role: AppRole, registry: ProviderRegistry | _Registry | None = None
+) -> TestClient:
     app = FastAPI()
 
     @app.exception_handler(DomainError)
@@ -61,7 +64,9 @@ def _client(role: AppRole, registry: ProviderRegistry | _Registry | None = None)
     app.dependency_overrides[get_current_profile] = lambda: _profile(role)
     app.dependency_overrides[get_db] = _db_override
     app.dependency_overrides[get_settings] = lambda: Settings()
-    app.dependency_overrides[sims.get_registry] = lambda: registry or _Registry(_Provider())
+    app.dependency_overrides[sims.get_registry] = lambda: (
+        registry or _Registry(_Provider())
+    )
     return TestClient(app)
 
 
@@ -185,9 +190,7 @@ def test_list_sims_documents_tele2_modified_since_rules() -> None:
     modified_since = next(
         param for param in params if param["name"] == "modified_since"
     )
-    modified_till = next(
-        param for param in params if param["name"] == "modified_till"
-    )
+    modified_till = next(param for param in params if param["name"] == "modified_till")
     assert "Provider support: tele2" in modified_since["description"]
     assert "kite" in modified_since["description"]
     assert "moabits" in modified_since["description"]
@@ -200,6 +203,39 @@ def test_list_sims_rejects_unknown_provider() -> None:
     response = client.get("/v1/sims?provider=unknown")
 
     assert response.status_code == 422
+
+
+def test_subscription_output_includes_normalized_blocks() -> None:
+    out = sims._to_out(
+        Subscription(
+            iccid="8988216716970004975",
+            msisdn="882351697004975",
+            imsi="901161697004975",
+            status=AdministrativeStatus.ACTIVE,
+            native_status="ACTIVATED",
+            provider="tele2",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=datetime(2016, 7, 6, 22, 4, 4),
+            provider_fields={
+                "detail_enriched": True,
+                "imei": "12345",
+                "rate_plan": "hphlr rp1",
+                "communication_plan": "CP_Basic_ON",
+                "account_id": "100020620",
+                "date_shipped": "2016-06-27 07:00:00.000+0000",
+                "account_custom_1": "78",
+            },
+        )
+    )
+
+    assert out.detail_level == "detail"
+    assert out.normalized["identity"]["imei"] == "12345"
+    assert out.normalized["plan"]["name"] == "hphlr rp1"
+    assert out.normalized["plan"]["communication_plan"] == "CP_Basic_ON"
+    assert out.normalized["customer"]["account_id"] == "100020620"
+    assert out.normalized["hardware"]["shipped_at"] == "2016-06-27T07:00:00Z"
+    assert out.normalized["custom_fields"] == {"account_custom_1": "78"}
 
 
 @pytest.mark.asyncio
@@ -275,4 +311,146 @@ async def test_provider_listing_commits_routing_upserts_once(monkeypatch) -> Non
     )
 
     assert db.execute_calls == 2
+    assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_moabits_listing_requires_persisted_company_codes(monkeypatch) -> None:
+    """Listing Moabits SIMs with empty company_codes must fail with 412 and an
+    actionable message pointing to the discover + PUT flow. There is no
+    runtime auto-scope by name match (removed for performance and determinism).
+    """
+    from app.shared.errors import ListingPreconditionFailed
+
+    class _Db:
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            pass
+
+    class _SearchProvider:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            raise AssertionError("adapter must not be called when codes missing")
+
+    class _SearchRegistry:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def get(self, provider):
+            return self.provider
+
+    async def _credentials(*args, **kwargs):
+        return {
+            "base_url": "https://www.api.myorion.co",
+            "x_api_key": "secret-key",
+            "parent_company_code": "48123",
+            "company_codes": [],
+        }
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+
+    with pytest.raises(ListingPreconditionFailed) as excinfo:
+        await sims._list_via_provider_search(
+            "moabits",
+            cursor=None,
+            limit=50,
+            filters=sims._build_filters(
+                status_filter=None,
+                modified_since=None,
+                modified_till=None,
+                iccid=None,
+                imsi=None,
+                msisdn=None,
+                custom=None,
+            ),
+            company_id=COMPANY_ID,
+            db=_Db(),
+            settings=Settings(),
+            registry=_SearchRegistry(_SearchProvider()),
+        )
+
+    assert "company_codes" in (excinfo.value.detail or "")
+    assert excinfo.value.extra.get("provider") == "moabits"
+
+
+@pytest.mark.asyncio
+async def test_moabits_listing_uses_persisted_company_codes(monkeypatch) -> None:
+    """When company_codes are already persisted, the listing path delegates to
+    the adapter directly with no extra Moabits call for discovery.
+    """
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _SearchProvider:
+        def __init__(self) -> None:
+            self.credentials = None
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            self.credentials = credentials
+            return (
+                [
+                    Subscription(
+                        iccid="8910300000001880253",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.SUSPENDED,
+                        native_status="Suspended",
+                        provider="moabits",
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    )
+                ],
+                None,
+            )
+
+    class _SearchRegistry:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def get(self, provider):
+            return self.provider
+
+    async def _credentials(*args, **kwargs):
+        return {
+            "base_url": "https://www.api.myorion.co",
+            "x_api_key": "secret-key",
+            "parent_company_code": "48123",
+            "company_codes": ["48123"],
+        }
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    provider = _SearchProvider()
+    db = _Db()
+
+    result = await sims._list_via_provider_search(
+        "moabits",
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_SearchRegistry(provider),
+    )
+
+    assert isinstance(result, SimListOut)
+    assert provider.credentials["company_codes"] == ["48123"]
+    assert result.items[0].iccid == "8910300000001880253"
     assert db.commit_calls == 1

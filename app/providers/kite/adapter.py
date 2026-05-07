@@ -136,7 +136,7 @@ class KiteAdapter(BaseAdapter):
     Circuit breaker: opens after 5 failures in 30s window, stays open for 30s.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("kite")
 
     async def get_subscription(

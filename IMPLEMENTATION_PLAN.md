@@ -120,10 +120,13 @@
 **Justificación:** Kite y Tele2 documentan límites dentro de detalle/edición; `moabits.md` también dice que límites viajan dentro del detalle del dispositivo/cuenta.
 
 **Cambios:**
-- Tipar un submodelo canónico opcional dentro de `SubscriptionOut.provider_fields` o crear `limits`/`plan` como bloques canónicos si la UI ya los necesita.
+- Agregar `detail_level` y `normalized` a `SubscriptionOut`, manteniendo compatibilidad con los campos top-level y `provider_fields`.
+- `normalized` contiene bloques homogéneos: `identity`, `status`, `plan`, `customer`, `network`, `hardware`, `services`, `limits`, `dates`, `custom_fields`.
 - Kite: preservar `limit`, `value`, `thrReached`, `enabled`, `trafficCut` de `consumptionDaily/monthly`.
 - Tele2: preservar `overageLimitOverride`, `testReadyDataLimit`, `testReadySmsLimit`, `testReadyVoiceLimit`, `testReadyCsdLimit`.
 - Moabits: preservar `dataLimit`, `smsLimit`, `product_*`, `planStartDate`, `planExpirationDate`.
+- Tele2 listing: después de `Search Devices`, llamar `Get Device Details` sólo para las primeras 5 SIMs de la página y devolverlas con `detail_level=detail`; el resto queda `summary`.
+- Documentar en OpenAPI y docs que `summary` no implica ausencia real de campos como `msisdn`/`imsi`, sólo que el endpoint de listado no los trajo.
 
 **No hacer:** `GET /v1/sims/{iccid}/limits` salvo que producto requiera una pantalla independiente y el contrato lo declare como vista derivada, no endpoint proveedor.
 

@@ -10,7 +10,7 @@ import re
 import time
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -19,9 +19,13 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_settings, require_fernet_key
 from app.database import get_db
-from app.identity.dependencies import get_current_profile, require_roles
+from app.identity.dependencies import (
+    get_current_company_id,
+    get_current_profile,
+    require_roles,
+)
 from app.identity.models.profile import AppRole, Profile
 from app.providers.base import Provider, SearchableProvider
 from app.providers.registry import ProviderRegistry
@@ -34,7 +38,11 @@ from app.shared.errors import (
     SubscriptionNotFound,
     UnsupportedOperation,
 )
-from app.subscriptions.domain import AdministrativeStatus, SubscriptionSearchFilters
+from app.subscriptions.domain import (
+    AdministrativeStatus,
+    Subscription,
+    SubscriptionSearchFilters,
+)
 from app.subscriptions.models.lifecycle_audit import LifecycleChangeAudit
 from app.subscriptions.models.routing import SimRoutingMap
 from app.subscriptions.schemas.sim import (
@@ -62,8 +70,10 @@ _REQUEST_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 # ── Dependencies ────────────────────────────────────────────────────────────────
 
+
 def get_registry(request: Request) -> ProviderRegistry:
-    return request.app.state.provider_registry
+    registry: ProviderRegistry = request.app.state.provider_registry
+    return registry
 
 
 async def _load_credentials(
@@ -85,12 +95,35 @@ async def _load_credentials(
             detail=f"No active credentials for provider '{provider}'"
         )
     _warn_if_kite_certificate_expiring(row)
-    creds = decrypt_credentials(row.credentials_enc, settings.fernet_key)
+    creds = decrypt_credentials(row.credentials_enc, require_fernet_key(settings))
     creds["company_id"] = str(company_id)
     creds["account_scope"] = row.account_scope or {}
     if row.provider == "tele2" and (row.account_scope or {}).get("max_tps") is not None:
         creds["max_tps"] = (row.account_scope or {})["max_tps"]
     return creds
+
+
+def _configured_company_codes(creds: dict[str, Any]) -> list[str]:
+    raw_codes = creds.get("company_codes", [])
+    if isinstance(raw_codes, str):
+        raw_codes = [raw_codes]
+    if not isinstance(raw_codes, list):
+        return []
+    return [str(code).strip() for code in raw_codes if str(code).strip()]
+
+
+def _require_moabits_company_codes(creds: dict[str, Any]) -> None:
+    if _configured_company_codes(creds):
+        return
+    raise ListingPreconditionFailed(
+        detail=(
+            "Moabits credentials have no company_codes configured. "
+            "Call GET /v1/companies/me/credentials/moabits/companies/discover to list "
+            "available companies, then PUT /v1/companies/me/credentials/moabits/company-codes "
+            "to persist the selection."
+        ),
+        extra={"provider": Provider.MOABITS.value},
+    )
 
 
 def _warn_if_kite_certificate_expiring(row: CompanyProviderCredentials) -> None:
@@ -151,8 +184,228 @@ def _require_idempotency_key(
     return idempotency_key
 
 
-def _to_out(sub) -> SubscriptionOut:
-    return SubscriptionOut(**dataclasses.asdict(sub))
+def _to_out(sub: Subscription) -> SubscriptionOut:
+    data = dataclasses.asdict(sub)
+    data["detail_level"] = _detail_level(data)
+    data["normalized"] = _normalized_subscription(data)
+    return SubscriptionOut(**data)
+
+
+def _iso_datetime(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _boolish(value: Any) -> bool | Any:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "enabled"}:
+            return True
+        if normalized in {"false", "0", "no", "disabled"}:
+            return False
+    return value
+
+
+def _first_present(source: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _custom_fields(provider_fields: dict[str, Any]) -> dict[str, Any]:
+    prefixes = (
+        "account_custom_",
+        "operator_custom_",
+        "customer_custom_",
+        "custom_field_",
+    )
+    return {
+        key: value
+        for key, value in provider_fields.items()
+        if any(key.startswith(prefix) for prefix in prefixes)
+    }
+
+
+def _detail_level(data: dict[str, Any]) -> str:
+    provider_fields = data.get("provider_fields") or {}
+    if data.get("provider") == Provider.TELE2.value:
+        return "detail" if provider_fields.get("detail_enriched") is True else "summary"
+    return "detail"
+
+
+def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
+    provider_fields: dict[str, Any] = data.get("provider_fields") or {}
+    services = provider_fields.get("services")
+    if services is None and provider_fields.get("services_raw"):
+        services = [
+            item.strip().lower()
+            for item in str(provider_fields["services_raw"]).split("/")
+            if item.strip()
+        ]
+
+    return {
+        "identity": {
+            "iccid": data.get("iccid"),
+            "msisdn": data.get("msisdn"),
+            "imsi": data.get("imsi"),
+            "imei": _first_present(provider_fields, "imei"),
+            "alias": _first_present(provider_fields, "alias"),
+            "eid": _first_present(provider_fields, "eid"),
+            "euiccid": _first_present(provider_fields, "euiccid"),
+            "sim_profile_id": _first_present(provider_fields, "sim_profile_id"),
+        },
+        "status": {
+            "value": str(data.get("status")) if data.get("status") else None,
+            "native": data.get("native_status"),
+            "last_changed_at": _iso_datetime(
+                _first_present(
+                    provider_fields, "last_state_change_date", "date_updated"
+                )
+                or data.get("updated_at")
+            ),
+        },
+        "plan": {
+            "name": _first_present(
+                provider_fields,
+                "product_name",
+                "rate_plan",
+                "commercial_group",
+            ),
+            "code": _first_present(provider_fields, "product_code"),
+            "id": _first_present(provider_fields, "product_id"),
+            "communication_plan": _first_present(provider_fields, "communication_plan"),
+            "apn": _first_present(provider_fields, "apn"),
+            "apns": _first_present(provider_fields, "apn_list"),
+            "started_at": _iso_datetime(
+                _first_present(provider_fields, "plan_start_date")
+            ),
+            "expires_at": _iso_datetime(
+                _first_present(provider_fields, "plan_expiration_date")
+            ),
+        },
+        "customer": {
+            "name": _first_present(
+                provider_fields,
+                "client_name",
+                "end_customer_name",
+                "customer",
+            ),
+            "id": _first_present(
+                provider_fields,
+                "end_customer_id",
+                "end_consumer_id",
+            ),
+            "company_code": _first_present(provider_fields, "company_code"),
+            "account_id": _first_present(provider_fields, "account_id"),
+        },
+        "network": {
+            "operator": _first_present(provider_fields, "operator"),
+            "country": _first_present(provider_fields, "country"),
+            "rat_type": _first_present(provider_fields, "rat_type"),
+            "last_network": _first_present(provider_fields, "last_network"),
+            "ip_address": _first_present(
+                provider_fields,
+                "ip_address",
+                "fixed_ip_address",
+                "fixed_ipv6_address",
+                "ipv6_address",
+            ),
+            "sgsn_ip": _first_present(provider_fields, "sgsn_ip"),
+            "ggsn_ip": _first_present(provider_fields, "ggsn_ip"),
+            "last_traffic_at": _iso_datetime(
+                _first_present(provider_fields, "last_traffic_date")
+            ),
+            "first_lu_at": _iso_datetime(_first_present(provider_fields, "first_lu")),
+            "last_lu_at": _iso_datetime(_first_present(provider_fields, "last_lu")),
+            "first_cdr_at": _iso_datetime(_first_present(provider_fields, "first_cdr")),
+            "last_cdr_at": _iso_datetime(_first_present(provider_fields, "last_cdr")),
+            "gprs": _first_present(provider_fields, "gprs_status"),
+            "ip": _first_present(provider_fields, "ip_status"),
+            "location": _first_present(
+                provider_fields, "automatic_location", "manual_location"
+            ),
+        },
+        "hardware": {
+            "sim_model": _first_present(provider_fields, "sim_model"),
+            "module_manufacturer": _first_present(
+                provider_fields, "comm_module_manufacturer"
+            ),
+            "module_model": _first_present(provider_fields, "comm_module_model"),
+            "device_id": _first_present(provider_fields, "device_id"),
+            "modem_id": _first_present(provider_fields, "modem_id"),
+            "imei_last_changed_at": _iso_datetime(
+                _first_present(provider_fields, "imei_last_change")
+            ),
+            "shipped_at": _iso_datetime(
+                _first_present(provider_fields, "date_shipped")
+            ),
+        },
+        "services": {
+            "active": services,
+            "basic": _first_present(provider_fields, "basic_services"),
+            "supplementary": _first_present(provider_fields, "supplementary_services"),
+            "data_service": _first_present(provider_fields, "data_service"),
+            "sms_service": _first_present(provider_fields, "sms_service"),
+        },
+        "limits": {
+            "data": _first_present(provider_fields, "data_limit_mb"),
+            "data_unit": "mb"
+            if provider_fields.get("data_limit_mb") is not None
+            else None,
+            "sms": _first_present(provider_fields, "sms_limit"),
+            "daily": _normalize_usage_controls(
+                _first_present(provider_fields, "consumption_daily")
+            ),
+            "monthly": _normalize_usage_controls(
+                _first_present(provider_fields, "consumption_monthly")
+            ),
+        },
+        "dates": {
+            "activated_at": _iso_datetime(data.get("activated_at")),
+            "updated_at": _iso_datetime(data.get("updated_at")),
+            "added_at": _iso_datetime(_first_present(provider_fields, "date_added")),
+            "provisioned_at": _iso_datetime(
+                _first_present(provider_fields, "provision_date")
+            ),
+        },
+        "custom_fields": _custom_fields(provider_fields),
+    }
+
+
+def _normalize_usage_controls(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    normalized: dict[str, Any] = {}
+    for metric, payload in value.items():
+        if not isinstance(payload, dict):
+            normalized[metric] = payload
+            continue
+        normalized[metric] = {
+            key: _boolish(payload.get(source_key))
+            for key, source_key in (
+                ("limit", "limit"),
+                ("value", "value"),
+                ("threshold_reached", "thr_reached"),
+                ("traffic_cut", "traffic_cut"),
+                ("enabled", "enabled"),
+            )
+        }
+    return normalized
 
 
 def _parse_metric_list(raw: str | None) -> list[str] | None:
@@ -245,6 +498,7 @@ def _build_filters(
 
 # ── Routing map helpers ──────────────────────────────────────────────────────────
 
+
 async def _upsert_routing(
     db: AsyncSession,
     iccid: str,
@@ -257,13 +511,18 @@ async def _upsert_routing(
         .values(iccid=iccid, provider=provider, company_id=company_id)
         .on_conflict_do_update(
             index_elements=["iccid"],
-            set_={"provider": provider, "company_id": company_id, "last_seen_at": func.now()},
+            set_={
+                "provider": provider,
+                "company_id": company_id,
+                "last_seen_at": func.now(),
+            },
         )
     )
     await db.execute(stmt)
 
 
 # ── Idempotency helpers ──────────────────────────────────────────────────────────
+
 
 async def _claim_idempotency_key(
     key: str,
@@ -322,6 +581,7 @@ async def _release_idempotency_key(
 
 # ── Lifecycle audit helper ───────────────────────────────────────────────────────
 
+
 async def _write_lifecycle_audit(
     db: AsyncSession,
     *,
@@ -370,6 +630,7 @@ def _provider_error_fields(exc: Exception) -> tuple[str | None, str | None]:
 
 # ── Read endpoints ───────────────────────────────────────────────────────────────
 
+
 async def _list_via_provider_search(
     provider: str,
     cursor: str | None,
@@ -386,6 +647,8 @@ async def _list_via_provider_search(
     returned SIM into the routing index so subsequent single-SIM calls work.
     """
     creds = await _load_credentials(company_id, provider, db, settings)
+    if provider == Provider.MOABITS.value:
+        _require_moabits_company_codes(creds)
     adapter = registry.get(provider)
 
     if not isinstance(adapter, SearchableProvider):
@@ -432,9 +695,9 @@ async def _list_via_routing_index(
             detail="Canonical filters require provider-scoped listing (?provider=<name>)"
         )
     count_result = await db.execute(
-        select(func.count()).select_from(SimRoutingMap).where(
-            SimRoutingMap.company_id == company_id
-        )
+        select(func.count())
+        .select_from(SimRoutingMap)
+        .where(SimRoutingMap.company_id == company_id)
     )
     total = count_result.scalar_one()
 
@@ -474,7 +737,9 @@ async def _list_via_routing_index(
             items.append(_to_out(sub))
         except Exception as exc:
             code = exc.code if isinstance(exc, DomainError) else "provider.unavailable"
-            title = exc.title if isinstance(exc, DomainError) else "Provider request failed"
+            title = (
+                exc.title if isinstance(exc, DomainError) else "Provider request failed"
+            )
             failed_providers.append(
                 {
                     "provider": routing.provider,
@@ -538,7 +803,7 @@ async def list_sims(
     imsi: str | None = None,
     msisdn: str | None = None,
     custom: list[str] | None = Query(None),
-    current: Profile = Depends(get_current_profile),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
@@ -574,26 +839,26 @@ async def list_sims(
             cursor,
             limit,
             filters,
-            current.company_id,
+            company_id,
             db,
             settings,
             registry,
         )
     return await _list_via_routing_index(
-        cursor, limit, filters, current.company_id, db, settings, registry
+        cursor, limit, filters, company_id, db, settings, registry
     )
 
 
 @router.get("/{iccid}", response_model=SubscriptionOut)
 async def get_sim(
     iccid: str,
-    current: Profile = Depends(get_current_profile),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> SubscriptionOut:
-    routing = await _resolve_routing(iccid, current.company_id, db)
-    creds = await _load_credentials(current.company_id, routing.provider, db, settings)
+    routing = await _resolve_routing(iccid, company_id, db)
+    creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
     sub = await adapter.get_subscription(iccid, creds)
     return _to_out(sub)
@@ -605,13 +870,13 @@ async def get_usage(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
     metrics: str | None = None,
-    current: Profile = Depends(get_current_profile),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> UsageOut:
-    routing = await _resolve_routing(iccid, current.company_id, db)
-    creds = await _load_credentials(current.company_id, routing.provider, db, settings)
+    routing = await _resolve_routing(iccid, company_id, db)
+    creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
     snap = await adapter.get_usage(
         iccid,
@@ -626,19 +891,20 @@ async def get_usage(
 @router.get("/{iccid}/presence", response_model=PresenceOut)
 async def get_presence(
     iccid: str,
-    current: Profile = Depends(get_current_profile),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> PresenceOut:
-    routing = await _resolve_routing(iccid, current.company_id, db)
-    creds = await _load_credentials(current.company_id, routing.provider, db, settings)
+    routing = await _resolve_routing(iccid, company_id, db)
+    creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
     presence = await adapter.get_presence(iccid, creds)
     return PresenceOut(**dataclasses.asdict(presence))
 
 
 # ── Write endpoints ──────────────────────────────────────────────────────────────
+
 
 @router.put("/{iccid}/status", status_code=status.HTTP_204_NO_CONTENT)
 async def set_status(
@@ -647,6 +913,7 @@ async def set_status(
     request: Request,
     idempotency_key: str = Depends(_require_idempotency_key),
     current: Profile = Depends(require_roles(AppRole.admin)),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
@@ -659,11 +926,11 @@ async def set_status(
             detail=f"Unknown status '{body.target}'. Valid values: {[s.value for s in AdministrativeStatus]}",
         )
 
-    routing = await _resolve_routing(iccid, current.company_id, db)
-    if not await _claim_idempotency_key(idempotency_key, current.company_id, db):
+    routing = await _resolve_routing(iccid, company_id, db)
+    if not await _claim_idempotency_key(idempotency_key, company_id, db):
         await _write_lifecycle_audit(
             db,
-            company_id=current.company_id,
+            company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
             iccid=iccid,
@@ -679,7 +946,7 @@ async def set_status(
         )
         return
 
-    creds = await _load_credentials(current.company_id, routing.provider, db, settings)
+    creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
 
     error: str | None = None
@@ -700,12 +967,12 @@ async def set_status(
         error = str(exc)
         outcome = "error"
         provider_request_id, provider_error_code = _provider_error_fields(exc)
-        await _release_idempotency_key(idempotency_key, current.company_id, db)
+        await _release_idempotency_key(idempotency_key, company_id, db)
         raise
     finally:
         await _write_lifecycle_audit(
             db,
-            company_id=current.company_id,
+            company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
             iccid=iccid,
@@ -720,7 +987,7 @@ async def set_status(
             error=error,
         )
 
-    await _mark_idempotency_processed(idempotency_key, current.company_id, db)
+    await _mark_idempotency_processed(idempotency_key, company_id, db)
 
 
 @router.post("/{iccid}/purge", status_code=status.HTTP_204_NO_CONTENT)
@@ -729,15 +996,16 @@ async def purge_sim(
     request: Request,
     idempotency_key: str = Depends(_require_idempotency_key),
     current: Profile = Depends(require_roles(AppRole.admin)),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> None:
-    routing = await _resolve_routing(iccid, current.company_id, db)
-    if not await _claim_idempotency_key(idempotency_key, current.company_id, db):
+    routing = await _resolve_routing(iccid, company_id, db)
+    if not await _claim_idempotency_key(idempotency_key, company_id, db):
         await _write_lifecycle_audit(
             db,
-            company_id=current.company_id,
+            company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
             iccid=iccid,
@@ -753,7 +1021,7 @@ async def purge_sim(
         )
         return
 
-    creds = await _load_credentials(current.company_id, routing.provider, db, settings)
+    creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
 
     error: str | None = None
@@ -767,12 +1035,12 @@ async def purge_sim(
         error = str(exc)
         outcome = "error"
         provider_request_id, provider_error_code = _provider_error_fields(exc)
-        await _release_idempotency_key(idempotency_key, current.company_id, db)
+        await _release_idempotency_key(idempotency_key, company_id, db)
         raise
     finally:
         await _write_lifecycle_audit(
             db,
-            company_id=current.company_id,
+            company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
             iccid=iccid,
@@ -787,15 +1055,16 @@ async def purge_sim(
             error=error,
         )
 
-    await _mark_idempotency_processed(idempotency_key, current.company_id, db)
+    await _mark_idempotency_processed(idempotency_key, company_id, db)
 
 
 # ── Import endpoint ──────────────────────────────────────────────────────────────
 
+
 @router.post("/import", response_model=SimImportOut, status_code=status.HTTP_200_OK)
 async def import_sims(
     body: SimImportIn,
-    current: Profile = Depends(get_current_profile),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> SimImportOut:
@@ -818,7 +1087,7 @@ async def import_sims(
         )
 
     for item in body.sims:
-        await _upsert_routing(db, item.iccid, item.provider, current.company_id)
+        await _upsert_routing(db, item.iccid, item.provider, company_id)
     if body.sims:
         await db.commit()
 

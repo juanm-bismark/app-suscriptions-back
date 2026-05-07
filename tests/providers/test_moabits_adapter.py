@@ -11,12 +11,12 @@ These tests use realistic Moabits/Orion API payloads to validate that:
 - The unified status / native_status / provider_fields contract is preserved.
 """
 
-import re
 import base64
 import json
+import re
 import time
-from decimal import Decimal
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -26,18 +26,19 @@ from app.providers.moabits.adapter import (
     _coerce_bool,
     _coerce_int,
     _normalize_services,
+    fetch_child_companies,
+)
+from app.providers.moabits.status_map import map_status
+from app.shared.errors import (
+    ProviderAuthFailed,
+    ProviderValidationError,
+    UnsupportedOperation,
 )
 from app.subscriptions.domain import (
     AdministrativeStatus,
     ConnectivityState,
     SubscriptionSearchFilters,
 )
-from app.shared.errors import (
-    ProviderAuthFailed,
-    ProviderValidationError,
-    UnsupportedOperation,
-)
-from app.providers.moabits.status_map import map_status
 
 # Matches /api/usage/simUsage with any querystring (Moabits adds date params).
 _USAGE_URL_RE = re.compile(r"^https://api\.moabits\.test/api/usage/simUsage(\?.*)?$")
@@ -362,6 +363,48 @@ async def test_get_usage_rejects_legacy_moabits_api_key_alias(httpx_mock) -> Non
 
 
 @pytest.mark.asyncio
+async def test_fetch_child_companies_uses_v1_jwt_company_childs_endpoint(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        json={
+            "status": "Ok",
+            "info": {"authorizationToken": _jwt_with_exp(int(time.time()) + 3600)},
+        },
+    )
+    httpx_mock.add_response(
+        url="https://api.moabits.test/api/company/childs/48123",
+        json={
+            "status": "Ok",
+            "info": {
+                "companyChilds": [
+                    {
+                        "clie_id": 132,
+                        "companyCode": "48123",
+                        "companyName": "Bismark Colombia",
+                    }
+                ]
+            },
+        },
+    )
+
+    rows = await fetch_child_companies(
+        {
+            "base_url": "https://api.moabits.test",
+            "x_api_key": "app-key",
+            "company_codes": [],
+        },
+    )
+
+    requests = httpx_mock.get_requests()
+    assert requests[0].url.path == "/integrity/authorization-token"
+    assert requests[1].url.path == "/api/company/childs/48123"
+    assert requests[1].headers["authorization"].startswith("Bearer ")
+    assert rows[0]["companyCode"] == "48123"
+
+
+@pytest.mark.asyncio
 async def test_get_usage_reuses_cached_jwt_until_refresh_window(httpx_mock) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
@@ -420,6 +463,38 @@ async def test_get_usage_refreshes_jwt_when_exp_is_near(httpx_mock) -> None:
     assert [request.url.path for request in httpx_mock.get_requests()].count(
         "/integrity/authorization-token"
     ) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_usage_uses_cached_jwt_when_proactive_refresh_fails(
+    httpx_mock,
+) -> None:
+    iccid = "8934070100000000001"
+    cached_token = _jwt_with_exp(int(time.time()) + 60)
+    moabits_adapter_mod._TOKEN_CACHE["https://api.moabits.test|app-key"] = (
+        cached_token,
+        time.time() + 60,
+    )
+    httpx_mock.add_response(
+        url="https://api.moabits.test/integrity/authorization-token",
+        status_code=403,
+        text="The api key is Cancelled / Revoked / Expired",
+    )
+    httpx_mock.add_response(url=_USAGE_URL_RE, json=_usage_payload())
+
+    await MoabitsAdapter().get_usage(
+        iccid,
+        {
+            "base_url": "https://api.moabits.test",
+            "x_api_key": "app-key",
+            "company_codes": ["ACME"],
+        },
+    )
+
+    requests = httpx_mock.get_requests()
+    assert requests[0].url.path == "/integrity/authorization-token"
+    assert requests[1].url.path == "/api/usage/simUsage"
+    assert requests[1].headers["authorization"] == f"Bearer {cached_token}"
 
 
 @pytest.mark.asyncio

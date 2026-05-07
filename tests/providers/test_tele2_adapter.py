@@ -99,7 +99,10 @@ async def test_list_subscriptions_rejects_invalid_modified_since_windows() -> No
         await adapter.list_subscriptions(
             creds, cursor="page:1|since:2015-05-05T00:00:00Z", limit=10
         )
-    assert too_old.value.detail == "10000045 ModifiedSince cannot be more than one year old"
+    assert (
+        too_old.value.detail
+        == "10000045 ModifiedSince cannot be more than one year old"
+    )
 
 
 @pytest.mark.asyncio
@@ -188,6 +191,68 @@ async def test_list_subscriptions_maps_canonical_filters() -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_list_subscriptions_enriches_first_five_devices_only() -> None:
+    base = "https://api.tele2.test"
+    creds = {
+        "base_url": base,
+        "username": "alice",
+        "api_key": "ignored",
+        "api_version": "v1",
+        "max_tps": 1000,
+        "company_id": "company-1",
+    }
+    devices = [
+        {
+            "iccid": f"89462038075065380{i}",
+            "status": "ACTIVATED",
+            "ratePlan": "PAYU - BISMARK",
+            "communicationPlan": "Data LTE SMS",
+        }
+        for i in range(6)
+    ]
+    respx.get(f"{base}/rws/api/v1/devices").mock(
+        return_value=httpx.Response(
+            200,
+            json={"devices": devices, "lastPage": True},
+        )
+    )
+    detail_routes = [
+        respx.get(f"{base}/rws/api/v1/devices/{device['iccid']}").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    **device,
+                    "imsi": f"90116169700497{i}",
+                    "msisdn": f"88235169700497{i}",
+                    "imei": f"imei-{i}",
+                    "dateUpdated": "2016-07-06 22:04:04.380+0000",
+                    "accountId": "100020620",
+                },
+            )
+        )
+        for i, device in enumerate(devices[:5])
+    ]
+    subs, next_cursor = await Tele2Adapter().list_subscriptions(
+        creds,
+        cursor="page:1|since:2026-04-18T17:31:34Z",
+        limit=6,
+    )
+
+    assert next_cursor is None
+    assert len(subs) == 6
+    assert all(route.called for route in detail_routes)
+    requested_urls = {str(call.request.url) for call in respx.calls}
+    assert f"{base}/rws/api/v1/devices/{devices[5]['iccid']}" not in requested_urls
+    assert subs[0].imsi == "901161697004970"
+    assert subs[0].msisdn == "882351697004970"
+    assert subs[0].provider_fields["imei"] == "imei-0"
+    assert subs[0].provider_fields["detail_enriched"] is True
+    assert subs[5].imsi is None
+    assert "detail_enriched" not in subs[5].provider_fields
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_get_usage_maps_date_range_and_metrics() -> None:
     base = "https://api.tele2.test"
     creds = {
@@ -225,7 +290,11 @@ async def test_get_usage_maps_date_range_and_metrics() -> None:
     assert snap.data_used_bytes == 1024
     assert snap.voice_seconds == 60
     assert snap.sms_count == 2
-    assert {metric.unit for metric in snap.usage_metrics} == {"bytes", "seconds", "count"}
+    assert {metric.unit for metric in snap.usage_metrics} == {
+        "bytes",
+        "seconds",
+        "count",
+    }
 
 
 class TestTele2StatusMapping:

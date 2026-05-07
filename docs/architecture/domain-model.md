@@ -32,6 +32,8 @@ Esta sección es **normativa**: cuando aparezca uno de estos términos en códig
 | **UsageMetric** | Métrica individual normalizada de consumo. Campos típicos: `name`, `value`, `unit`, `kind` y opcionalmente `period_start`/`period_end`. | Normaliza las métricas específicas de cada provider hacia un formato estable. |
 | **ConsumptionLimit** | Límite configurado y comportamiento al excederse: `value`, `unit`, `enabled`, `trafficCut: bool`. | Kite anidado en `consumption*` · Tele2 `overageLimitOverride` · Moabits `dataLimit/smsLimit` |
 | **CommercialPlan** | Plan/tarifa asignado: `code`, `name`, `start_date`, `end_date`. | Kite `commercialGroup` · Tele2 `ratePlan` + `communicationPlan` · Moabits `product_*` + `planStartDate/planExpirationDate` |
+| **NormalizedSubscriptionView** | Bloques de respuesta pensados para frontend: `identity`, `status`, `plan`, `customer`, `network`, `hardware`, `services`, `limits`, `dates`, `custom_fields`. Se deriva en el borde HTTP; no se persiste. | Traduce campos útiles de `provider_fields` a una estructura homogénea. |
+| **detail_level** | Nivel de completitud de una fila de listado: `summary` cuando viene de un endpoint liviano del proveedor, `detail` cuando fue enriquecida con un endpoint de detalle. | Tele2 `Search Devices` vs `Get Device Details`. Kite/Moabits suelen devolver detalle rico. |
 | **StatusChange** | Evento histórico de cambio de estado: `from_state`, `to_state`, `at`, `automatic: bool`, `reason`, `actor`. Sólo Kite expone histórico nativo; los demás generarán este evento sintético si se sincroniza alguna vez. | Kite `getStatusHistory` |
 | **ControlOperation (Purge)** | Operación canónica de control sobre una SIM que el sistema expone para acciones administrativas o de red. En la práctica un único comando canónico (nombrado `purge` en el dominio) se mapea a distintas APIs proveedoras que por motivos históricos usan verbos diferentes (`networkReset`, `Edit Device {status: PURGED}`, rutas dedicadas de purga). Parámetros típicos: `iccid`, `technologies?`, `idempotency_key?`. | Kite `networkReset(network2g3g, network4g)` · Tele2 `Edit Device Details {status: PURGED}` · Moabits `PUT /api/sim/purge/` |
 | **Provider** | Origen externo de los datos. Enum: `KITE`, `TELE2`, `MOABITS`. Toda Subscription tiene exactamente un Provider asignado. | n/a (es del modelo canónico) |
@@ -53,6 +55,8 @@ Subscription {
   status: AdministrativeStatus
   native_status?: string
   provider_fields: Map<string, string>   # campos extensibles del proveedor (mapeados pero no interpretados)
+  detail_level: "summary" | "detail"     # nivel de enriquecimiento de la fila HTTP
+  normalized: NormalizedSubscriptionView  # vista derivada para consumo UI
   activated_at?: timestamp
   updated_at?: timestamp
 }
@@ -62,6 +66,8 @@ Subscription {
 - `iccid` es inmutable y obligatorio.
 - `provider` es inmutable. Cambiar de proveedor = baja + alta, no `update`.
 - `provider_fields` concentra el vocabulario específico del proveedor; el modelo canónico no interpreta claves fuera de esta bolsa.
+- `normalized` es una vista derivada y compatible hacia adelante: se puede ampliar con nuevos subcampos, pero no debe cambiar la semántica de claves existentes.
+- `detail_level=summary` no significa que la SIM carezca de `msisdn`, `imsi` u otros campos; significa que el endpoint proveedor usado para esa fila no los devolvió.
 
 ### StatusChange (Entity dentro de la History)
 
@@ -175,6 +181,46 @@ El cliente sabe que está consultando datos en tiempo real a través del proveed
 Los filtros explícitos (`status`, fechas, `iccid`, `imsi`, `msisdn`, `custom`) requieren el camino provider-scoped hasta que exista una semántica cross-provider confirmada. Si el proveedor no soporta un filtro, la API devuelve `409 provider.unsupported_operation`.
 
 Si una página global puede devolver datos útiles pero alguna llamada a proveedor falla, la respuesta conserva `200` y agrega `partial: true` con `failed_providers[]`. El cliente no recibe datos silenciosamente incompletos.
+
+### 6.5 Contrato de respuesta normalizado
+La API pública conserva los campos top-level históricos de `Subscription`
+(`iccid`, `msisdn`, `imsi`, `status`, `native_status`, `provider`,
+`activated_at`, `updated_at`, `provider_fields`) y agrega una vista
+derivada `normalized` para desacoplar al frontend del formato nativo de
+Kite, Tele2 y Moabits.
+
+`normalized` se compone de bloques opcionales y homogéneos:
+
+| Bloque | Propósito | Ejemplos de origen |
+|---|---|---|
+| `identity` | Identificadores de la SIM y perfil | `iccid`, `msisdn`, `imsi`, `imei`, `eid`, `euiccid` |
+| `status` | Estado canónico + valor nativo + última fecha conocida | Kite `lifeCycleStatus`, Tele2 `status`, Moabits `simStatus` |
+| `plan` | Plan/producto comercial | Kite `commercialGroup`, Tele2 `ratePlan`/`communicationPlan`, Moabits `product_*` |
+| `customer` | Cliente/cuenta del proveedor | Kite `endCustomer*`, Tele2 `accountId`, Moabits `clientName`/`companyCode` |
+| `network` | Red, IP, RAT, ubicación y fechas de tráfico | Kite `gprsStatus`, Tele2 IP fields, Moabits `lastNetwork`/LU/CDR |
+| `hardware` | Modelo SIM, módulo, modem, device/profile ids | Kite module fields, Tele2 `deviceID`/`modemID`/`simProfileId` |
+| `services` | Servicios activos o flags data/SMS/voice | Kite `basicServices`, Moabits `services`/`serviceStatus` |
+| `limits` | Límites y controles de consumo | Kite `consumption*`, Tele2 test/overage limits, Moabits `dataLimit`/`smsLimit` |
+| `dates` | Fechas comunes normalizadas a ISO UTC cuando se pueden parsear | activación, actualización, alta, provisión |
+| `custom_fields` | Campos libres configurados por cuenta/operador/cliente | Tele2 `accountCustom*`, Kite `customField*` |
+
+`provider_fields` permanece en la respuesta para vistas avanzadas o
+diagnóstico. La regla de diseño es: si un dato sirve como columna/filtro
+común del producto, debe aparecer en `normalized`; si sólo tiene sentido
+en una pantalla específica de proveedor, puede quedarse sólo en
+`provider_fields`.
+
+`detail_level` informa la completitud de la fila:
+
+- `detail`: la fila fue enriquecida con el endpoint de detalle del
+  proveedor o el listing nativo ya trae detalle suficiente.
+- `summary`: la fila proviene de un endpoint liviano. Campos top-level
+  `null` no deben interpretarse como ausencia real del dato.
+
+Para Tele2, `GET /v1/sims?provider=tele2` usa `Search Devices` como
+listado base y enriquece como máximo las primeras 5 SIMs de la página con
+`Get Device Details`, respetando el rate limit configurado. Las SIMs
+restantes se devuelven como `detail_level=summary`.
 
 ---
 

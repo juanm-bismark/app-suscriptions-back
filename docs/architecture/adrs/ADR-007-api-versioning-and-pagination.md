@@ -58,15 +58,48 @@ GET /v1/sims?limit=50&cursor=eyJwIjoiVEVMRTIiLCJpIjoiODk..."
 - Response:
 ```json
 {
-  "items": [...],
+  "items": [
+    {
+      "iccid": "89462038075065380465",
+      "msisdn": null,
+      "imsi": null,
+      "status": "active",
+      "native_status": "ACTIVATED",
+      "provider": "tele2",
+      "detail_level": "summary",
+      "normalized": {
+        "identity": {"iccid": "89462038075065380465"},
+        "plan": {"name": "PAYU - BISMARK", "communication_plan": "Data LTE SMS"},
+        "custom_fields": {}
+      },
+      "provider_fields": {
+        "rate_plan": "PAYU - BISMARK",
+        "communication_plan": "Data LTE SMS"
+      }
+    }
+  ],
   "next_cursor": "eyJ...",
-  "has_more": true,
+  "total": null,
   "partial": false,
   "failed_providers": []
 }
 ```
 
 **Por qué no offset**: el contrato debe soportar tanto cursor nativo del proveedor como página global vía routing map; un OFFSET público acopla al cliente a detalles internos de cada proveedor.
+
+Cada item conserva campos canónicos top-level y agrega:
+
+- `detail_level`: `summary` o `detail`. Un `summary` puede tener campos
+  `null` porque el endpoint de listado del proveedor no los trae.
+- `normalized`: vista homogénea para frontend (`identity`, `status`,
+  `plan`, `customer`, `network`, `hardware`, `services`, `limits`,
+  `dates`, `custom_fields`).
+- `provider_fields`: bloque proveedor-específico para vistas avanzadas.
+
+Regla Tele2: `GET /v1/sims?provider=tele2` usa `Search Devices` como
+base, exige `modified_since`, y enriquece sólo las primeras 5 SIMs de la
+página con `Get Device Details`. Esto evita acoplar al frontend a Tele2
+sin multiplicar el costo de requests ni violar el fair-use TPS.
 
 ### 3. Errores: RFC 7807 (`application/problem+json`)
 

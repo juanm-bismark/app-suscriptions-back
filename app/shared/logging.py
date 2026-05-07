@@ -17,6 +17,7 @@ def setup_logging(environment: str = "development") -> None:
         structlog.processors.TimeStamper(fmt="iso", utc=True),
     ]
 
+    renderer: StructlogProcessor
     if environment == "development":
         renderer = structlog.dev.ConsoleRenderer()
     else:

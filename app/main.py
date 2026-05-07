@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -6,7 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import get_settings
+from app.config import get_settings, require_database_url
 from app.database import close_engine, init_engine
 from app.identity.routers import auth, me, users
 from app.providers import routers as provider_routers
@@ -25,10 +26,10 @@ logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.environment)
-    init_engine(settings.database_url, echo=settings.database_echo)
+    init_engine(require_database_url(settings), echo=settings.database_echo)
 
     registry = ProviderRegistry()
     registry.register(Provider.KITE, KiteAdapter())

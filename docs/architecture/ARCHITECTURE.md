@@ -13,7 +13,7 @@ Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaci
 | **Estado** | Accepted — listo para implementación del primer proveedor (mitigaciones de seguridad AP-1, AP-8 implementadas) |
 | **Autores** | Equipo backend + solution architect |
 | **Depth del ejercicio** | comprehensive (Phases 1–8) |
-| **Últimas actualizaciones** | 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
+| **Últimas actualizaciones** | 2026-05-07: bootstrap explícito de `company_codes` Moabits — eliminado el auto-scope por nombre en `_list_via_provider_search` (ADR-010). El listado responde 412 si `company_codes` está vacío, apuntando a `discover` + `PUT company-codes`. 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 `GET /v1/sims?provider=tele2` enriquece hasta 5 SIMs por página con `Get Device Details`. 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
 
 ---
 
@@ -70,6 +70,7 @@ Detalle completo en [adrs/](adrs/).
 | ADR-007 | Versionado URL `/v1/` + cursor pagination + `Idempotency-Key` obligatoria en mutaciones | [ADR-007](adrs/ADR-007-api-versioning-and-pagination.md) | Accepted |
 | ADR-008 | JWT existente reutilizado + RBAC + scope por `Company` + `audit_log` | [ADR-008](adrs/ADR-008-auth-rbac-audit.md) | Accepted |
 | ADR-009 | Pirámide de tests + golden files de mappers + contract tests + FakeProvider | [ADR-009](adrs/ADR-009-testing-strategy.md) | Accepted |
+| ADR-010 | Moabits: bootstrap explícito de `company_codes` (sin auto-scope por nombre) | [ADR-010](adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md) | Accepted |
 
 ---
 
@@ -89,7 +90,12 @@ Detalle en [domain-model.md](domain-model.md) y [context-map.mermaid](context-ma
 
 **Decisiones semánticas críticas**:
 - `ControlOperation` — Operación canónica `purge` mapeada por adapters a las APIs proveedoras (p.ej. Kite `networkReset`, Tele2 `Edit Device {status: PURGED}`, Moabits `PUT /api/sim/purge/`). Operaciones no soportadas por el provider de la SIM devuelven `409 UnsupportedOperation`.
-- El contrato expuesto al frontend separa `provider_fields` (bloque dinámico de atributos del proveedor) de `provider_metrics`/`usage_metrics` (consumo normalizado).
+- El contrato expuesto al frontend separa:
+  - campos top-level canónicos (`iccid`, `msisdn`, `imsi`, `status`, `native_status`, `provider`, fechas);
+  - `normalized` (bloques homogéneos para UI: `identity`, `status`, `plan`, `customer`, `network`, `hardware`, `services`, `limits`, `dates`, `custom_fields`);
+  - `provider_fields` (bloque dinámico de atributos del proveedor para vistas avanzadas);
+  - `provider_metrics`/`usage_metrics` (consumo normalizado y métricas nativas).
+- `detail_level` indica si una fila de listado es `summary` o `detail`. En Tele2, las filas no enriquecidas por `Get Device Details` se devuelven como `summary`; sus campos `null` no significan ausencia real del dato.
 
 ---
 
@@ -278,6 +284,8 @@ Detalle en [patterns-decisions.md D7](patterns-decisions.md) y [ADR-005](adrs/AD
 **Tele2 / Cisco Control Center fair use aplicado**:
 - Search Devices exige `modified_since` en formato `yyyy-MM-ddTHH:mm:ssZ`; si falta, se devuelve `errorCode=10000003`.
 - `pageSize` default/máximo = 50, `pageNumber` default = 1, y `modifiedTill` default = `modifiedSince + 1 año`.
+- Tras recibir una página de Search Devices, el adapter llama `Get Device Details` únicamente para las primeras 5 SIMs de esa página. Esas filas se responden con `detail_level=detail`; el resto conserva la información de Search Devices y se responde con `detail_level=summary`.
+- La respuesta pública se normaliza antes de salir del router: `ratePlan`/`communicationPlan`, `accountId`, IPs, hardware/profile ids, fechas y `accountCustom*` se proyectan a bloques `normalized` cuando están disponibles.
 - Tele2 se rate-limita en proceso por cuenta/tenant: default 1 TPS, configurable con `company_provider_credentials.account_scope.max_tps` (p.ej. `5` para Advantage).
 - `40000029 Rate Limit Exceeded` y HTTP 429 se traducen a `ProviderRateLimited` y activan backoff temporal.
 
@@ -355,7 +363,7 @@ Capturadas durante el proceso; ninguna bloquea el diseño, algunas bloquean impl
 | # | Pregunta | Bloquea |
 |---|---|---|
 | OQ-1 | `SIM Routing Map`: ¿bootstrap por CSV de los proveedores o descubrimiento lazy? | Ola 2 |
-| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / `companyCodes` (Moabits). ¿Estructura exacta en `account_scope`? | Ola 1 |
+| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / `companyCodes` (Moabits). ¿Estructura exacta en `account_scope`? | Ola 1 — *Moabits resuelto en ADR-010: `company_codes` se persiste explícitamente en `credentials_enc` vía `PUT /v1/companies/me/credentials/moabits/company-codes`; sin auto-scope por nombre.* |
 | OQ-3 | ¿Alguno de los proveedores ofrece sandbox para E2E? | Capa 5 de testing (opcional) |
 | OQ-4 | Stack de observabilidad: ¿Prometheus/Grafana propio, Datadog, New Relic? | Ola 3 |
 | OQ-5 | Retención legal de `audit_log` | Ola 3 |

@@ -21,7 +21,8 @@ def encrypt_credentials(plaintext: Mapping[str, Any], fernet_key: str) -> str:
 def decrypt_credentials(encrypted: str, fernet_key: str) -> Dict[str, Any]:
     try:
         f = Fernet(fernet_key.encode())
-        return json.loads(f.decrypt(encrypted.encode()))
+        decoded: Dict[str, Any] = json.loads(f.decrypt(encrypted.encode()))
+        return decoded
     except InvalidToken as exc:
         raise ProviderUnavailable(
             detail="Credential decryption failed — verify FERNET_KEY configuration"

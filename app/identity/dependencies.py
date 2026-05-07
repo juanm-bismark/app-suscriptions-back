@@ -1,4 +1,5 @@
 import uuid
+from typing import Awaitable, Callable
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -67,10 +68,26 @@ async def get_current_profile_optional(
     return result.scalar_one_or_none()
 
 
-def require_roles(*roles: AppRole):
+def require_roles(*roles: AppRole) -> "Callable[[Profile], Awaitable[Profile]]":
     async def _checker(profile: Profile = Depends(get_current_profile)) -> Profile:
         if profile.role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return profile
 
     return _checker
+
+
+async def get_current_company_id(
+    profile: Profile = Depends(get_current_profile),
+) -> uuid.UUID:
+    """Return the caller's company_id, narrowed to UUID.
+
+    Profiles without a company scope (e.g. role=public) cannot use any
+    tenant-scoped endpoint — raise 403.
+    """
+    if profile.company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Profile is not scoped to a company",
+        )
+    return profile.company_id

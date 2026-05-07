@@ -1,3 +1,4 @@
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from urllib.parse import urlparse
@@ -12,16 +13,21 @@ from app.database import get_db
 from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
 from app.providers.base import Provider, SearchableProvider
+from app.providers.moabits.adapter import fetch_child_companies
 from app.providers.registry import ProviderRegistry
-from app.shared.crypto import encrypt_credentials
+from app.shared.crypto import decrypt_credentials, encrypt_credentials
 from app.shared.errors import DomainError
 from app.tenancy.credential_expiry import credential_expiry_status
+from app.tenancy.models.company import Company
 from app.tenancy.models.credentials import CompanyProviderCredentials
 from app.tenancy.schemas.credentials import (
     PROVIDER_CREDENTIAL_EXAMPLES,
     CredentialMetadataOut,
     CredentialTestOut,
     CredentialUpsertIn,
+    MoabitsCompanyDiscoveryOut,
+    MoabitsCompanyOut,
+    MoabitsCompanySelectionIn,
 )
 
 router = APIRouter(prefix="/companies/me/credentials", tags=["credentials"])
@@ -29,7 +35,8 @@ TELE2_DEFAULT_COBRAND_HOST = "restapi3.jasper.com"
 
 
 def get_registry(request: Request) -> ProviderRegistry:
-    return request.app.state.provider_registry
+    registry: ProviderRegistry = request.app.state.provider_registry
+    return registry
 
 
 ManagerOrAdminProfile = Annotated[
@@ -64,6 +71,20 @@ def _metadata(row: CompanyProviderCredentials) -> CredentialMetadataOut:
         account_scope=row.account_scope or {},
         expiry_status=credential_expiry_status(row.account_scope),
     )
+
+
+def _normalize_match_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return " ".join(ascii_text.casefold().split())
+
+
+def _company_matches(local_name: str, provider_name: str) -> bool:
+    local = _normalize_match_text(local_name)
+    provider = _normalize_match_text(provider_name)
+    if not local or not provider:
+        return False
+    return local == provider or local in provider or provider in local
 
 
 def _tele2_base_url(value: str) -> str:
@@ -181,6 +202,31 @@ async def _active_credential(
     return result.scalar_one_or_none()
 
 
+async def _current_company(company_id: UUID | None, db: AsyncSession) -> Company:
+    if company_id is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    result = await db.execute(select(Company).where(Company.id == company_id))
+    company = result.scalar_one_or_none()
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return company
+
+
+def _decrypt_active_credentials(
+    row: CompanyProviderCredentials,
+    settings: Settings,
+) -> dict[str, Any]:
+    fernet_key = _require_fernet_key(settings)
+    return decrypt_credentials(row.credentials_enc, fernet_key)
+
+
+def _selected_company_codes(credentials: dict[str, Any]) -> set[str]:
+    raw_codes = credentials.get("company_codes", [])
+    if isinstance(raw_codes, str):
+        raw_codes = [raw_codes]
+    return {str(code) for code in raw_codes}
+
+
 async def _live_test_credentials(
     provider: Provider,
     body: CredentialUpsertIn,
@@ -225,6 +271,99 @@ async def _live_test_credentials(
         )
 
     return CredentialTestOut(provider=provider.value, ok=True, detail=None)
+
+
+@router.get(
+    "/moabits/companies/discover",
+    response_model=MoabitsCompanyDiscoveryOut,
+)
+async def discover_moabits_companies(
+    current: ManagerOrAdminProfile,
+    db: DbSession,
+    settings: SettingsDep,
+) -> MoabitsCompanyDiscoveryOut:
+    row = await _active_credential(current.company_id, Provider.MOABITS, db)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Moabits credential not found")
+    local_company = await _current_company(current.company_id, db)
+    credentials = _decrypt_active_credentials(row, settings)
+    selected_codes = _selected_company_codes(credentials)
+
+    companies: list[MoabitsCompanyOut] = []
+    for item in await fetch_child_companies(credentials):
+        company_code = str(item.get("companyCode") or "").strip()
+        company_name = str(item.get("companyName") or "").strip()
+        if not company_code or not company_name:
+            continue
+        clie_id = item.get("clie_id", item.get("clieId"))
+        companies.append(
+            MoabitsCompanyOut(
+                company_code=company_code,
+                company_name=company_name,
+                clie_id=clie_id if isinstance(clie_id, int) else None,
+                selected=company_code in selected_codes,
+                matches_current_company=_company_matches(
+                    local_company.name, company_name
+                ),
+            )
+        )
+
+    companies.sort(
+        key=lambda company: (
+            not company.matches_current_company,
+            company.company_name.casefold(),
+            company.company_code,
+        )
+    )
+    return MoabitsCompanyDiscoveryOut(
+        current_company_name=local_company.name,
+        companies=companies,
+    )
+
+
+@router.put("/moabits/company-codes", response_model=CredentialMetadataOut)
+async def select_moabits_company_codes(
+    body: MoabitsCompanySelectionIn,
+    current: ManagerOrAdminProfile,
+    db: DbSession,
+    settings: SettingsDep,
+) -> CredentialMetadataOut:
+    row = await _active_credential(current.company_id, Provider.MOABITS, db)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Moabits credential not found")
+    fernet_key = _require_fernet_key(settings)
+    credentials = decrypt_credentials(row.credentials_enc, fernet_key)
+    requested_codes = [code.strip() for code in body.company_codes if code.strip()]
+    if not requested_codes:
+        raise HTTPException(
+            status_code=422,
+            detail="At least one Moabits company code is required",
+        )
+
+    provider_codes = {
+        str(item.get("companyCode") or "").strip()
+        for item in await fetch_child_companies(credentials)
+    }
+    missing_codes = sorted(set(requested_codes) - provider_codes)
+    if missing_codes:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Some Moabits company codes are not available to this X-API-KEY",
+                "company_codes": missing_codes,
+            },
+        )
+
+    credentials["company_codes"] = requested_codes
+    row.credentials_enc = encrypt_credentials(credentials, fernet_key)
+    row.account_scope = {
+        **(row.account_scope or {}),
+        "company_codes": requested_codes,
+    }
+    row.rotated_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(row)
+    return _metadata(row)
 
 
 @router.get("", response_model=list[CredentialMetadataOut])

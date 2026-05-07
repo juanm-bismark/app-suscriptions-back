@@ -375,6 +375,8 @@ async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Ele
             detail=f"Kite HTTP {response.status_code}: {response.text[:200]}"
         )
 
+    if root is None:
+        raise ProviderProtocolError(detail="Kite returned non-XML response")
     return root
 
 

@@ -48,6 +48,9 @@ This document tracks:
 - `modifiedSince` is strict `yyyy-MM-ddTHH:mm:ssZ`, cannot be in the future, and cannot be older than one year.
 - `pageSize` defaults to 50 and is clamped to Tele2's maximum of 50. `pageNumber` defaults to 1.
 - `modifiedTill` defaults to one year after `modifiedSince` when omitted.
+- After Search Devices returns a page, the adapter enriches only the first 5 devices with `Get Device Details` (`GET /rws/api/v1/devices/{iccid}`) before responding. This keeps the response useful for the first visible rows while respecting common Tele2/Cisco fair-use limits such as 5 TPS.
+- Enriched rows include `detail_level=detail`; non-enriched Search Devices rows include `detail_level=summary`. A `null` canonical field in a summary row means "not present in this listing response", not "the provider has no value".
+- `Get Device Details` fields are mapped to canonical/top-level or normalized response blocks when present: `imsi`, `msisdn`, `imei`, `dateActivated`, `dateUpdated`, `accountId`, fixed IP fields, `deviceID`, `modemID`, `eid`, `euiccid`, `simProfileId`, `simNotes`, `mec`, and custom fields.
 - Cisco fair-use throttling is implemented in-process per Tele2 account key: calls are serialized and rate-limited by `account_scope.max_tps` / credential `max_tps`, defaulting to 1 TPS. Advantage accounts can use `max_tps: 5`.
 - Cisco rate-limit response `errorCode=40000029` and HTTP 429 both map to `ProviderRateLimited`; the Tele2 limiter increases temporary backoff after rate-limit responses.
 

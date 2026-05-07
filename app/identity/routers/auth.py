@@ -116,6 +116,11 @@ async def signup(
         company_id = _uuid.uuid4()
         role = AppRole.public
     else:
+        if current.company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot invite users without a company scope",
+            )
         company_id = current.company_id
         requested_role_str = body.role or "member"
         try:
