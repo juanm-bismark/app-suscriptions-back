@@ -1,7 +1,10 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi_pagination import Page, Params
+from fastapi_pagination.ext.sqlalchemy import apaginate
 from sqlalchemy import select
+from sqlalchemy.sql import Select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,13 +19,20 @@ from app.identity.schemas.user import UserCreate, UserUpdate
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("", response_model=list[ProfileOut])
+def _list_users_query(current: Profile) -> Select[tuple[Profile]]:
+    query = select(Profile).where(Profile.company_id == current.company_id)
+    if current.role == AppRole.manager:
+        query = query.where(Profile.role.in_([AppRole.manager, AppRole.member]))
+    return query.order_by(Profile.created_at.desc())
+
+
+@router.get("", response_model=Page[ProfileOut])
 async def list_users(
     current: Profile = Depends(require_roles(AppRole.admin, AppRole.manager)),
+    params: Params = Depends(),
     db: AsyncSession = Depends(get_db),
-) -> list[Profile]:
-    result = await db.execute(select(Profile).where(Profile.company_id == current.company_id))
-    return list(result.scalars().all())
+) -> Page[ProfileOut]:
+    return await apaginate(db, _list_users_query(current), params)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ProfileOut)

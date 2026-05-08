@@ -6,6 +6,7 @@ import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi_pagination import add_pagination
 
 from app.config import get_settings, require_database_url
 from app.database import close_engine, init_engine
@@ -105,6 +106,7 @@ app.include_router(companies.router, prefix="/v1")
 app.include_router(credentials.router, prefix="/v1")
 app.include_router(sims.router, prefix="/v1")
 app.include_router(provider_routers.router, prefix="/v1")
+add_pagination(app)
 
 
 @app.get("/health")

@@ -241,6 +241,10 @@ def _source_config_settings(row: ProviderSourceConfig | None) -> dict[str, Any]:
     return row.settings or {}
 
 
+def _company_name_key(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
 async def _live_test_credentials(
     provider: Provider,
     body: CredentialUpsertIn,
@@ -309,6 +313,8 @@ async def discover_moabits_companies(
 
     companies: list[MoabitsCompanyOut] = []
     selected_companies: list[MoabitsCompanyOut] = []
+    matched_companies: list[MoabitsCompanyOut] = []
+    local_company_name_key = _company_name_key(local_company.name)
     for item in await fetch_child_companies(credentials):
         company_code = str(item.get("companyCode") or "").strip()
         company_name = str(item.get("companyName") or "").strip()
@@ -323,6 +329,8 @@ async def discover_moabits_companies(
         companies.append(company)
         if company_code in selected_company_code_set:
             selected_companies.append(company)
+        if _company_name_key(company_name) == local_company_name_key:
+            matched_companies.append(company)
 
     companies.sort(
         key=lambda company: (
@@ -334,6 +342,7 @@ async def discover_moabits_companies(
         current_company_name=local_company.name,
         selected_company_codes=selected_company_codes,
         selected_companies=selected_companies,
+        matched_companies=matched_companies,
         companies=companies,
     )
 

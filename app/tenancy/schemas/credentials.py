@@ -127,6 +127,13 @@ class MoabitsCompanyDiscoveryOut(BaseModel):
             "for this source."
         ),
     )
+    matched_companies: list[MoabitsCompanyOut] = Field(
+        default_factory=list,
+        description=(
+            "Discovered Moabits companies whose companyName matches the local "
+            "company name. Informational only; it does not configure source scope."
+        ),
+    )
     companies: list[MoabitsCompanyOut]
 
 

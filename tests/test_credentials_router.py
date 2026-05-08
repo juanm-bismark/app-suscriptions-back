@@ -417,6 +417,13 @@ def test_discover_moabits_companies_returns_provider_shaped_company_objects(
             "clie_id": 132,
         }
     ]
+    assert payload["matched_companies"] == [
+        {
+            "companyCode": "48123",
+            "companyName": "Bismark Colombia",
+            "clie_id": 132,
+        }
+    ]
     assert payload["companies"] == [
         {
             "companyCode": "48123-99",

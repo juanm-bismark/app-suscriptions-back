@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.identity.dependencies import get_current_profile, require_roles
+from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
 from app.tenancy.models.company import Company
 from app.tenancy.models.company_settings import CompanySettings
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 
 @router.get("/me", response_model=CompanyOut)
 async def get_my_company(
-    current: Profile = Depends(get_current_profile),
+    current: Profile = Depends(require_roles(AppRole.admin, AppRole.manager, AppRole.member)),
     db: AsyncSession = Depends(get_db),
 ) -> Company:
     result = await db.execute(select(Company).where(Company.id == current.company_id))
@@ -44,7 +44,7 @@ async def update_my_company(
 
 @router.get("/me/settings", response_model=CompanySettingsOut)
 async def get_my_settings(
-    current: Profile = Depends(get_current_profile),
+    current: Profile = Depends(require_roles(AppRole.admin, AppRole.manager, AppRole.member)),
     db: AsyncSession = Depends(get_db),
 ) -> CompanySettings:
     result = await db.execute(

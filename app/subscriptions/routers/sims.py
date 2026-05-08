@@ -5,7 +5,9 @@ The routing table (SimRoutingMap) maps iccid → provider + company_id and is
 populated lazily on first successful list, or explicitly via POST /import.
 """
 
+import base64
 import dataclasses
+import json
 import re
 import time
 import uuid
@@ -67,6 +69,8 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/sims", tags=["sims"])
 _REQUEST_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_GLOBAL_PROVIDER_PAGE_SIZE = 25
+_GLOBAL_CURSOR_PREFIX = "global:"
 
 
 # ── Dependencies ────────────────────────────────────────────────────────────────
@@ -692,6 +696,52 @@ async def _list_via_provider_search(
     )
 
 
+def _bootstrap_filters_for_provider(provider: str) -> SubscriptionSearchFilters:
+    if provider != Provider.TELE2.value:
+        return SubscriptionSearchFilters()
+    # Tele2 Search Devices requires ModifiedSince and rejects windows older than
+    # one year. Use a recent default only for global discovery warm-up.
+    return SubscriptionSearchFilters(
+        modified_since=datetime.now(UTC).replace(microsecond=0)
+        - timedelta(days=365)
+        + timedelta(seconds=1)
+    )
+
+
+def _encode_global_cursor(provider_cursors: dict[str, str | None]) -> str | None:
+    active = {
+        provider: cursor
+        for provider, cursor in provider_cursors.items()
+        if cursor is not None
+    }
+    if not active:
+        return None
+    payload = json.dumps(active, separators=(",", ":"), sort_keys=True).encode()
+    token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    return f"{_GLOBAL_CURSOR_PREFIX}{token}"
+
+
+def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
+    if cursor is None:
+        return None
+    if not cursor.startswith(_GLOBAL_CURSOR_PREFIX):
+        return {provider.value: cursor for provider in Provider}
+    token = cursor[len(_GLOBAL_CURSOR_PREFIX) :]
+    padded = token + ("=" * (-len(token) % 4))
+    try:
+        payload = base64.urlsafe_b64decode(padded.encode())
+        decoded = json.loads(payload.decode())
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    return {
+        str(provider): str(provider_cursor)
+        for provider, provider_cursor in decoded.items()
+        if provider in {p.value for p in Provider} and provider_cursor is not None
+    }
+
+
 async def _list_via_routing_index(
     cursor: str | None,
     limit: int,
@@ -701,52 +751,39 @@ async def _list_via_routing_index(
     settings: Settings,
     registry: ProviderRegistry,
 ) -> SimListOut:
-    """Global listing path — backed by the local `SimRoutingMap` index."""
+    """Global listing path — fans out to native provider listings."""
     if filters.has_filters:
         raise UnsupportedOperation(
             detail="Canonical filters require provider-scoped listing (?provider=<name>)"
         )
-    count_result = await db.execute(
-        select(func.count())
-        .select_from(SimRoutingMap)
-        .where(SimRoutingMap.company_id == company_id)
-    )
-    total = count_result.scalar_one()
-
-    if total == 0:
-        raise ListingPreconditionFailed(
-            detail=(
-                "Routing map is empty for this tenant. Either pass ?provider=<name> "
-                "to use a provider's native listing, or bootstrap the routing map "
-                "via POST /v1/sims/import before requesting the global view."
-            ),
-            extra={"reason": "routing_map_empty"},
-        )
-
-    try:
-        offset = max(int(cursor or "0"), 0)
-    except ValueError:
-        offset = 0
-    page_size = min(max(limit, 1), 500)
-
-    q = (
-        select(SimRoutingMap)
-        .where(SimRoutingMap.company_id == company_id)
-        .order_by(SimRoutingMap.iccid)
-        .offset(offset)
-        .limit(page_size)
-    )
-    result = await db.execute(q)
-    rows = result.scalars().all()
-
+    provider_cursors = _decode_global_cursor(cursor)
     items: list[SubscriptionOut] = []
     failed_providers: list[dict[str, str]] = []
-    for routing in rows:
-        creds = await _load_credentials(company_id, routing.provider, db, settings)
-        adapter = registry.get(routing.provider)
+    next_provider_cursors: dict[str, str | None] = {}
+
+    for provider in Provider:
+        provider_name = provider.value
+        if provider_cursors is not None and provider_name not in provider_cursors:
+            continue
         try:
-            sub = await adapter.get_subscription(routing.iccid, creds)
-            items.append(_to_out(sub))
+            creds = await _load_credentials(company_id, provider_name, db, settings)
+            if provider_name == Provider.MOABITS.value:
+                _require_moabits_company_codes(creds)
+            adapter = registry.get(provider_name)
+            if not isinstance(adapter, SearchableProvider):
+                continue
+            subs, next_cursor = await adapter.list_subscriptions(
+                creds,
+                cursor=None
+                if provider_cursors is None
+                else provider_cursors.get(provider_name),
+                limit=_GLOBAL_PROVIDER_PAGE_SIZE,
+                filters=_bootstrap_filters_for_provider(provider_name),
+            )
+            for sub in subs:
+                await _upsert_routing(db, sub.iccid, provider_name, company_id)
+            items.extend(_to_out(sub) for sub in subs)
+            next_provider_cursors[provider_name] = next_cursor
         except Exception as exc:
             code = exc.code if isinstance(exc, DomainError) else "provider.unavailable"
             title = (
@@ -754,23 +791,37 @@ async def _list_via_routing_index(
             )
             failed_providers.append(
                 {
-                    "provider": routing.provider,
+                    "provider": provider_name,
                     "code": code,
                     "title": title,
                 }
             )
             logger.warning(
                 "global_listing_provider_error",
-                iccid=routing.iccid,
-                provider=routing.provider,
+                provider=provider_name,
                 error=str(exc),
             )
 
-    next_cursor = str(offset + page_size) if len(rows) == page_size else None
+    if items:
+        await db.commit()
+    if not items and failed_providers:
+        raise ListingPreconditionFailed(
+            detail=(
+                "Provider bootstrap did not discover any SIMs. Pass "
+                "?provider=<name> to inspect a specific source or import known "
+                "ICCIDs via POST /v1/sims/import."
+            ),
+            extra={
+                "reason": "routing_map_empty",
+                "failed_providers": failed_providers,
+            },
+        )
+
+    next_cursor = _encode_global_cursor(next_provider_cursors)
     return SimListOut(
         items=items,
         next_cursor=next_cursor,
-        total=total,
+        total=None,
         partial=bool(failed_providers),
         failed_providers=failed_providers,
     )
@@ -826,9 +877,9 @@ async def list_sims(
        adapter's native listing. Also upserts returned SIMs into the routing
        index so subsequent single-SIM calls work without an explicit import.
 
-    2. **Global** (no `provider`): walks the local `SimRoutingMap` index and
-       fetches each SIM individually. Requires the routing map to be bootstrapped
-       first (via a provider-scoped listing or POST /v1/sims/import).
+    2. **Global** (no `provider`): fans out to searchable providers, requesting
+       a small page from each one and upserting returned ICCIDs into the routing
+       index for subsequent single-SIM calls.
     """
     if (
         provider == Provider.TELE2

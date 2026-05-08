@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from cryptography.fernet import Fernet
@@ -137,6 +137,248 @@ def test_global_listing_rejects_filters_without_provider() -> None:
     assert response.json()["code"] == "provider.unsupported_operation"
 
 
+def test_tele2_bootstrap_filters_include_default_modified_since() -> None:
+    filters = sims._bootstrap_filters_for_provider("tele2")
+
+    assert filters.modified_since is not None
+    assert filters.modified_since.tzinfo == UTC
+
+
+@pytest.mark.asyncio
+async def test_global_listing_bootstraps_empty_routing_map(monkeypatch) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _SearchProvider:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls.append((self.provider, limit))
+            return (
+                [
+                    Subscription(
+                        iccid=f"iccid-{self.provider}",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.ACTIVE,
+                        native_status="active",
+                        provider=self.provider,
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    )
+                ],
+                None,
+            )
+
+        async def get_subscription(self, iccid, credentials):
+            raise AssertionError("empty page rows should not fetch details")
+
+    class _SearchRegistry:
+        def get(self, provider):
+            return _SearchProvider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {"company_codes": ["48123"]}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_SearchRegistry(),
+    )
+
+    assert calls == [("kite", 25), ("tele2", 25), ("moabits", 25)]
+    assert db.commit_calls == 1
+    assert result.total is None
+    assert [item.provider for item in result.items] == ["kite", "tele2", "moabits"]
+
+
+@pytest.mark.asyncio
+async def test_global_listing_uses_provider_summaries_without_detail_calls(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _SearchProvider:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls.append((self.provider, limit))
+            return (
+                [
+                    Subscription(
+                        iccid=f"iccid-{self.provider}",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.ACTIVE,
+                        native_status="active",
+                        provider=self.provider,
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    )
+                ],
+                None,
+            )
+
+        async def get_subscription(self, iccid, credentials):
+            raise AssertionError("empty page rows should not fetch details")
+
+    class _SearchRegistry:
+        def get(self, provider):
+            return _SearchProvider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {"company_codes": ["48123"]}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_SearchRegistry(),
+    )
+
+    assert calls == [("kite", 25), ("tele2", 25), ("moabits", 25)]
+    assert db.commit_calls == 1
+    assert result.total is None
+    assert len(result.items) == 3
+
+
+@pytest.mark.asyncio
+async def test_global_listing_reads_twenty_five_summaries_per_provider(monkeypatch) -> None:
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _Provider:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            return (
+                [
+                    Subscription(
+                        iccid=f"iccid-{self.provider}-{idx:02d}",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.ACTIVE,
+                        native_status="active",
+                        provider=self.provider,
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    )
+                    for idx in range(limit)
+                ],
+                "next" if self.provider != "moabits" else None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            return _Provider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {"company_codes": ["48123"]}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_Registry(),
+    )
+
+    providers = [item.provider for item in result.items]
+    assert providers.count("kite") == 25
+    assert providers.count("tele2") == 25
+    assert providers.count("moabits") == 25
+    assert len(result.items) == 75
+    assert result.next_cursor is not None
+    assert result.next_cursor.startswith("global:")
+    assert db.commit_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_load_moabits_credentials_uses_only_global_source_config() -> None:
     fernet_key = Fernet.generate_key().decode()
@@ -189,6 +431,7 @@ def test_provider_listing_builds_canonical_filters(monkeypatch) -> None:
 
     async def _list_provider(provider, cursor, limit, filters, *args):
         captured["provider"] = provider
+        captured["limit"] = limit
         captured["filters"] = filters
         return SimListOut(items=[], next_cursor=None, total=None)
 
@@ -200,6 +443,7 @@ def test_provider_listing_builds_canonical_filters(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert captured["provider"] == "kite"
+    assert captured["limit"] == 50
     assert captured["filters"].status.value == "active"
     assert captured["filters"].iccid == "893"
     assert captured["filters"].custom == {"customField1": "acme"}

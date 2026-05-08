@@ -118,7 +118,7 @@ SimRoutingMap {
 }
 ```
 
-> **Es la única tabla persistente del contexto Subscription Aggregation.** Resuelve la pregunta "¿a qué proveedor le pregunto por este ICCID?" sin tener que hacer fan-out a los 3. No persiste el estado de la SIM — es ruteo, no espejo.
+> **Es la única tabla persistente del contexto Subscription Aggregation.** Resuelve la pregunta "¿a qué proveedor le pregunto por este ICCID?" sin tener que hacer fan-out a los 3 en cada consulta individual. No persiste el estado de la SIM — es ruteo, no espejo.
 
 ---
 
@@ -179,7 +179,7 @@ El cliente sabe que está consultando datos en tiempo real a través del proveed
 `GET /v1/sims` tiene dos caminos explícitos:
 
 1. **Provider-scoped listing** (`?provider=kite|tele2|moabits`): delega al listing nativo del adapter, aplica sólo filtros que el proveedor pueda mapear documentalmente y actualiza `sim_routing_map` con las SIMs observadas.
-2. **Global listing** (sin `provider`): pagina sobre `sim_routing_map` y consulta el proveedor ya conocido para cada ICCID de la página. No descubre proveedores por fan-out.
+2. **Global listing** (sin `provider`): pagina sobre `sim_routing_map` y consulta el proveedor ya conocido para cada ICCID de la página. Si el índice está vacío o todavía no tiene todas las fuentes, hace un bootstrap interno de una página por proveedor searchable para calentar el mapa antes de paginar.
 
 Los filtros explícitos (`status`, fechas, `iccid`, `imsi`, `msisdn`, `custom`) requieren el camino provider-scoped hasta que exista una semántica cross-provider confirmada. Si el proveedor no soporta un filtro, la API devuelve `409 provider.unsupported_operation`.
 
