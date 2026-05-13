@@ -5,13 +5,14 @@ The routing table (SimRoutingMap) maps iccid → provider + company_id and is
 populated lazily on first successful list, or explicitly via POST /import.
 """
 
+import asyncio
 import base64
 import dataclasses
 import json
 import re
 import time
 import uuid
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import structlog
@@ -25,11 +26,10 @@ from app.config import Settings, get_settings, require_fernet_key
 from app.database import get_db
 from app.identity.dependencies import (
     get_current_company_id,
-    get_current_profile,
     require_roles,
 )
 from app.identity.models.profile import AppRole, Profile
-from app.providers.base import Provider, SearchableProvider
+from app.providers.base import Provider
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials
 from app.shared.errors import (
@@ -49,6 +49,7 @@ from app.subscriptions.models.lifecycle_audit import LifecycleChangeAudit
 from app.subscriptions.models.routing import SimRoutingMap
 from app.subscriptions.schemas.sim import (
     PresenceOut,
+    ProviderStatusOut,
     SimImportIn,
     SimImportOut,
     SimListOut,
@@ -63,7 +64,7 @@ from app.tenancy.credential_expiry import (
 )
 from app.tenancy.models.credentials import CompanyProviderCredentials
 from app.tenancy.models.idempotency import IdempotencyKey
-from app.tenancy.models.provider_source_config import ProviderSourceConfig
+from app.tenancy.models.provider_mapping import CompanyProviderMapping
 
 logger = structlog.get_logger(__name__)
 
@@ -106,40 +107,30 @@ async def _load_credentials(
     if row.provider == "tele2" and (row.account_scope or {}).get("max_tps") is not None:
         creds["max_tps"] = (row.account_scope or {})["max_tps"]
     if row.provider == Provider.MOABITS.value:
-        result = await db.execute(
-            select(ProviderSourceConfig).where(
-                ProviderSourceConfig.provider == Provider.MOABITS.value,
+        mapping_result = await db.execute(
+            select(CompanyProviderMapping).where(
+                CompanyProviderMapping.company_id == company_id,
+                CompanyProviderMapping.provider == Provider.MOABITS.value,
+                CompanyProviderMapping.active.is_(True),
             )
         )
-        source_config = result.scalar_one_or_none()
-        source_company_codes = _configured_company_codes(
-            (source_config.settings or {}) if source_config is not None else {}
-        )
-        creds["company_codes"] = source_company_codes
+        mapping = mapping_result.scalar_one_or_none()
+        if not isinstance(mapping, CompanyProviderMapping):
+            raise ListingPreconditionFailed(
+                detail=(
+                    "Company is not linked to a Moabits company code. "
+                    "An admin must configure the provider mapping first."
+                ),
+                extra={"provider": Provider.MOABITS.value},
+            )
+        creds["company_codes"] = [mapping.provider_company_code]
+        creds["provider_company_mapping"] = {
+            "companyCode": mapping.provider_company_code,
+            "companyName": mapping.provider_company_name,
+            "clie_id": mapping.clie_id,
+        }
     return creds
 
-
-def _configured_company_codes(creds: dict[str, Any]) -> list[str]:
-    raw_codes = creds.get("company_codes", [])
-    if isinstance(raw_codes, str):
-        raw_codes = [raw_codes]
-    if not isinstance(raw_codes, list):
-        return []
-    return [str(code).strip() for code in raw_codes if str(code).strip()]
-
-
-def _require_moabits_company_codes(creds: dict[str, Any]) -> None:
-    if _configured_company_codes(creds):
-        return
-    raise ListingPreconditionFailed(
-        detail=(
-            "Moabits credentials have no company_codes configured. "
-            "Call GET /v1/companies/me/credentials/moabits/companies/discover to list "
-            "available companies, then PUT /v1/companies/me/credentials/moabits/company-codes "
-            "to persist the selection."
-        ),
-        extra={"provider": Provider.MOABITS.value},
-    )
 
 
 def _warn_if_kite_certificate_expiring(row: CompanyProviderCredentials) -> None:
@@ -174,13 +165,7 @@ async def _resolve_routing(
     company_id: uuid.UUID,
     db: AsyncSession,
 ) -> SimRoutingMap:
-    result = await db.execute(
-        select(SimRoutingMap).where(
-            SimRoutingMap.iccid == iccid,
-            SimRoutingMap.company_id == company_id,
-        )
-    )
-    routing = result.scalar_one_or_none()
+    routing = await _find_routing(iccid, company_id, db)
     if routing is None:
         raise SubscriptionNotFound(
             detail=(
@@ -190,6 +175,20 @@ async def _resolve_routing(
             )
         )
     return routing
+
+
+async def _find_routing(
+    iccid: str,
+    company_id: uuid.UUID,
+    db: AsyncSession,
+) -> SimRoutingMap | None:
+    result = await db.execute(
+        select(SimRoutingMap).where(
+            SimRoutingMap.iccid == iccid,
+            SimRoutingMap.company_id == company_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 def _require_idempotency_key(
@@ -512,6 +511,41 @@ def _build_filters(
     )
 
 
+def _bootstrap_filters_for_provider(provider: str) -> SubscriptionSearchFilters:
+    if provider == Provider.TELE2.value:
+        return SubscriptionSearchFilters(
+            modified_since=datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)
+        )
+    return SubscriptionSearchFilters()
+
+
+def _is_searchable_provider(adapter: Any) -> bool:
+    return callable(getattr(adapter, "list_subscriptions", None))
+
+
+def _adapter_bootstrap_filters(
+    provider_name: str,
+    adapter: Any,
+) -> SubscriptionSearchFilters:
+    bootstrap_filters = getattr(adapter, "bootstrap_filters", None)
+    if callable(bootstrap_filters):
+        return bootstrap_filters()
+    return _bootstrap_filters_for_provider(provider_name)
+
+
+def _adapter_supports_list_filter(
+    provider_name: str,
+    adapter: Any,
+    filter_name: str,
+) -> bool:
+    supports_list_filter = getattr(adapter, "supports_list_filter", None)
+    if callable(supports_list_filter):
+        return bool(supports_list_filter(filter_name))
+    if filter_name == "iccid":
+        return provider_name in {Provider.KITE.value, Provider.TELE2.value}
+    return False
+
+
 # ── Routing map helpers ──────────────────────────────────────────────────────────
 
 
@@ -556,7 +590,7 @@ async def _claim_idempotency_key(
             key=key,
             response={"status": "processing"},
             company_id=company_id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
         .on_conflict_do_nothing(index_elements=["company_id", "key"])
         .returning(IdempotencyKey.id)
@@ -624,7 +658,7 @@ async def _write_lifecycle_audit(
         action=action,
         target=target,
         idempotency_key=idempotency_key,
-        accepted_at=datetime.now(timezone.utc) if outcome == "success" else None,
+        accepted_at=datetime.now(UTC) if outcome == "success" else None,
         outcome=outcome,
         latency_ms=latency_ms,
         provider_request_id=provider_request_id,
@@ -663,11 +697,9 @@ async def _list_via_provider_search(
     returned SIM into the routing index so subsequent single-SIM calls work.
     """
     creds = await _load_credentials(company_id, provider, db, settings)
-    if provider == Provider.MOABITS.value:
-        _require_moabits_company_codes(creds)
     adapter = registry.get(provider)
 
-    if not isinstance(adapter, SearchableProvider):
+    if not _is_searchable_provider(adapter):
         raise ListingPreconditionFailed(
             detail=(
                 f"Provider '{provider}' does not expose a native subscription listing. "
@@ -693,18 +725,9 @@ async def _list_via_provider_search(
         total=None,
         partial=False,
         failed_providers=[],
-    )
-
-
-def _bootstrap_filters_for_provider(provider: str) -> SubscriptionSearchFilters:
-    if provider != Provider.TELE2.value:
-        return SubscriptionSearchFilters()
-    # Tele2 Search Devices requires ModifiedSince and rejects windows older than
-    # one year. Use a recent default only for global discovery warm-up.
-    return SubscriptionSearchFilters(
-        modified_since=datetime.now(UTC).replace(microsecond=0)
-        - timedelta(days=365)
-        + timedelta(seconds=1)
+        provider_statuses=[
+            ProviderStatusOut(provider=provider, status="ok", count=len(subs))
+        ],
     )
 
 
@@ -731,7 +754,7 @@ def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
     try:
         payload = base64.urlsafe_b64decode(padded.encode())
         decoded = json.loads(payload.decode())
-    except (ValueError, json.JSONDecodeError):
+    except ValueError, json.JSONDecodeError:
         return {}
     if not isinstance(decoded, dict):
         return {}
@@ -740,6 +763,181 @@ def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
         for provider, provider_cursor in decoded.items()
         if provider in {p.value for p in Provider} and provider_cursor is not None
     }
+
+
+def _global_provider_failure(
+    provider_name: str,
+    exc: Exception,
+) -> tuple[dict[str, str], ProviderStatusOut]:
+    code = exc.code if isinstance(exc, DomainError) else "provider.unavailable"
+    title = exc.title if isinstance(exc, DomainError) else "Provider request failed"
+    return (
+        {
+            "provider": provider_name,
+            "code": code,
+            "title": title,
+        },
+        ProviderStatusOut(
+            provider=provider_name,
+            status="error",
+            count=0,
+            code=code,
+            title=title,
+        ),
+    )
+
+
+def _is_global_iccid_search(filters: SubscriptionSearchFilters) -> bool:
+    return (
+        bool(filters.iccid)
+        and filters.status is None
+        and filters.modified_since is None
+        and filters.modified_till is None
+        and not filters.imsi
+        and not filters.msisdn
+        and not filters.custom
+    )
+
+
+async def _list_global_iccid_search(
+    filters: SubscriptionSearchFilters,
+    company_id: uuid.UUID,
+    db: AsyncSession,
+    settings: Settings,
+    registry: ProviderRegistry,
+) -> SimListOut:
+    iccid = filters.iccid or ""
+    routing = await _find_routing(iccid, company_id, db)
+    if routing is not None:
+        creds = await _load_credentials(company_id, routing.provider, db, settings)
+        adapter = registry.get(routing.provider)
+        sub = await adapter.get_subscription(iccid, creds)
+        return SimListOut(
+            items=[_to_out(sub)],
+            next_cursor=None,
+            total=None,
+            partial=False,
+            failed_providers=[],
+            provider_statuses=[
+                ProviderStatusOut(
+                    provider=provider.value,
+                    status="ok"
+                    if provider.value == routing.provider
+                    else "not_queried",
+                    count=1 if provider.value == routing.provider else 0,
+                )
+                for provider in Provider
+            ],
+        )
+
+    items: list[SubscriptionOut] = []
+    failed_providers_by_name: dict[str, dict[str, str]] = {}
+    provider_statuses_by_name: dict[str, ProviderStatusOut] = {}
+    provider_calls: list[tuple[str, Any, dict[str, Any]]] = []
+
+    for provider in Provider:
+        provider_name = provider.value
+        try:
+            if provider_name == Provider.MOABITS.value:
+                unsupported = UnsupportedOperation(
+                    detail="moabits list_subscriptions does not support ICCID filters"
+                )
+                failed_provider, provider_status = _global_provider_failure(
+                    provider_name, unsupported
+                )
+                failed_providers_by_name[provider_name] = failed_provider
+                provider_statuses_by_name[provider_name] = provider_status
+                continue
+            adapter = registry.get(provider_name)
+            if not _is_searchable_provider(
+                adapter
+            ) or not _adapter_supports_list_filter(provider_name, adapter, "iccid"):
+                unsupported = UnsupportedOperation(
+                    detail=f"{provider_name} list_subscriptions does not support ICCID filters"
+                )
+                failed_provider, provider_status = _global_provider_failure(
+                    provider_name, unsupported
+                )
+                failed_providers_by_name[provider_name] = failed_provider
+                provider_statuses_by_name[provider_name] = provider_status
+                continue
+            creds = await _load_credentials(company_id, provider_name, db, settings)
+            provider_calls.append((provider_name, adapter, creds))
+        except Exception as exc:
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, exc
+            )
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = provider_status
+            logger.warning(
+                "global_iccid_search_provider_error",
+                provider=provider_name,
+                iccid=iccid,
+                error=str(exc),
+            )
+
+    provider_results = await asyncio.gather(
+        *(
+            adapter.list_subscriptions(
+                creds,
+                cursor=None,
+                limit=1,
+                filters=dataclasses.replace(
+                    _adapter_bootstrap_filters(provider_name, adapter),
+                    iccid=iccid,
+                ),
+            )
+            for provider_name, adapter, creds in provider_calls
+        ),
+        return_exceptions=True,
+    )
+
+    for (provider_name, _adapter, _creds), result in zip(
+        provider_calls, provider_results, strict=True
+    ):
+        if isinstance(result, Exception):
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, result
+            )
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = provider_status
+            logger.warning(
+                "global_iccid_search_provider_error",
+                provider=provider_name,
+                iccid=iccid,
+                error=str(result),
+            )
+            continue
+        subs, _next_cursor = result
+        for sub in subs:
+            await _upsert_routing(db, sub.iccid, provider_name, company_id)
+        items.extend(_to_out(sub) for sub in subs)
+        provider_statuses_by_name[provider_name] = ProviderStatusOut(
+            provider=provider_name,
+            status="ok",
+            count=len(subs),
+        )
+
+    if items:
+        await db.commit()
+    failed_providers = [
+        failed_providers_by_name[provider.value]
+        for provider in Provider
+        if provider.value in failed_providers_by_name
+    ]
+    provider_statuses = [
+        provider_statuses_by_name[provider.value]
+        for provider in Provider
+        if provider.value in provider_statuses_by_name
+    ]
+    return SimListOut(
+        items=items,
+        next_cursor=None,
+        total=None,
+        partial=bool(failed_providers),
+        failed_providers=failed_providers,
+        provider_statuses=provider_statuses,
+    )
 
 
 async def _list_via_routing_index(
@@ -753,54 +951,121 @@ async def _list_via_routing_index(
 ) -> SimListOut:
     """Global listing path — fans out to native provider listings."""
     if filters.has_filters:
+        if _is_global_iccid_search(filters):
+            return await _list_global_iccid_search(
+                filters, company_id, db, settings, registry
+            )
         raise UnsupportedOperation(
             detail="Canonical filters require provider-scoped listing (?provider=<name>)"
         )
     provider_cursors = _decode_global_cursor(cursor)
     items: list[SubscriptionOut] = []
-    failed_providers: list[dict[str, str]] = []
+    failed_providers_by_name: dict[str, dict[str, str]] = {}
+    provider_statuses_by_name: dict[str, ProviderStatusOut] = {}
     next_provider_cursors: dict[str, str | None] = {}
+    provider_calls: list[tuple[str, Any, dict[str, Any], str | None]] = []
 
     for provider in Provider:
         provider_name = provider.value
         if provider_cursors is not None and provider_name not in provider_cursors:
+            provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                provider=provider_name, status="not_queried"
+            )
             continue
         try:
             creds = await _load_credentials(company_id, provider_name, db, settings)
-            if provider_name == Provider.MOABITS.value:
-                _require_moabits_company_codes(creds)
             adapter = registry.get(provider_name)
-            if not isinstance(adapter, SearchableProvider):
+            if not _is_searchable_provider(adapter):
+                provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                    provider=provider_name,
+                    status="not_queried",
+                    title="Provider does not expose native listing",
+                )
                 continue
-            subs, next_cursor = await adapter.list_subscriptions(
-                creds,
-                cursor=None
-                if provider_cursors is None
-                else provider_cursors.get(provider_name),
-                limit=_GLOBAL_PROVIDER_PAGE_SIZE,
-                filters=_bootstrap_filters_for_provider(provider_name),
+            provider_calls.append(
+                (
+                    provider_name,
+                    adapter,
+                    creds,
+                    None
+                    if provider_cursors is None
+                    else provider_cursors.get(provider_name),
+                )
             )
-            for sub in subs:
-                await _upsert_routing(db, sub.iccid, provider_name, company_id)
-            items.extend(_to_out(sub) for sub in subs)
-            next_provider_cursors[provider_name] = next_cursor
         except Exception as exc:
-            code = exc.code if isinstance(exc, DomainError) else "provider.unavailable"
-            title = (
-                exc.title if isinstance(exc, DomainError) else "Provider request failed"
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, exc
             )
-            failed_providers.append(
-                {
-                    "provider": provider_name,
-                    "code": code,
-                    "title": title,
-                }
-            )
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = provider_status
             logger.warning(
                 "global_listing_provider_error",
                 provider=provider_name,
                 error=str(exc),
             )
+
+    provider_results = await asyncio.gather(
+        *(
+            adapter.list_subscriptions(
+                creds,
+                cursor=provider_cursor,
+                limit=_GLOBAL_PROVIDER_PAGE_SIZE,
+                filters=_adapter_bootstrap_filters(provider_name, adapter),
+            )
+            for provider_name, adapter, creds, provider_cursor in provider_calls
+        ),
+        return_exceptions=True,
+    )
+
+    for (provider_name, _adapter, _creds, _provider_cursor), result in zip(
+        provider_calls, provider_results, strict=True
+    ):
+        if isinstance(result, Exception):
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, result
+            )
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = provider_status
+            logger.warning(
+                "global_listing_provider_error",
+                provider=provider_name,
+                error=str(result),
+            )
+            continue
+
+        subs, next_cursor = result
+        try:
+            for sub in subs:
+                await _upsert_routing(db, sub.iccid, provider_name, company_id)
+            items.extend(_to_out(sub) for sub in subs)
+            next_provider_cursors[provider_name] = next_cursor
+            provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                provider=provider_name,
+                status="ok",
+                count=len(subs),
+            )
+        except Exception as exc:
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, exc
+            )
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = provider_status
+            logger.warning(
+                "global_listing_provider_error",
+                provider=provider_name,
+                error=str(exc),
+            )
+
+    failed_providers = [
+        failed_providers_by_name[provider.value]
+        for provider in Provider
+        if provider.value in failed_providers_by_name
+    ]
+    provider_statuses = [
+        provider_statuses_by_name[provider.value]
+        for provider in Provider
+        if provider.value in provider_statuses_by_name
+    ]
 
     if items:
         await db.commit()
@@ -824,6 +1089,7 @@ async def _list_via_routing_index(
         total=None,
         partial=bool(failed_providers),
         failed_providers=failed_providers,
+        provider_statuses=provider_statuses,
     )
 
 

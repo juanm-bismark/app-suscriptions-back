@@ -326,7 +326,7 @@ Detalle en [patterns-decisions.md D7](patterns-decisions.md) y [ADR-005](adrs/AD
 - **Reverse proxy** (nginx, Caddy, managed por el PaaS) para TLS, HSTS, header stripping.
 - **Health**: `/health` ya existe. Agregar `/ready` que chequee Postgres disponible.
 - **Rolling deploy**: 2 réplicas mínimas en prod para no tener downtime durante release (aunque una sola atienda la carga nominal).
-- **Migraciones**: SQL manual en `migrations/*.sql`. Ejecutar `init.sql` primero y luego los archivos numerados en orden. Cada archivo crea una responsabilidad: routing, credenciales, audit log, idempotency y lifecycle audit.
+- **Migraciones**: SQL manual en `migrations/*.sql`. Ejecutar `migrations/000_init.sql` primero y luego los archivos numerados en orden. Cada archivo crea una responsabilidad: routing, credenciales, audit log, idempotency y lifecycle audit.
 
 ---
 

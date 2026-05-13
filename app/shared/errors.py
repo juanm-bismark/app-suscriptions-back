@@ -13,13 +13,16 @@ class DomainError(Exception):
     http_status: int = 500
     title: str = "Internal server error"
 
-    def __init__(self, *, detail: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, *, detail: str | None = None, extra: dict[str, Any] | None = None
+    ) -> None:
         self.detail = detail
         self.extra = extra or {}
         super().__init__(self.title)
 
 
 # ── Subscription domain ────────────────────────────────────────────────────────
+
 
 class SubscriptionNotFound(DomainError):
     code = "subscription.not_found"
@@ -38,6 +41,7 @@ class PartialResult(DomainError):
 
     The router catches this and converts it to a 200 with partial=true.
     """
+
     code = "subscription.partial_result"
     http_status = 207
     title = "Partial result — some providers failed"
@@ -48,6 +52,7 @@ class ListingPreconditionFailed(DomainError):
     or the requested provider's capabilities (e.g. routing map not bootstrapped, or
     provider does not implement company-scoped search).
     """
+
     code = "subscription.listing_precondition_failed"
     http_status = 412
     title = "Listing precondition failed"
@@ -55,10 +60,23 @@ class ListingPreconditionFailed(DomainError):
 
 # ── Provider errors (raised by adapters, never exposed raw to the client) ──────
 
+
 class ProviderUnavailable(DomainError):
     code = "provider.unavailable"
     http_status = 503
     title = "Provider temporarily unavailable"
+
+    def __init__(
+        self,
+        *,
+        detail: str | None = None,
+        retry_after: str | int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        merged_extra = extra or {}
+        if retry_after is not None:
+            merged_extra["retry_after"] = str(retry_after)
+        super().__init__(detail=detail, extra=merged_extra)
 
 
 class ProviderRateLimited(DomainError):
@@ -174,12 +192,14 @@ class ProviderForbidden(DomainError):
 
 class UnsupportedOperation(DomainError):
     """Raised when an operation is not supported by the SIM's provider."""
+
     code = "provider.unsupported_operation"
     http_status = 409
     title = "Operation not supported by this provider"
 
 
 # ── Tenancy / credentials ──────────────────────────────────────────────────────
+
 
 class CredentialsMissing(DomainError):
     code = "tenant.credentials_missing"
@@ -188,6 +208,7 @@ class CredentialsMissing(DomainError):
 
 
 # ── Auth / access ──────────────────────────────────────────────────────────────
+
 
 class ForbiddenOperation(DomainError):
     code = "auth.forbidden"

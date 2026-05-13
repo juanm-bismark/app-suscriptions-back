@@ -80,8 +80,15 @@ from .status_map import map_status
 _TOKEN_REFRESH_MARGIN_SECONDS = 300
 _TOKEN_FALLBACK_TTL_SECONDS = 5 * 60 * 60 + 50 * 60
 _TOKEN_STALE_GRACE_SECONDS = 30
+_V2_ENRICHMENT_CACHE_PRUNE_SIZE = 10_000
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}
 _TOKEN_LOCKS: dict[str, asyncio.Lock] = {}
+_SIM_LIST_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_SIM_LIST_LOCKS: dict[str, asyncio.Lock] = {}
+_SIM_LIST_LOCKS_GUARD = asyncio.Lock()
+_V2_ENRICHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_REQUEST_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+_REQUEST_SEMAPHORES_GUARD = asyncio.Lock()
 MOABITS_DEFAULT_PARENT_COMPANY_CODE = "48123"
 
 logger = structlog.get_logger(__name__)
@@ -110,6 +117,25 @@ def _creds(d: dict[str, Any]) -> _MoabitsCreds:
     )
 
 
+def _moabits_request_timeout_seconds() -> float:
+    value = getattr(get_settings(), "moabits_request_timeout_seconds", 30.0)
+    return max(float(value), 0.1)
+
+
+def _moabits_max_concurrent_requests() -> int:
+    value = getattr(get_settings(), "moabits_max_concurrent_requests", 20)
+    return max(int(value), 1)
+
+
+async def _request_semaphore_for(key: str) -> asyncio.Semaphore:
+    async with _REQUEST_SEMAPHORES_GUARD:
+        sem = _REQUEST_SEMAPHORES.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(_moabits_max_concurrent_requests())
+            _REQUEST_SEMAPHORES[key] = sem
+        return sem
+
+
 def _client(creds: _MoabitsCreds, token: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=creds.base_url,
@@ -117,7 +143,7 @@ def _client(creds: _MoabitsCreds, token: str) -> httpx.AsyncClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         },
-        timeout=30.0,
+        timeout=_moabits_request_timeout_seconds(),
     )
 
 
@@ -202,10 +228,12 @@ async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
     async with httpx.AsyncClient(
         base_url=creds.base_url,
         headers={"X-API-KEY": creds.x_api_key, "Accept": "application/json"},
-        timeout=30.0,
+        timeout=_moabits_request_timeout_seconds(),
     ) as client:
         try:
-            resp = await client.get("/integrity/authorization-token")
+            sem = await _request_semaphore_for(_cache_key(creds))
+            async with sem:
+                resp = await client.get("/integrity/authorization-token")
         except httpx.TimeoutException as exc:
             raise ProviderUnavailable(detail="Moabits authorization timeout") from exc
         except httpx.RequestError as exc:
@@ -213,7 +241,7 @@ async def _fetch_authorization_token(creds: _MoabitsCreds) -> str:
                 detail=f"Moabits authorization network error: {exc}"
             ) from exc
     _check(resp, "Moabits authorization")
-    data = resp.json()
+    data = await _response_json(resp, "Moabits authorization")
     info = data.get("info") if isinstance(data, dict) else None
     token = info.get("authorizationToken") if isinstance(info, dict) else None
     if not token:
@@ -266,7 +294,9 @@ async def _get(creds: _MoabitsCreds, path: str, params: dict[str, Any] | None = 
     token = await _authorization_token(creds)
     async with _client(creds, token) as client:
         try:
-            resp = await client.get(path, params=params or {})
+            sem = await _request_semaphore_for(_cache_key(creds))
+            async with sem:
+                resp = await client.get(path, params=params or {})
         except httpx.TimeoutException as exc:
             raise ProviderUnavailable(detail="Moabits timeout") from exc
         except httpx.RequestError as exc:
@@ -275,7 +305,9 @@ async def _get(creds: _MoabitsCreds, path: str, params: dict[str, Any] | None = 
         token = await _authorization_token(creds, force_refresh=True)
         async with _client(creds, token) as client:
             try:
-                resp = await client.get(path, params=params or {})
+                sem = await _request_semaphore_for(_cache_key(creds))
+                async with sem:
+                    resp = await client.get(path, params=params or {})
             except httpx.TimeoutException as exc:
                 raise ProviderUnavailable(detail="Moabits timeout") from exc
             except httpx.RequestError as exc:
@@ -283,7 +315,7 @@ async def _get(creds: _MoabitsCreds, path: str, params: dict[str, Any] | None = 
                     detail=f"Moabits network error: {exc}"
                 ) from exc
     _check(resp)
-    return resp.json()
+    return await _response_json(resp, "Moabits")
 
 
 async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotency_key: str | None = None) -> Any:
@@ -293,7 +325,9 @@ async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotenc
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         try:
-            resp = await client.put(path, json=body, headers=headers)
+            sem = await _request_semaphore_for(_cache_key(creds))
+            async with sem:
+                resp = await client.put(path, json=body, headers=headers)
         except httpx.TimeoutException as exc:
             raise ProviderUnavailable(detail="Moabits timeout") from exc
         except httpx.RequestError as exc:
@@ -305,7 +339,9 @@ async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotenc
             if idempotency_key:
                 headers["Idempotency-Key"] = idempotency_key
             try:
-                resp = await client.put(path, json=body, headers=headers)
+                sem = await _request_semaphore_for(_cache_key(creds))
+                async with sem:
+                    resp = await client.put(path, json=body, headers=headers)
             except httpx.TimeoutException as exc:
                 raise ProviderUnavailable(detail="Moabits timeout") from exc
             except httpx.RequestError as exc:
@@ -313,7 +349,16 @@ async def _put(creds: _MoabitsCreds, path: str, body: dict[str, Any], idempotenc
                     detail=f"Moabits network error: {exc}"
                 ) from exc
     _check(resp)
-    return resp.json() if resp.content else {}
+    return await _response_json(resp, "Moabits") if resp.content else {}
+
+
+async def _response_json(resp: httpx.Response, label: str) -> Any:
+    try:
+        return await asyncio.to_thread(resp.json)
+    except ValueError as exc:
+        raise ProviderProtocolError(
+            detail=f"{label} returned non-JSON response"
+        ) from exc
 
 
 def _first_from(data: Any, *keys: str) -> Any:
@@ -344,6 +389,52 @@ def _status_row_from(value: Any) -> dict[str, Any] | None:
     if isinstance(value, str) and value.strip():
         return {"iccid": value.strip()}
     return None
+
+
+def _sim_list_rows_from_payload(data: Any) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in (
+            _status_row_from(value)
+            for value in _list_from(data, "info", "iccidList")
+        )
+        if row is not None and row.get("iccid")
+    ]
+
+
+async def _sim_list_lock_for(key: str) -> asyncio.Lock:
+    async with _SIM_LIST_LOCKS_GUARD:
+        lock = _SIM_LIST_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _SIM_LIST_LOCKS[key] = lock
+        return lock
+
+
+async def _company_sim_list_rows(
+    creds: _MoabitsCreds, company_code: str
+) -> list[dict[str, Any]]:
+    ttl = max(float(get_settings().moabits_sim_list_cache_ttl_seconds), 0.0)
+    cache_key = f"{_cache_key(creds)}|simList|{company_code}"
+    now = time.monotonic()
+    if ttl > 0:
+        cached = _SIM_LIST_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+    lock = await _sim_list_lock_for(cache_key)
+    async with lock:
+        now = time.monotonic()
+        if ttl > 0:
+            cached = _SIM_LIST_CACHE.get(cache_key)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+
+        status_data = await _get(creds, f"/api/company/simList/{company_code}")
+        rows = await asyncio.to_thread(_sim_list_rows_from_payload, status_data)
+        if ttl > 0:
+            _SIM_LIST_CACHE[cache_key] = (time.monotonic() + ttl, rows)
+        return rows
 
 
 def _service_fields_from_status_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -421,6 +512,7 @@ class _V2Settings:
     max_concurrent_chunks: int
     detail_timeout_seconds: float
     connectivity_timeout_seconds: float
+    enrichment_cache_ttl_seconds: float
 
 
 def _v2_settings_from_app_settings() -> _V2Settings:
@@ -432,6 +524,9 @@ def _v2_settings_from_app_settings() -> _V2Settings:
         max_concurrent_chunks=max(int(s.moabits_v2_max_concurrent_chunks), 1),
         detail_timeout_seconds=float(s.moabits_v2_detail_timeout_seconds),
         connectivity_timeout_seconds=float(s.moabits_v2_connectivity_timeout_seconds),
+        enrichment_cache_ttl_seconds=max(
+            float(s.moabits_v2_enrichment_cache_ttl_seconds), 0.0
+        ),
     )
 
 
@@ -493,12 +588,63 @@ async def _v2_get(
             ) from exc
     if not _v2_check(resp, label):
         return None
-    try:
-        return resp.json()
-    except ValueError as exc:
-        raise ProviderProtocolError(
-            detail=f"Moabits v2 {label} non-JSON response"
-        ) from exc
+    return await _response_json(resp, f"Moabits v2 {label}")
+
+
+def _v2_enrichment_cache_key(
+    base_url: str, x_api_key: str, label: str, iccid: str
+) -> str:
+    return f"{base_url}|{x_api_key}|v2|{label}|{iccid}"
+
+
+def _v2_enrichment_cache_hits(
+    *,
+    base_url: str,
+    x_api_key: str,
+    label: str,
+    iccids: list[str],
+    ttl: float,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    if ttl <= 0:
+        return {}, iccids
+
+    now = time.monotonic()
+    cached: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    for iccid in iccids:
+        cache_key = _v2_enrichment_cache_key(base_url, x_api_key, label, iccid)
+        item = _V2_ENRICHMENT_CACHE.get(cache_key)
+        if item is not None and item[0] > now:
+            cached[iccid] = item[1]
+        else:
+            missing.append(iccid)
+    return cached, missing
+
+
+def _v2_enrichment_cache_store(
+    *,
+    base_url: str,
+    x_api_key: str,
+    label: str,
+    rows: dict[str, dict[str, Any]],
+    ttl: float,
+) -> None:
+    if ttl <= 0 or not rows:
+        return
+    expires_at = time.monotonic() + ttl
+    if len(_V2_ENRICHMENT_CACHE) > _V2_ENRICHMENT_CACHE_PRUNE_SIZE:
+        now = time.monotonic()
+        expired_keys = [
+            cache_key
+            for cache_key, (cached_expires_at, _) in _V2_ENRICHMENT_CACHE.items()
+            if cached_expires_at <= now
+        ]
+        for cache_key in expired_keys:
+            _V2_ENRICHMENT_CACHE.pop(cache_key, None)
+    for iccid, row in rows.items():
+        _V2_ENRICHMENT_CACHE[
+            _v2_enrichment_cache_key(base_url, x_api_key, label, iccid)
+        ] = (expires_at, row)
 
 
 async def _v2_fetch_details_chunk(
@@ -571,12 +717,14 @@ async def _fetch_v2_enrichment(
     """Fetch v2 details + connectivity in parallel, chunked, with graceful degradation.
 
     Failures (timeouts, 5xx, 401, 403, rate limits) are logged and produce an
-    empty map for the affected chunk. A failure on one chunk does NOT abort
-    sibling chunks — callers see the union of what succeeded and decide
-    per-iccid whether enrichment is full, partial, or missing.
+    empty map for the affected chunk, plus any rows found in the short-lived
+    enrichment cache. A failure on one chunk does NOT abort sibling chunks —
+    callers see the union of what succeeded and decide per-iccid whether
+    enrichment is full, partial, or missing.
     """
     if not iccids:
         return {}, {}
+    iccids = list(dict.fromkeys(iccid for iccid in iccids if iccid))
     chunks = [
         iccids[i : i + settings.max_batch]
         for i in range(0, len(iccids), settings.max_batch)
@@ -593,39 +741,75 @@ async def _fetch_v2_enrichment(
 
     async def _detail(chunk: list[str]) -> dict[str, dict[str, Any]]:
         async with sem:
+            cached, missing = _v2_enrichment_cache_hits(
+                base_url=v2_base_url,
+                x_api_key=x_api_key,
+                label="detail",
+                iccids=chunk,
+                ttl=settings.enrichment_cache_ttl_seconds,
+            )
+            if not missing:
+                return cached
             try:
-                return await _v2_fetch_details_chunk(
+                fetched = await _v2_fetch_details_chunk(
                     v2_base_url,
                     x_api_key,
-                    chunk,
+                    missing,
                     settings.detail_timeout_seconds,
                 )
             except swallow as exc:
                 logger.warning(
                     "moabits_v2_enrichment_chunk_failed",
                     label="sim_detail",
-                    chunk_size=len(chunk),
+                    chunk_size=len(missing),
                     error=str(exc),
                 )
-                return {}
+                return cached
+            _v2_enrichment_cache_store(
+                base_url=v2_base_url,
+                x_api_key=x_api_key,
+                label="detail",
+                rows=fetched,
+                ttl=settings.enrichment_cache_ttl_seconds,
+            )
+            cached.update(fetched)
+            return cached
 
     async def _conn(chunk: list[str]) -> dict[str, dict[str, Any]]:
         async with sem:
+            cached, missing = _v2_enrichment_cache_hits(
+                base_url=v2_base_url,
+                x_api_key=x_api_key,
+                label="connectivity",
+                iccids=chunk,
+                ttl=settings.enrichment_cache_ttl_seconds,
+            )
+            if not missing:
+                return cached
             try:
-                return await _v2_fetch_connectivity_chunk(
+                fetched = await _v2_fetch_connectivity_chunk(
                     v2_base_url,
                     x_api_key,
-                    chunk,
+                    missing,
                     settings.connectivity_timeout_seconds,
                 )
             except swallow as exc:
                 logger.warning(
                     "moabits_v2_enrichment_chunk_failed",
                     label="sim_connectivity",
-                    chunk_size=len(chunk),
+                    chunk_size=len(missing),
                     error=str(exc),
                 )
-                return {}
+                return cached
+            _v2_enrichment_cache_store(
+                base_url=v2_base_url,
+                x_api_key=x_api_key,
+                label="connectivity",
+                rows=fetched,
+                ttl=settings.enrichment_cache_ttl_seconds,
+            )
+            cached.update(fetched)
+            return cached
 
     detail_lists, conn_lists = await asyncio.gather(
         asyncio.gather(*(_detail(c) for c in chunks)),
@@ -879,7 +1063,26 @@ class MoabitsAdapter(BaseAdapter):
         # getSimDetails and getServiceStatus in parallel — both needed for a full view.
         details_coro = _get(creds, f"/api/sim/details/{iccid}")
         status_coro = _get(creds, f"/api/sim/serviceStatus/{iccid}")
-        details_data, status_data = await asyncio.gather(details_coro, status_coro)
+        details_data, status_data = await asyncio.gather(
+            details_coro, status_coro, return_exceptions=True
+        )
+
+        if isinstance(details_data, Exception) and isinstance(status_data, Exception):
+            raise details_data
+        if isinstance(details_data, Exception):
+            logger.warning(
+                "moabits_detail_lookup_failed",
+                iccid=iccid,
+                error=str(details_data),
+            )
+            details_data = {}
+        if isinstance(status_data, Exception):
+            logger.warning(
+                "moabits_status_lookup_failed",
+                iccid=iccid,
+                error=str(status_data),
+            )
+            status_data = {}
 
         sim_info: dict[str, Any] = _first_from(details_data, "info", "simInfo") or {}
         sim_status_row: dict[str, Any] | None = _first_from(
@@ -1086,6 +1289,12 @@ class MoabitsAdapter(BaseAdapter):
                 detail="Moabits purge did not confirm info.purged=true"
             )
 
+    def supports_list_filter(self, filter_name: str) -> bool:
+        return False
+
+    def bootstrap_filters(self) -> SubscriptionSearchFilters:
+        return SubscriptionSearchFilters()
+
     async def list_subscriptions(
         self,
         credentials: dict[str, Any],
@@ -1132,15 +1341,7 @@ class MoabitsAdapter(BaseAdapter):
         has_more = False
 
         for company_index, company_code in enumerate(creds.company_codes):
-            status_data = await _get(creds, f"/api/company/simList/{company_code}")
-            rows = [
-                row
-                for row in (
-                    _status_row_from(value)
-                    for value in _list_from(status_data, "info", "iccidList")
-                )
-                if row is not None and row.get("iccid")
-            ]
+            rows = await _company_sim_list_rows(creds, company_code)
             if rows_seen + len(rows) <= offset:
                 rows_seen += len(rows)
                 continue

@@ -75,6 +75,28 @@ class TestCircuitBreaker:
         with pytest.raises(ProviderUnavailable) as exc_info:
             await cb.call(fail_fn)
         assert "circuit breaker is OPEN" in exc_info.value.detail
+        assert exc_info.value.extra["retry_after"] == "30"
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_open_error_includes_remaining_retry_after(self):
+        """OPEN rejection tells callers when to retry."""
+        cb = CircuitBreaker(
+            "test_provider",
+            failure_threshold=1,
+            open_duration_s=0.2,
+        )
+
+        async def fail_fn():
+            raise ValueError("test error")
+
+        with pytest.raises(ValueError):
+            await cb.call(fail_fn)
+
+        await asyncio.sleep(0.05)
+
+        with pytest.raises(ProviderUnavailable) as exc_info:
+            await cb.call(fail_fn)
+        assert exc_info.value.extra["retry_after"] == "1"
 
     @pytest.mark.asyncio
     async def test_circuit_breaker_transitions_to_half_open_after_timeout(self):

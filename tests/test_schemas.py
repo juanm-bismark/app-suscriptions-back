@@ -11,6 +11,7 @@ import pytest
 from app.subscriptions.domain import AdministrativeStatus
 from app.subscriptions.schemas.sim import (
     PresenceOut,
+    ProviderStatusOut,
     SimListOut,
     StatusChangeIn,
     SubscriptionOut,
@@ -98,6 +99,7 @@ class TestSimListOutSchema:
 
         assert response.partial is False
         assert response.failed_providers == []
+        assert response.provider_statuses == []
 
     def test_partial_fields_capture_provider_failures(self):
         response = SimListOut(
@@ -116,3 +118,27 @@ class TestSimListOutSchema:
 
         assert response.partial is True
         assert response.failed_providers[0]["provider"] == "tele2"
+
+    def test_provider_statuses_capture_source_metadata(self):
+        response = SimListOut(
+            items=[],
+            next_cursor=None,
+            total=None,
+            provider_statuses=[
+                ProviderStatusOut(provider="kite", status="ok", count=0),
+                ProviderStatusOut(
+                    provider="tele2",
+                    status="error",
+                    code="10000003",
+                    title="ModifiedSince is required.",
+                ),
+                ProviderStatusOut(provider="moabits", status="not_queried"),
+            ],
+        )
+
+        assert [status.status for status in response.provider_statuses] == [
+            "ok",
+            "error",
+            "not_queried",
+        ]
+        assert response.provider_statuses[1].code == "10000003"

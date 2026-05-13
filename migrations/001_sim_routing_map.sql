@@ -1,6 +1,6 @@
 -- ============================================================
 -- Migration 001 — SIM routing map
--- Apply after init.sql
+-- Apply after 000_init.sql
 -- ============================================================
 
 -- The only persisted SIM artifact. It maps iccid -> provider/company so

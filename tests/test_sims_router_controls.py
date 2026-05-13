@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -18,7 +19,7 @@ from app.subscriptions.domain import AdministrativeStatus, Subscription
 from app.subscriptions.routers import sims
 from app.subscriptions.schemas.sim import SimListOut
 from app.tenancy.models.credentials import CompanyProviderCredentials
-from app.tenancy.models.provider_source_config import ProviderSourceConfig
+from app.tenancy.models.provider_mapping import CompanyProviderMapping
 
 COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
@@ -30,6 +31,16 @@ class _ScalarResult:
 
     def scalar_one_or_none(self):
         return self._row
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        if self._row is None:
+            return []
+        if isinstance(self._row, list):
+            return self._row
+        return [self._row]
 
 
 class _Routing:
@@ -220,6 +231,14 @@ async def test_global_listing_bootstraps_empty_routing_map(monkeypatch) -> None:
     assert db.commit_calls == 1
     assert result.total is None
     assert [item.provider for item in result.items] == ["kite", "tele2", "moabits"]
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 1),
+        ("tele2", "ok", 1),
+        ("moabits", "ok", 1),
+    ]
 
 
 @pytest.mark.asyncio
@@ -300,10 +319,80 @@ async def test_global_listing_uses_provider_summaries_without_detail_calls(
     assert db.commit_calls == 1
     assert result.total is None
     assert len(result.items) == 3
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 1),
+        ("tele2", "ok", 1),
+        ("moabits", "ok", 1),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_global_listing_reads_twenty_five_summaries_per_provider(monkeypatch) -> None:
+async def test_global_listing_queries_providers_concurrently(monkeypatch) -> None:
+    state = {"active": 0, "max_active": 0}
+
+    class _Db:
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            pass
+
+    class _SearchProvider:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+            await asyncio.sleep(0)
+            state["active"] -= 1
+            return [], None
+
+    class _SearchRegistry:
+        def get(self, provider):
+            return _SearchProvider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {"company_codes": ["48123"]}
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=_Db(),
+        settings=Settings(),
+        registry=_SearchRegistry(),
+    )
+
+    assert state["max_active"] > 1
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 0),
+        ("tele2", "ok", 0),
+        ("moabits", "ok", 0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_global_listing_reads_twenty_five_summaries_per_provider(
+    monkeypatch,
+) -> None:
     class _Db:
         def __init__(self) -> None:
             self.commit_calls = 0
@@ -377,10 +466,20 @@ async def test_global_listing_reads_twenty_five_summaries_per_provider(monkeypat
     assert result.next_cursor is not None
     assert result.next_cursor.startswith("global:")
     assert db.commit_calls == 1
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 25),
+        ("tele2", "ok", 25),
+        ("moabits", "ok", 25),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_load_moabits_credentials_uses_only_global_source_config() -> None:
+async def test_load_moabits_credentials_raises_without_mapping() -> None:
+    from app.shared.errors import ListingPreconditionFailed
+
     fernet_key = Fernet.generate_key().decode()
     credentials_row = CompanyProviderCredentials(
         company_id=COMPANY_ID,
@@ -390,30 +489,72 @@ async def test_load_moabits_credentials_uses_only_global_source_config() -> None
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "secret-key",
                 "parent_company_code": "48123",
-                "company_codes": ["stale-from-credential"],
             },
             fernet_key,
         ),
-        account_scope={"company_codes": ["stale-from-account-scope"]},
+        account_scope={},
         active=True,
         created_at=datetime.now(),
     )
-    source_config = ProviderSourceConfig(
+
+    class _Db:
+        async def execute(self, stmt):
+            statement_text = str(stmt)
+            if "FROM company_provider_credentials" in statement_text:
+                return _ScalarResult(credentials_row)
+            if "FROM company_provider_mappings" in statement_text:
+                return _ScalarResult(None)
+            raise AssertionError("unexpected query")
+
+    with pytest.raises(ListingPreconditionFailed) as excinfo:
+        await sims._load_credentials(
+            COMPANY_ID,
+            "moabits",
+            _Db(),
+            Settings(fernet_key=fernet_key),
+        )
+
+    assert excinfo.value.extra.get("provider") == "moabits"
+
+
+@pytest.mark.asyncio
+async def test_load_moabits_credentials_uses_mapping_company_code() -> None:
+    fernet_key = Fernet.generate_key().decode()
+    credentials_row = CompanyProviderCredentials(
+        company_id=COMPANY_ID,
         provider="moabits",
+        credentials_enc=encrypt_credentials(
+            {
+                "base_url": "https://www.api.myorion.co",
+                "x_api_key": "secret-key",
+                "parent_company_code": "48123",
+            },
+            fernet_key,
+        ),
+        account_scope={},
+        active=True,
+        created_at=datetime.now(),
+    )
+    mapping = CompanyProviderMapping(
+        company_id=COMPANY_ID,
+        provider="moabits",
+        provider_company_code="48123-99",
+        provider_company_name="3 POINTECH S.A.S.",
+        clie_id=2659,
         settings={},
+        active=True,
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
 
     class _Db:
-        def __init__(self) -> None:
-            self.calls = 0
-
         async def execute(self, stmt):
-            self.calls += 1
-            if self.calls == 1:
+            statement_text = str(stmt)
+            if "FROM company_provider_credentials" in statement_text:
                 return _ScalarResult(credentials_row)
-            return _ScalarResult(source_config)
+            if "FROM company_provider_mappings" in statement_text:
+                return _ScalarResult(mapping)
+            raise AssertionError("unexpected query")
 
     loaded = await sims._load_credentials(
         COMPANY_ID,
@@ -422,7 +563,12 @@ async def test_load_moabits_credentials_uses_only_global_source_config() -> None
         Settings(fernet_key=fernet_key),
     )
 
-    assert loaded["company_codes"] == []
+    assert loaded["company_codes"] == ["48123-99"]
+    assert loaded["provider_company_mapping"] == {
+        "companyCode": "48123-99",
+        "companyName": "3 POINTECH S.A.S.",
+        "clie_id": 2659,
+    }
 
 
 def test_provider_listing_builds_canonical_filters(monkeypatch) -> None:
@@ -647,109 +793,43 @@ async def test_provider_listing_commits_routing_upserts_once(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_moabits_listing_requires_persisted_company_codes(monkeypatch) -> None:
-    """Listing Moabits SIMs with empty company_codes must fail with 412 and an
-    actionable message pointing to the discover + PUT flow. There is no
-    runtime auto-scope by name match (removed for performance and determinism).
-    """
-    from app.shared.errors import ListingPreconditionFailed
+async def test_global_iccid_search_uses_routing_map_for_moabits(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
 
     class _Db:
-        async def execute(self, stmt):
-            return None
-
         async def commit(self):
-            pass
+            raise AssertionError("mapped ICCID lookup should not rewrite routing")
 
-    class _SearchProvider:
-        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
-            raise AssertionError("adapter must not be called when codes missing")
+    class _Routing:
+        provider = "moabits"
 
-    class _SearchRegistry:
-        def __init__(self, provider):
-            self.provider = provider
-
-        def get(self, provider):
-            return self.provider
-
-    async def _credentials(*args, **kwargs):
-        return {
-            "base_url": "https://www.api.myorion.co",
-            "x_api_key": "secret-key",
-            "parent_company_code": "48123",
-            "company_codes": [],
-        }
-
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-
-    with pytest.raises(ListingPreconditionFailed) as excinfo:
-        await sims._list_via_provider_search(
-            "moabits",
-            cursor=None,
-            limit=50,
-            filters=sims._build_filters(
-                status_filter=None,
-                modified_since=None,
-                modified_till=None,
-                iccid=None,
-                imsi=None,
+    class _Provider:
+        async def get_subscription(self, iccid, credentials):
+            calls.append(("get_subscription", iccid))
+            return Subscription(
+                iccid=iccid,
                 msisdn=None,
-                custom=None,
-            ),
-            company_id=COMPANY_ID,
-            db=_Db(),
-            settings=Settings(),
-            registry=_SearchRegistry(_SearchProvider()),
-        )
-
-    assert "company_codes" in (excinfo.value.detail or "")
-    assert excinfo.value.extra.get("provider") == "moabits"
-
-
-@pytest.mark.asyncio
-async def test_moabits_listing_uses_persisted_company_codes(monkeypatch) -> None:
-    """When company_codes come from source config, the listing path delegates to
-    the adapter with that global provider configuration.
-    """
-    class _Db:
-        def __init__(self) -> None:
-            self.commit_calls = 0
-
-        async def execute(self, stmt):
-            return None
-
-        async def commit(self):
-            self.commit_calls += 1
-
-    class _SearchProvider:
-        def __init__(self) -> None:
-            self.credentials = None
-
-        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
-            self.credentials = credentials
-            return (
-                [
-                    Subscription(
-                        iccid="8910300000001880253",
-                        msisdn=None,
-                        imsi=None,
-                        status=AdministrativeStatus.SUSPENDED,
-                        native_status="Suspended",
-                        provider="moabits",
-                        company_id=str(COMPANY_ID),
-                        activated_at=None,
-                        updated_at=None,
-                    )
-                ],
-                None,
+                imsi=None,
+                status=AdministrativeStatus.ACTIVE,
+                native_status="Active",
+                provider="moabits",
+                company_id=str(COMPANY_ID),
+                activated_at=None,
+                updated_at=None,
             )
 
-    class _SearchRegistry:
-        def __init__(self, provider):
-            self.provider = provider
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            raise AssertionError("Moabits listing filters should not be called")
 
+    class _Registry:
         def get(self, provider):
-            return self.provider
+            assert provider == "moabits"
+            return _Provider()
+
+    async def _find(*args, **kwargs):
+        return _Routing()
 
     async def _credentials(*args, **kwargs):
         return {
@@ -759,19 +839,106 @@ async def test_moabits_listing_uses_persisted_company_codes(monkeypatch) -> None
             "company_codes": ["48123"],
         }
 
+    monkeypatch.setattr(sims, "_find_routing", _find)
     monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    provider = _SearchProvider()
-    db = _Db()
 
-    result = await sims._list_via_provider_search(
-        "moabits",
+    result = await sims._list_via_routing_index(
         cursor=None,
         limit=50,
         filters=sims._build_filters(
             status_filter=None,
             modified_since=None,
             modified_till=None,
-            iccid=None,
+            iccid="8910300000001880253",
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=_Db(),
+        settings=Settings(),
+        registry=_Registry(),
+    )
+
+    assert calls == [("get_subscription", "8910300000001880253")]
+    assert result.partial is False
+    assert result.items[0].provider == "moabits"
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "not_queried", 0),
+        ("tele2", "not_queried", 0),
+        ("moabits", "ok", 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_global_iccid_search_skips_moabits_when_unmapped(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _Provider:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls.append((self.provider, filters.iccid))
+            if self.provider == "kite":
+                return (
+                    [
+                        Subscription(
+                            iccid=filters.iccid,
+                            msisdn=None,
+                            imsi=None,
+                            status=AdministrativeStatus.ACTIVE,
+                            native_status="ACTIVE",
+                            provider="kite",
+                            company_id=str(COMPANY_ID),
+                            activated_at=None,
+                            updated_at=None,
+                        )
+                    ],
+                    None,
+                )
+            assert filters.modified_since is not None
+            return [], None
+
+    class _Registry:
+        def get(self, provider):
+            assert provider in {"kite", "tele2"}
+            return _Provider(provider)
+
+    async def _find(*args, **kwargs):
+        return None
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid="8934070100000000001",
             imsi=None,
             msisdn=None,
             custom=None,
@@ -779,10 +946,20 @@ async def test_moabits_listing_uses_persisted_company_codes(monkeypatch) -> None
         company_id=COMPANY_ID,
         db=db,
         settings=Settings(),
-        registry=_SearchRegistry(provider),
+        registry=_Registry(),
     )
 
-    assert isinstance(result, SimListOut)
-    assert provider.credentials["company_codes"] == ["48123"]
-    assert result.items[0].iccid == "8910300000001880253"
+    assert calls == [
+        ("kite", "8934070100000000001"),
+        ("tele2", "8934070100000000001"),
+    ]
     assert db.commit_calls == 1
+    assert result.partial is True
+    assert [item.provider for item in result.items] == ["kite"]
+    assert result.failed_providers == [
+        {
+            "provider": "moabits",
+            "code": "provider.unsupported_operation",
+            "title": "Operation not supported by this provider",
+        }
+    ]

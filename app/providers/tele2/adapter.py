@@ -186,7 +186,7 @@ def _client(creds: _Tele2Creds) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=creds.base_url,
         headers=headers,
-        timeout=30.0,
+        timeout=max(float(get_settings().tele2_request_timeout_seconds), 0.1),
     )
 
 
@@ -200,10 +200,12 @@ def _path(creds: _Tele2Creds, suffix: str) -> str:
 def _check(resp: httpx.Response, label: str = "Tele2") -> None:
     provider_error_code = None
     provider_error_message = None
-    try:
-        error_payload = resp.json()
-    except Exception:
-        error_payload = None
+    error_payload = None
+    if resp.status_code >= 400:
+        try:
+            error_payload = resp.json()
+        except Exception:
+            error_payload = None
     if isinstance(error_payload, dict):
         provider_error_code = error_payload.get("errorCode")
         provider_error_message = error_payload.get("errorMessage")
@@ -306,7 +308,7 @@ async def _get(
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Tele2 network error: {exc}") from exc
     _check(resp)
-    return resp.json()
+    return await _response_json(resp, "Tele2")
 
 
 async def _put(
@@ -326,7 +328,16 @@ async def _put(
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Tele2 network error: {exc}") from exc
     _check(resp)
-    return resp.json() if resp.content else {}
+    return await _response_json(resp, "Tele2") if resp.content else {}
+
+
+async def _response_json(resp: httpx.Response, label: str) -> Any:
+    try:
+        return await asyncio.to_thread(resp.json)
+    except ValueError as exc:
+        raise ProviderProtocolError(
+            detail=f"{label} returned non-JSON response"
+        ) from exc
 
 
 def _parse_subscription(data: dict[str, Any], company_id: str) -> Subscription:
@@ -741,6 +752,16 @@ class Tele2Adapter(BaseAdapter):
             credentials,
             target=AdministrativeStatus.PURGED,
             idempotency_key=idempotency_key,
+        )
+
+    def supports_list_filter(self, filter_name: str) -> bool:
+        return filter_name == "iccid"
+
+    def bootstrap_filters(self) -> SubscriptionSearchFilters:
+        return SubscriptionSearchFilters(
+            modified_since=datetime.now(UTC).replace(microsecond=0)
+            - timedelta(days=365)
+            + timedelta(seconds=1)
         )
 
     async def list_subscriptions(

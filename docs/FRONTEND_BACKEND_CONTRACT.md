@@ -36,14 +36,26 @@ Implementation pointers:
 3. [Tenancy — companies & settings](#2-tenancy--companies--settings)
    - `GET /v1/companies/me` / `PUT /v1/companies/me`
    - `GET /v1/companies/me/settings` / `PUT /v1/companies/me/settings`
+   - `GET /v1/companies` / `POST /v1/companies` (admin)
+   - `GET /v1/companies/{company_id}` / `PUT /v1/companies/{company_id}` (admin)
 4. [Tenancy — provider credentials](#3-tenancy--provider-credentials)
    - `GET /v1/companies/me/credentials`
    - `GET /v1/companies/me/credentials/{provider}`
    - `POST /v1/companies/me/credentials/{provider}/test`
    - `PATCH /v1/companies/me/credentials/{provider}`
    - `DELETE /v1/companies/me/credentials/{provider}`
-   - `GET /v1/companies/me/credentials/moabits/companies/discover`
-   - `PUT /v1/companies/me/credentials/moabits/company-codes`
+   - `GET /v1/companies/me/provider-mappings/moabits`
+   - `GET /v1/companies/provider-mappings/moabits`
+   - `GET /v1/companies/provider-mappings/moabits/source-companies`
+   - `GET /v1/companies/provider-mappings/moabits/discover`
+   - `PUT /v1/companies/{company_id}/provider-mappings/moabits`
+   - `DELETE /v1/companies/{company_id}/provider-mappings/moabits`
+   - `GET /v1/admin/credentials`
+   - `GET /v1/admin/companies/{company_id}/credentials`
+   - `GET /v1/admin/companies/{company_id}/credentials/{provider}`
+   - `PATCH /v1/admin/companies/{company_id}/credentials/{provider}`
+   - `DELETE /v1/admin/companies/{company_id}/credentials/{provider}`
+   - `POST /v1/admin/companies/{company_id}/credentials/{provider}/test`
 5. [SIMs](#4-sims)
    - `GET /v1/sims`
    - `GET /v1/sims/{iccid}`
@@ -199,33 +211,61 @@ server-side. Logout silently succeeds even when the token is not found
 ### 1.5 `GET /v1/me`
 
 **Auth**: any authenticated profile.
-**Response 200** ([ProfileOut](app/identity/schemas/profile.py#L9-L16)):
+**Response 200** ([ProfileOut](app/identity/schemas/profile.py#L9-L17)):
 ```json
 {
   "id": "uuid",
   "company_id": "uuid|null",
+  "email": "user@acme.com|null",
   "role": "admin|manager|member|public",
   "full_name": "string|null",
   "created_at": "2026-04-01T00:00:00Z"
 }
 ```
 
-### 1.6 `PUT /v1/me`
+### 1.6 `PUT /v1/me` / `PATCH /v1/me`
 
-**Request** ([ProfileUpdate](app/identity/schemas/profile.py#L19-L20)):
+Both methods are accepted on the same endpoint.
+
+**Request** ([ProfileUpdate](app/identity/schemas/profile.py#L20-L23)):
 ```json
-{ "full_name": "New name" }      // only field accepted
+{
+  "full_name": "New name",    // optional
+  "email": "new@acme.com",    // optional — must be unique across all users
+  "password": "newpassword"   // optional — empty string is ignored
+}
 ```
+All fields are optional. Only provided fields are updated.
 **Response 200**: `ProfileOut`.
+**Errors**: `409 Email already exists` when the new email is already taken.
 
 ### 1.7 `GET /v1/users`
 
 **Auth**: `admin` or `manager`.
-**Response 200**: `ProfileOut[]` — all profiles in the caller's company.
+
+**Query parameters**:
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `page` | int | `1` | Page number (1-based). |
+| `size` | int | `50` | Items per page. |
+| `q` | string | `null` | Filter by `full_name` or `email` (case-insensitive `ILIKE`). |
+
+Note: managers only see `manager` and `member` profiles; `admin` profiles are hidden from manager-scoped queries.
+
+**Response 200**: `Page[ProfileOut]` — paginated list of profiles in the caller's company:
+```json
+{
+  "items": [ /* ProfileOut[] */ ],
+  "total": 12,
+  "page": 1,
+  "size": 50,
+  "pages": 1
+}
+```
 
 ### 1.8 `POST /v1/users`
 
-**Auth**: `admin` (any role) or `manager` (only role=`member`).
+**Auth**: `admin` or `manager`. `public` and `member` → 403.
 **Request** ([UserCreate](app/identity/schemas/user.py#L6-L10)):
 ```json
 {
@@ -244,18 +284,27 @@ server-side. Logout silently succeeds even when the token is not found
 **Response 200**: `ProfileOut`.
 **Errors**: `403 Insufficient permissions`, `404 User not found`.
 
-### 1.10 `PUT /v1/users/{user_id}`
+### 1.10 `PUT /v1/users/{user_id}` / `PATCH /v1/users/{user_id}`
+
+Both methods are accepted on the same endpoint.
 
 **Auth/rules**:
 - `member`: only on own id, cannot change `role`
-- `manager`: only members; cannot promote past `member`
-- `admin`: full
+- `manager`: only members in own company; cannot promote past `member`; cannot edit admins
+- `admin`: full access within own company
 
-**Request** ([UserUpdate](app/identity/schemas/user.py#L13-L15)):
+**Request** ([UserUpdate](app/identity/schemas/user.py#L13-L17)):
 ```json
-{ "full_name": "string|null", "role": "admin|manager|member|public|null" }
+{
+  "full_name": "string|null",                        // optional
+  "role": "admin|manager|member|public|null",        // optional — see rules above
+  "email": "newemail@acme.com|null",                 // optional — must be unique
+  "password": "newpassword|null"                     // optional — empty string is ignored
+}
 ```
+All fields are optional. Only provided (non-null) fields are updated.
 **Response 200**: `ProfileOut`.
+**Errors**: `403 Members cannot change roles`, `403 Managers can only edit members`, `403 Managers cannot promote beyond member`, `404 User not found`, `409 Email already exists`.
 
 ### 1.11 `DELETE /v1/users/{user_id}`
 
@@ -307,6 +356,60 @@ All endpoints are scoped to the **caller's** company (`/me`).
 { "settings": { /* full replacement object */ } }
 ```
 **Response 200**: `CompanySettingsOut`. The provided `settings` object replaces the previous value (no merge).
+
+### 2.5 `GET /v1/companies`
+
+List all companies in the platform.
+
+**Auth**: `admin` only.
+
+**Query parameters**:
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `page` | int | `1` | Page number (1-based). |
+| `size` | int | `50` | Items per page. |
+| `q` | string | `null` | Filter by company name (case-insensitive `ILIKE`). |
+
+**Response 200**: `Page[CompanyOut]` — paginated list of all companies, ordered by `created_at desc` then name:
+```json
+{
+  "items": [ { "id": "uuid", "name": "Acme", "created_at": "2026-04-01T00:00:00Z" } ],
+  "total": 5,
+  "page": 1,
+  "size": 50,
+  "pages": 1
+}
+```
+
+### 2.6 `POST /v1/companies`
+
+Create a new company.
+
+**Auth**: `admin` only.
+**Request** ([CompanyCreate](app/tenancy/schemas/company.py#L16-L17)):
+```json
+{ "name": "Acme" }
+```
+- Name is trimmed and normalized; empty string → `422`.
+- A `CompanySettings({})` row is created alongside the company.
+
+**Response 201**: `CompanyOut`.
+**Errors**: `409 Company name already exists`, `422 name cannot be empty`.
+
+### 2.7 `GET /v1/companies/{company_id}`
+
+**Auth**: `admin` only.
+**Response 200**: `CompanyOut`.
+**Errors**: `404 Company not found`.
+
+### 2.8 `PUT /v1/companies/{company_id}`
+
+Rename a company by ID.
+
+**Auth**: `admin` only.
+**Request**: `{ "name": "New Name" }` (same as `CompanyUpdate`).
+**Response 200**: `CompanyOut`.
+**Errors**: `404 Company not found`, `409 Company name already exists`, `422 name cannot be empty`.
 
 ---
 
@@ -365,14 +468,15 @@ Per-provider canonical examples (also exported as OpenAPI examples in
   },
   "account_scope": {
     "environment": "production",
-    "end_customer_id": "KITE_END_CUSTOMER_ID",
-    "cert_expires_at": "2026-12-31T00:00:00Z"
+    "end_customer_id": "KITE_END_CUSTOMER_ID"
   }
 }
 ```
 Backend normalizes: aliases `pfx_base64`→`client_cert_pfx_b64`,
 `pfx_password`→`client_cert_password`, plus several CA-bundle aliases.
 Validates that `endpoint` is HTTPS and that username/password come together
+and derives `account_scope.cert_expires_at` automatically from the PFX client
+certificate, overwriting any value sent by the client.
 ([_normalized_kite_credentials](app/tenancy/routers/credentials.py#L87-L148)).
 
 **Tele2** (`POST /credentials/tele2/test`):
@@ -417,21 +521,44 @@ On failure `ok` is `false` and `detail` is a human-readable message
 (provider error, missing field, etc.) — the endpoint **always** returns 200
 with this envelope (errors do not bubble up).
 
-### 3.4 `PATCH /v1/companies/me/credentials/{provider}` — rotate / upsert
+### 3.4 `PATCH /v1/companies/me/credentials/{provider}` — partial credential update
 
-Test the supplied credentials against the provider, deactivate the previous
-active record, insert a new active row.
+Merge-update credentials for a provider. Fields in the request body are merged
+into the existing stored credentials; omitted fields are preserved. The merged
+result is tested live against the provider before persisting.
 
 **Auth**: `admin` or `manager`.
-**Request**: same `CredentialUpsertIn` as `/test`.
-**Response 200** ([CredentialMetadataOut](app/tenancy/schemas/credentials.py#L80-L86)):
+
+**Request** ([CredentialPatchIn](app/tenancy/routers/credentials.py#L108-L122)):
+```json
+{
+  "credentials": { /* fields to merge into the stored credential — only changed fields needed */ },
+  "account_scope": { /* fields to merge into account_scope — omit to preserve current */ }
+}
+```
+- At least one of `credentials` or `account_scope` must be non-empty → `422` otherwise.
+- `credentials` defaults to `{}` (preserve all existing secret fields).
+- `account_scope` defaults to `null` (preserve existing account scope without merging).
+- For `provider=kite`, `account_scope.cert_expires_at` is always derived from
+  `client_cert_pfx_b64`; clients should not ask users to enter it manually.
+
+**Manager**: may update any field on any provider credential for their own company.
+Cannot create credentials (own-company path requires the credential to exist → `404`).
+For `provider=moabits`, only `{"x_api_key": "<value>"}` is accepted in `credentials`
+(no other fields, no `account_scope` changes), and the company must have an active
+provider mapping. Any other field or combination → `403 Managers can only update Moabits x_api_key`.
+
+**Admin**: can patch any field on any provider, and can create a credential from scratch if
+none exists yet for that `(company_id, provider)`.
+
+**Response 200** ([CredentialMetadataOut](app/tenancy/schemas/credentials.py#L79-L86)):
 ```json
 {
   "provider": "kite|tele2|moabits",
   "active": true,
   "rotated_at": "2026-04-01T00:00:00Z",
   "created_at": "2026-04-01T00:00:00Z",
-  "account_scope": { /* echoed from request */ },
+  "account_scope": { /* current merged account scope */ },
   "expiry_status": "valid|expiring|expired|invalid"
 }
 ```
@@ -442,8 +569,26 @@ active record, insert a new active row.
 - `expired`: past
 - `invalid`: present but unparseable
 
-**Errors**: `422` with the live-test error message if the credential test
-fails (frontend should render `detail` to the user).
+**Errors**:
+- `403 Managers can only update Moabits x_api_key` — manager sent extra fields or `account_scope` on Moabits
+- `403 Company is not linked to a Moabits company code` — manager PATCH on Moabits without an active mapping
+- `404 Credential not found` — manager trying to patch a non-existent credential (managers cannot create)
+- `422` with the live-test error message if the merged credential test fails
+
+Frontend flow:
+- `GET /v1/companies/me/credentials` is the source of truth for what is already
+  active in the current company.
+- Missing providers among `kite | tele2 | moabits` can be shown as "add" options (admin only).
+- To rotate a full credential set, send all fields in `credentials`; to rotate only one key
+  (e.g. `x_api_key`), send only that field.
+- `GET /v1/companies/me/credentials/{provider}` returns `200` for edit metadata
+  and `404` when the UI should render an empty create form (admin only).
+- Secret fields are never returned by any credential endpoint, so forms should
+  not prefill secrets.
+- **Moabits / manager**: before rendering the credential update form, call
+  `GET /v1/companies/me/provider-mappings/moabits`. If it returns `404`, the
+  company has no active mapping — show a "contact your admin" message instead of
+  the form (the PATCH would return `403`).
 
 ### 3.5 `DELETE /v1/companies/me/credentials/{provider}`
 
@@ -453,55 +598,225 @@ Soft-deactivate the active credential record.
 **Response 204** (no body).
 **Errors**: `404 Credential not found`.
 
-### 3.6 `GET /v1/companies/me/credentials/moabits/companies/discover`
+After `DELETE`, the provider disappears from
+`GET /v1/companies/me/credentials`; the frontend should show it as missing
+again after refresh.
 
-Lists Moabits child companies reachable with the stored `x_api_key`. Used
-by the credential-config UI to pick which child companies feed the SIM
-listing.
+### 3.6 Company-scoped Moabits mapping
 
-**Auth**: `admin` or `manager`.
+Use this when one local company needs to be linked or adjusted to one
+specific Moabits company without re-saving the whole Moabits source scope.
+Open the discovery endpoint only from the "modify load" action in the UI: it
+performs a live Moabits child-company lookup and returns both local companies
+from the backend DB and provider companies from Moabits.
 
-**Response 200** ([MoabitsCompanyDiscoveryOut](app/tenancy/schemas/credentials.py#L117-L130)):
+```txt
+GET    /v1/companies/me/provider-mappings/moabits          (manager or admin — own company)
+GET    /v1/companies/provider-mappings/moabits             (admin — all companies, paginated)
+GET    /v1/companies/provider-mappings/moabits/source-companies
+GET    /v1/companies/provider-mappings/moabits/discover    (admin — live Moabits lookup)
+PUT    /v1/companies/{company_id}/provider-mappings/moabits
+DELETE /v1/companies/{company_id}/provider-mappings/moabits
+```
+
+**`GET /v1/companies/me/provider-mappings/moabits`** — `manager` or `admin`
+
+Returns the active Moabits mapping for the authenticated user's company.
+Returns `404` if no active mapping exists.
+**Response 200**: `CompanyProviderMappingOut` (same shape as the `mapping` object below).
+
+---
+
+Use `GET /v1/companies/provider-mappings/moabits` (**admin** only) for the fast table of
+all local companies with their Moabits mapping status. It reads only the backend DB and does
+not call Moabits.
+
+**Query parameters**:
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `page` | int | `1` | Page number (1-based). |
+| `size` | int | `50` | Items per page. |
+| `q` | string | `null` | Search across company name, `companyCode`, and `companyName` from Moabits. |
+| `linked_only` | bool | `false` | When `true`, only returns companies that already have an active mapping. |
+
+**Response 200**: `Page[LocalCompanyProviderMappingOut]`:
 ```json
 {
-  "current_company_name": "Acme",
-  "selected_company_codes": ["A123", "A124"],
-  "selected_companies": [
-    { "companyCode": "A123", "companyName": "Acme Energy", "clie_id": 42 }
+  "items": [
+    {
+      "company_id": "00000000-0000-0000-0000-000000000001",
+      "company_name": "Acme",
+      "mapping": {
+        "company_id": "00000000-0000-0000-0000-000000000001",
+        "provider": "moabits",
+        "companyCode": "A123",
+        "companyName": "Acme Energy",
+        "clie_id": 42,
+        "settings": {},
+        "active": true,
+        "updated_at": "2026-05-11T00:00:00Z",
+        "created_at": "2026-05-11T00:00:00Z"
+      }
+    },
+    {
+      "company_id": "00000000-0000-0000-0000-000000000002",
+      "company_name": "Beta Corp",
+      "mapping": null
+    }
   ],
-  "companies": [
-    { "companyCode": "A123", "companyName": "Acme Energy", "clie_id": 42 },
-    { "companyCode": "B777", "companyName": "Bismark", "clie_id": null }
-  ]
+  "total": 2,
+  "page": 1,
+  "size": 50,
+  "pages": 1
 }
 ```
-Note: `companyCode`/`companyName` are camelCase in the wire format
-(serialization aliases — see [MoabitsCompanyOut](app/tenancy/schemas/credentials.py#L111-L114)).
 
-**Errors**: `404 Moabits credential not found`.
+`mapping` is `null` when the company has no active Moabits mapping.
 
-### 3.7 `PUT /v1/companies/me/credentials/moabits/company-codes`
+**`GET /v1/companies/provider-mappings/moabits/source-companies`** — `admin`
+only.
 
-Persist the selected child-company codes used when listing Moabits SIMs.
+Returns cached Moabits companies discovered for the admin's Moabits credential
+source. This endpoint shows `moabits_source_companies`, not saved local-company
+mappings.
 
-**Auth**: `admin`.
+The cache is refreshed by `GET /v1/companies/provider-mappings/moabits/discover`:
+company codes returned by Moabits become active, and cached codes that no
+longer appear become inactive. Existing saved mappings are not deleted, but the
+available source company names/codes used for linking may change after
+discovery.
 
-**Request** ([MoabitsCompanySelectionIn](app/tenancy/schemas/credentials.py#L148-L155)):
+**Query parameters**: `page`, `size`, optional `q`, optional
+`active_only=true` (default `true`).
+
+**Response 200**: `Page[MoabitsSourceCompanyOut]`:
 ```json
 {
-  "company_codes": [
-    { "companyCode": "A123", "companyName": "Acme Energy", "clie_id": 42 },
-    { "companyCode": "A124" }
+  "items": [
+    {
+      "source_company_id": "uuid",
+      "companyCode": "A123",
+      "companyName": "Acme Energy",
+      "clie_id": 42,
+      "active": true,
+      "last_seen_at": "2026-05-11T00:00:00Z",
+      "updated_at": "2026-05-11T00:00:00Z",
+      "created_at": "2026-05-11T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "size": 50,
+  "pages": 1
+}
+```
+
+`source_company_id` is the UUID of the admin company that owns this cached entry (the source credential owner, not the linked company).
+
+**PUT request** (`PUT /v1/companies/{company_id}/provider-mappings/moabits`):
+```json
+{
+  "companyCode": "A123",              // required; also accepted as "provider_company_code"
+  "companyName": "Acme Energy",       // optional; also accepted as "provider_company_name"
+  "clie_id": 42,                      // optional integer
+  "settings": {}                      // optional — arbitrary JSON; defaults to {}
+}
+```
+
+`PUT` updates only the mapping for `{company_id}`. The `companyCode` is valid
+when it is already in the saved source scope or when it is visible in the live
+Moabits discovery response for the stored X-API-KEY.
+
+**Response 200**:
+```json
+{
+  "company_id": "00000000-0000-0000-0000-000000000001",
+  "provider": "moabits",
+  "companyCode": "A123",
+  "companyName": "Acme Energy",
+  "clie_id": 42,
+  "settings": {},
+  "active": true,
+  "updated_at": "2026-05-11T00:00:00Z",
+  "created_at": "2026-05-11T00:00:00Z"
+}
+```
+
+**Discovery response 200**:
+```json
+{
+  "cache_message": "Discovery refreshes the cached Moabits source companies used as link options. Existing saved local-company mappings are not deleted, but available Moabits company codes/names may change.",
+  "source_company_codes": ["A123", "B456"],
+  "local_companies": [
+    {
+      "company_id": "00000000-0000-0000-0000-000000000001",
+      "company_name": "Acme",
+      "mapping": {
+        "company_id": "00000000-0000-0000-0000-000000000001",
+        "provider": "moabits",
+        "companyCode": "A123",
+        "companyName": "Acme Energy",
+        "clie_id": 42,
+        "settings": {},
+        "active": true,
+        "updated_at": "2026-05-11T00:00:00Z",
+        "created_at": "2026-05-11T00:00:00Z"
+      }
+    }
+  ],
+  "moabits_companies": [
+    {
+      "companyCode": "A123",
+      "companyName": "Acme Energy",
+      "clie_id": 42,
+      "selected_in_source": true,
+      "linked_companies": [
+        {
+          "company_id": "00000000-0000-0000-0000-000000000001",
+          "company_name": "Acme"
+        }
+      ]
+    }
   ]
 }
 ```
-- `min_length: 1` — empty array → `422`
-- The router accepts both `companyCode` and `company_code` (alias).
-- Codes not present in the discover response → `422` with `detail =
-  {"message": "...", "company_codes": ["..."]}`.
 
-**Response 200**: `CredentialMetadataOut` (the Moabits credential row,
-unchanged — selection is stored separately as a non-secret config entry).
+`source_company_codes` comes from the Moabits source companies returned by
+discovery, not from saved local-company mappings. Saved links are represented
+only in `local_companies[].mapping` and `moabits_companies[].linked_companies`.
+The frontend should show `cache_message` before or after running discovery so
+admins understand that the cached source-company list is being refreshed.
+
+When `GET /v1/sims?provider=moabits` resolves credentials, the active
+company-scoped mapping is required. If no mapping exists the request fails
+with `412` — there is no legacy source-scope fallback.
+
+**Errors**: `404 Company not found`, `404 Provider mapping not found`,
+`404 Moabits credential not found` for discovery without credentials, `422`
+when the Moabits code is not available.
+
+### 3.7 Admin credential scope
+
+These endpoints let platform admins inspect and operate credentials across
+companies without depending on `/companies/me/credentials`.
+
+All admin credential responses use `AdminCredentialMetadataOut`, which is
+`CredentialMetadataOut` plus `company_id`. Secrets are never returned.
+
+**Auth**: `admin` only.
+
+Endpoints:
+- `GET /v1/admin/credentials` — list all active credentials in the platform.
+- `GET /v1/admin/companies/{company_id}/credentials` — list active credentials
+  for one company.
+- `GET /v1/admin/companies/{company_id}/credentials/{provider}` — get one active
+  credential metadata record; `404` when missing.
+- `POST /v1/admin/companies/{company_id}/credentials/{provider}/test` — live
+  test candidate credentials for that company without persisting.
+- `PATCH /v1/admin/companies/{company_id}/credentials/{provider}` — update or
+  create the active credential for that company/provider.
+- `DELETE /v1/admin/companies/{company_id}/credentials/{provider}` — soft
+  deactivate the active credential.
 
 ---
 
@@ -540,18 +855,33 @@ Two modes:
 | `msisdn` | string | `null` | Provider-scoped filter. |
 | `custom` | string[] | `[]` | Repeated query param. Each item is `key=value` or `key:value`. Provider-scoped filter. |
 
-**Response 200** ([SimListOut](app/subscriptions/schemas/sim.py#L210-L235)):
+**Response 200** ([SimListOut](app/subscriptions/schemas/sim.py#L234-L268)):
 ```json
 {
   "items": [ /* SubscriptionOut[] — see below */ ],
   "next_cursor": "string|null",
-  "total": null,                                       // populated only for the global path
+  "total": null,
   "partial": false,
   "failed_providers": [
-    { "provider": "kite", "code": "provider.unavailable", "title": "Provider temporarily unavailable" }
+    { "provider": "moabits", "code": "provider.unsupported_operation", "title": "Operation not supported by this provider" }
+  ],
+  "provider_statuses": [
+    { "provider": "kite",    "status": "ok",    "count": 1, "code": null,                             "title": null },
+    { "provider": "tele2",   "status": "ok",    "count": 0, "code": null,                             "title": null },
+    { "provider": "moabits", "status": "error", "count": 0, "code": "provider.unsupported_operation", "title": "Operation not supported by this provider" }
   ]
 }
 ```
+
+`provider_statuses` ([ProviderStatusOut](app/subscriptions/schemas/sim.py#L210-L232)) is present on every global listing and ICCID search response. Use it to show a per-provider breakdown in the UI instead of scanning `failed_providers`. Fields:
+
+| Field | Values | Notes |
+|---|---|---|
+| `provider` | `kite\|tele2\|moabits` | |
+| `status` | `ok\|partial\|error\|not_queried` | `not_queried` = skipped (cursor-based pagination excluded it, or routing map already resolved the SIM to one provider) |
+| `count` | int | SIMs contributed by this provider in this page |
+| `code` | string\|null | Machine-readable error code when `status=error` |
+| `title` | string\|null | Human-readable summary when `status=error` |
 
 **`SubscriptionOut`** ([app/subscriptions/schemas/sim.py:29-176](app/subscriptions/schemas/sim.py#L29-L176)):
 ```json
@@ -598,8 +928,14 @@ Two modes:
   if no Moabits company codes are configured (see § 3.7).
 - Global listing without a bootstrapped routing map returns `412 subscription.listing_precondition_failed`
   with `extra.reason = "routing_map_empty"`.
-- Global listing with any of `status/modified_since/modified_till/iccid/imsi/msisdn/custom`
-  returns `409 provider.unsupported_operation` (canonical filters require provider scope).
+- **Global ICCID search** (`?iccid=<value>` with no other filters): special fast path — the
+  backend checks the routing map first (one provider call if known), otherwise fans out to
+  providers that support ICCID-filtered listing (currently Kite + Tele2). Moabits is always
+  reported in `failed_providers` with `provider.unsupported_operation` because its list API
+  does not accept an ICCID filter. Response is `200` with `partial: true`.
+- Global listing with **any other filter** (`status`, `modified_since`, `modified_till`, `imsi`,
+  `msisdn`, `custom`) — or with `iccid` combined with those — returns
+  `409 provider.unsupported_operation` (canonical filters require `?provider=<name>` scope).
 - A global listing where one provider failed returns `200` with `partial: true` and
   the error in `failed_providers` (other items are still present in `items`).
 
@@ -685,7 +1021,8 @@ Two modes:
 **Errors**:
 - `400 request.idempotency_key_required` — header missing
 - `400` `Unknown status '<x>'.`
-- `403` — caller is not admin, or feature flag `LIFECYCLE_WRITES_ENABLED` is off (provider rejects)
+- `403` — caller is not admin
+- `409 provider.unsupported_operation` — feature flag `LIFECYCLE_WRITES_ENABLED` is off, or provider does not accept this transition
 - `404 subscription.not_found` — not in routing map
 - `409 provider.unsupported_operation` — provider does not accept this transition
 - `412 tenant.credentials_missing`
@@ -694,9 +1031,128 @@ Two modes:
 
 ### 4.6 `POST /v1/sims/{iccid}/purge`
 
-**Auth**: `admin` only. **Idempotency-Key** required (24h window). No
-request body.
-**Response 204**. Same error matrix as `set_status`.
+**Auth**: `admin` only.
+
+**No request body.**
+
+---
+
+#### What purge means — per provider
+
+Purge is **not the same operation** on all providers. The frontend should use
+a different confirmation dialog depending on the SIM's `provider` field:
+
+| Provider | What actually happens | Reversible? |
+|---|---|---|
+| `kite` | Calls Kite `networkReset`. Resets network data (session, IP). **Does not change the SIM's lifecycle status.** | Yes — SIM stays in same state |
+| `tele2` | Transitions the SIM to the `PURGED` status via `Edit Device Details`. Terminal state. | No |
+| `moabits` | Calls Orion `PUT /api/sim/purge/` and verifies `info.purged=true`. Permanent removal. | No |
+
+The `provider` field comes from `GET /v1/sims/{iccid}` → `subscription.provider`.
+
+---
+
+#### Pre-check before showing the button
+
+Call `GET /v1/providers/{provider}/capabilities` and inspect
+`capabilities.purge.status`:
+
+| Value | What to show |
+|---|---|
+| `supported` | Show the button |
+| `requires_feature_flag` | Hide the button (backend writes are disabled by ops) |
+
+See [§ 5.1](#51-get-v1providerprovidercapabilities) for the full capabilities response shape.
+
+---
+
+#### Headers
+
+| Header | Required | Notes |
+|---|---|---|
+| `Authorization: Bearer <jwt>` | yes | Admin role required |
+| `Idempotency-Key: <string>` | **yes** | Any unique string per logical action. UUID recommended. 24 h window scoped to `(company_id, key)`. |
+| `X-Request-ID` | recommended | Correlate with server logs on error |
+
+---
+
+#### Idempotency key behaviour
+
+The backend uses the `(company_id, Idempotency-Key)` pair to deduplicate
+calls within a 24-hour window. Rules the frontend must follow:
+
+1. **New action → new key.** Generate a fresh UUID each time the user triggers
+   a purge on a different SIM or retries after a network error (key was not
+   claimed).
+2. **Same key on retry.** If the request failed before the provider was reached
+   (network timeout, 5xx before `204` was received), retry with the **same key**
+   — the backend will call the provider again safely.
+3. **Key already processed.** If `204` was returned once, a second request with
+   the same key returns `204` immediately without calling the provider again
+   (idempotency replay). You will never get a `409 duplicate` for this endpoint.
+4. **Key expiry.** After 24 h the key is no longer tracked. A new request with
+   the same key would trigger the provider again.
+
+---
+
+#### Response `204`
+
+No body. The purge was executed (or replayed). The action has been audited
+server-side regardless of whether this was a first call or an idempotency replay.
+
+---
+
+#### Error matrix
+
+| HTTP | `code` | When | Frontend action |
+|---|---|---|---|
+| `400` | `request.idempotency_key_required` | `Idempotency-Key` header missing | Show "retry" with a generated key |
+| `403` | _(FastAPI default `{"detail":"..."}`)_ | Caller is not `admin` | Hide button for non-admin roles |
+| `404` | `subscription.not_found` | ICCID not in routing map | Show "SIM not found. Try refreshing the SIM list." |
+| `409` | `provider.unsupported_operation` | `LIFECYCLE_WRITES_ENABLED` is off in backend config | Hide purge UI; lifecycle writes are disabled by ops |
+| `412` | `tenant.credentials_missing` | Provider has no active credential for this company | Show "Provider credentials missing. Contact admin." |
+| `422` | `provider.validation_error` | Provider rejected the call (e.g. Moabits did not confirm `info.purged=true`) | Show `detail`. Log `instance` for support. |
+| `429` | `provider.rate_limited` | Provider throttled the request | Retry after `extra.retry_after` seconds (if present); otherwise back off |
+| `502` | `provider.auth_failed` | Backend credentials expired at the provider | Show "Provider authentication failed. Contact admin." |
+| `502` | `provider.protocol_error` | Unexpected provider response | Show generic error. Log `instance`. |
+| `503` | `provider.unavailable` | Provider network error or timeout | Show "Provider temporarily unavailable. Try again shortly." |
+
+All errors except `400`/`403` use the RFC 7807 envelope — branch on `code`,
+show `detail` as the message, log `instance` for support tickets.
+
+---
+
+#### Full request example
+
+```http
+POST /v1/sims/8988216716970004975/purge HTTP/1.1
+Authorization: Bearer <access_token>
+Idempotency-Key: 7f3a1c22-4b9e-4f8d-a1e0-3c2b5d6e7f8a
+X-Request-ID: req-abc123
+Content-Length: 0
+```
+
+Success:
+```http
+HTTP/1.1 204 No Content
+X-Request-ID: req-abc123
+X-API-Version: v1
+```
+
+Error (feature flag off):
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/errors/provider.unsupported_operation",
+  "title": "Operation not supported by this provider",
+  "status": 409,
+  "code": "provider.unsupported_operation",
+  "detail": "Lifecycle write operations are disabled by feature flag",
+  "instance": "req-abc123"
+}
+```
 
 ### 4.7 `POST /v1/sims/import` — bootstrap routing map
 
@@ -906,9 +1362,34 @@ When integrating, the frontend should branch on:
 2. `GET /v1/me` → confirm `role=public` and the `company_id` is set.
 3. (Admin task) `PATCH /v1/companies/me/credentials/<provider>` with the
    provider credentials → renders `CredentialMetadataOut`.
-4. Moabits only — `GET /v1/companies/me/credentials/moabits/companies/discover`
-   → user picks codes → `PUT /v1/companies/me/credentials/moabits/company-codes`.
+4. Moabits only — link each local company to a Moabits company code:
+   - Fast table of all companies + their current mapping status:
+     `GET /v1/companies/provider-mappings/moabits`
+   - Fast table of cached Moabits source companies:
+     `GET /v1/companies/provider-mappings/moabits/source-companies`
+   - To create or edit a link, open the discovery view (live Moabits call):
+     `GET /v1/companies/provider-mappings/moabits/discover`
+   - Then persist the link for one local company:
+     `PUT /v1/companies/{company_id}/provider-mappings/moabits`
+   - To rotate only the Moabits `x_api_key` (managers):
+     `PATCH /v1/companies/me/credentials/moabits` with `{"credentials": {"x_api_key": "..."}}`
 5. `GET /v1/sims?provider=<provider>` (Tele2 needs `modified_since`).
+
+### Find a SIM by ICCID (when provider is unknown)
+
+Use the global ICCID search — do **not** try each `?provider=` variant:
+
+```
+GET /v1/sims?iccid=8988216716970004975
+```
+
+- If the SIM is in the routing map → one provider call, `partial: false`.
+- If not → Kite + Tele2 queried in parallel. Moabits always returns
+  in `failed_providers` / `provider_statuses[moabits].status = "error"` with
+  `provider.unsupported_operation` — that is expected, not a real failure.
+- `items` will contain the SIM if it was found at any searched provider.
+- `items` empty + `partial: false` → SIM not found (safe to show "not found").
+- `items` empty + `partial: true` → SIM may exist in a provider that failed.
 
 ### Display a SIM lifecycle action button
 

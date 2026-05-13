@@ -6,7 +6,9 @@ provider mapping logic so the adapter stays small and testable.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import os
 import ssl
 import tempfile
@@ -27,6 +29,7 @@ from cryptography.hazmat.primitives.serialization.pkcs12 import (
     load_key_and_certificates,
 )
 
+from app.config import get_settings
 from app.shared.errors import (
     ProviderAuthFailed,
     ProviderForbidden,
@@ -46,6 +49,9 @@ _WSSE_NS = (
     "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
 )
 _COMMON_NS = "http://www.telefonica.com/schemas/UNICA/SOAP/common/v1"
+_SSL_CONTEXT_CACHE: dict[str, ssl.SSLContext | bool] = {}
+_REQUEST_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+_REQUEST_SEMAPHORES_GUARD = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -162,6 +168,50 @@ def _server_ca_bundle_pem(creds: KiteCredentials) -> str | None:
         ) from exc
 
 
+def _settings_timeout_seconds() -> float:
+    return max(float(get_settings().kite_request_timeout_seconds), 0.1)
+
+
+def _settings_max_concurrent_requests() -> int:
+    return max(int(get_settings().kite_max_concurrent_requests), 1)
+
+
+def _fingerprint(value: str | None) -> str:
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _ssl_context_cache_key(creds: KiteCredentials) -> str:
+    return "|".join(
+        [
+            _fingerprint(creds.client_cert_pfx_b64),
+            _fingerprint(creds.client_cert_password),
+            _fingerprint(creds.server_ca_bundle_pem_b64),
+            _fingerprint(creds.server_ca_bundle_pem),
+        ]
+    )
+
+
+def _request_limit_key(creds: KiteCredentials) -> str:
+    return "|".join(
+        [
+            creds.endpoint,
+            creds.username or "",
+            _ssl_context_cache_key(creds),
+        ]
+    )
+
+
+async def _request_semaphore_for(key: str) -> asyncio.Semaphore:
+    async with _REQUEST_SEMAPHORES_GUARD:
+        sem = _REQUEST_SEMAPHORES.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(_settings_max_concurrent_requests())
+            _REQUEST_SEMAPHORES[key] = sem
+        return sem
+
+
 def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
     """Build a TLS context with an optional encrypted PFX client certificate.
 
@@ -170,8 +220,14 @@ def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
     `client_cert_pfx_b64` plus optional `client_cert_password`, never in
     account_scope or plaintext columns.
     """
+    cache_key = _ssl_context_cache_key(creds)
+    cached = _SSL_CONTEXT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     server_ca_pem = _server_ca_bundle_pem(creds)
     if not creds.client_cert_pfx_b64 and not server_ca_pem:
+        _SSL_CONTEXT_CACHE[cache_key] = True
         return True
 
     context = ssl.create_default_context(cafile=certifi.where())
@@ -184,6 +240,7 @@ def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
             ) from exc
 
     if not creds.client_cert_pfx_b64:
+        _SSL_CONTEXT_CACHE[cache_key] = context
         return context
 
     try:
@@ -243,31 +300,39 @@ def _ssl_context(creds: KiteCredentials) -> ssl.SSLContext | bool:
                 except OSError:
                     pass
 
+    _SSL_CONTEXT_CACHE[cache_key] = context
     return context
 
 
+async def _parse_xml(text: str) -> ET.Element | None:
+    try:
+        return await asyncio.to_thread(ET.fromstring, text)
+    except ET.ParseError:
+        return None
+
+
 async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Element:
-    async with httpx.AsyncClient(timeout=30.0, verify=_ssl_context(creds)) as client:
+    async with httpx.AsyncClient(
+        timeout=_settings_timeout_seconds(), verify=_ssl_context(creds)
+    ) as client:
         try:
-            response = await client.post(
-                creds.endpoint,
-                content=_envelope(creds, body_xml),
-                headers={
-                    "Content-Type": "text/xml; charset=utf-8",
-                    "SOAPAction": f'"urn:{operation}"',
-                },
-            )
+            sem = await _request_semaphore_for(_request_limit_key(creds))
+            async with sem:
+                response = await client.post(
+                    creds.endpoint,
+                    content=_envelope(creds, body_xml),
+                    headers={
+                        "Content-Type": "text/xml; charset=utf-8",
+                        "SOAPAction": f'"urn:{operation}"',
+                    },
+                )
         except httpx.TimeoutException as exc:
             raise ProviderUnavailable(detail=f"Kite timeout on {operation}") from exc
         except httpx.RequestError as exc:
             raise ProviderUnavailable(detail=f"Kite network error: {exc}") from exc
 
     # Try to parse XML body first; if there's a SOAP Fault we should map it
-    root = None
-    try:
-        root = ET.fromstring(response.text)
-    except ET.ParseError:
-        root = None
+    root = await _parse_xml(response.text)
 
     if root is not None:
         fault = root.find(f".//{{{_SOAP_ENV}}}Fault")

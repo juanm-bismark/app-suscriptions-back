@@ -38,7 +38,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry.register(Provider.MOABITS, MoabitsAdapter())
     app.state.provider_registry = registry
 
-    logger.info("startup", environment=settings.environment, providers=registry.registered_providers())
+    logger.info(
+        "startup",
+        environment=settings.environment,
+        providers=registry.registered_providers(),
+    )
     yield
     await close_engine()
     logger.info("shutdown")
@@ -67,9 +71,15 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
         detail=exc.detail,
         **exc.extra,
     )
+    headers = {}
+    retry_after = exc.extra.get("retry_after")
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+
     return JSONResponse(
         status_code=exc.http_status,
         media_type="application/problem+json",
+        headers=headers,
         content={
             "type": f"https://api.example.com/errors/{exc.code}",
             "title": exc.title,
@@ -104,6 +114,8 @@ app.include_router(me.router, prefix="/v1")
 app.include_router(users.router, prefix="/v1")
 app.include_router(companies.router, prefix="/v1")
 app.include_router(credentials.router, prefix="/v1")
+app.include_router(credentials.admin_credentials_router, prefix="/v1")
+app.include_router(credentials.admin_company_credentials_router, prefix="/v1")
 app.include_router(sims.router, prefix="/v1")
 app.include_router(provider_routers.router, prefix="/v1")
 add_pagination(app)

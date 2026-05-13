@@ -207,6 +207,30 @@ class PresenceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProviderStatusOut(BaseModel):
+    provider: str = Field(description="Provider name for this listing source.")
+    status: Literal["ok", "partial", "error", "not_queried"] = Field(
+        description=(
+            "Provider listing result. `ok` means the source was queried "
+            "successfully, `partial` means it returned usable data with caveats, "
+            "`error` means the source failed, and `not_queried` means the source "
+            "was skipped for this request."
+        )
+    )
+    count: int = Field(
+        default=0,
+        description="Number of SIM rows contributed by this provider.",
+    )
+    code: str | None = Field(
+        default=None,
+        description="Machine-readable provider or domain error code when present.",
+    )
+    title: str | None = Field(
+        default=None,
+        description="Human-readable provider status or error summary.",
+    )
+
+
 class SimListOut(BaseModel):
     items: list[SubscriptionOut] = Field(
         description=(
@@ -232,6 +256,14 @@ class SimListOut(BaseModel):
     failed_providers: list[dict[str, str]] = Field(
         default_factory=list,
         description="Provider failures captured during partial global listings.",
+    )
+    provider_statuses: list[ProviderStatusOut] = Field(
+        default_factory=list,
+        description=(
+            "Per-provider listing metadata for global listings, useful for "
+            "distinguishing successful zero-result providers from skipped or "
+            "failed providers."
+        ),
     )
 
 

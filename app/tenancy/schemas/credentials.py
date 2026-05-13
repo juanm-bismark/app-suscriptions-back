@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 from app.tenancy.credential_expiry import CredentialExpiryStatus
 
@@ -25,7 +26,6 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
             "account_scope": {
                 "environment": "production",
                 "end_customer_id": "KITE_END_CUSTOMER_ID",
-                "cert_expires_at": "2026-12-31T00:00:00Z",
             },
         },
     },
@@ -58,9 +58,7 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
             "header to GET /integrity/authorization-token, caches the returned "
             "JWT, and refreshes/retries once when a provider business endpoint "
             "returns 401. parent_company_code is used to discover child companies "
-            "through GET /api/company/childs/{companyCode}. Configure selected "
-            "Moabits company codes through the admin-only PUT /moabits/company-codes; "
-            "the selection is stored as non-secret provider source config."
+            "through GET /api/company/childs/{companyCode}."
         ),
         "value": {
             "credentials": {
@@ -86,6 +84,10 @@ class CredentialMetadataOut(BaseModel):
     expiry_status: CredentialExpiryStatus
 
 
+class AdminCredentialMetadataOut(CredentialMetadataOut):
+    company_id: UUID
+
+
 class CredentialUpsertIn(BaseModel):
     credentials: dict[str, Any] = Field(
         description=(
@@ -97,7 +99,25 @@ class CredentialUpsertIn(BaseModel):
         default_factory=dict,
         description=(
             "Non-secret account metadata such as environment, account IDs, "
-            "company codes, rate limits, or expiry timestamps."
+            "company codes, rate limits, or expiry timestamps. Kite certificate "
+            "expiry is derived automatically from client_cert_pfx_b64."
+        ),
+    )
+
+
+class CredentialPatchIn(BaseModel):
+    credentials: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Secret credential fields to merge into the existing encrypted "
+            "provider credentials. Omitted fields are preserved."
+        ),
+    )
+    account_scope: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Non-secret account metadata to merge into the existing account scope. "
+            "Omit this field to preserve the current account scope."
         ),
     )
 
@@ -107,56 +127,3 @@ class CredentialTestOut(BaseModel):
     ok: bool
     detail: str | None = None
 
-
-class MoabitsCompanyOut(BaseModel):
-    company_code: str = Field(serialization_alias="companyCode")
-    company_name: str = Field(serialization_alias="companyName")
-    clie_id: int | None = None
-
-
-class MoabitsCompanyDiscoveryOut(BaseModel):
-    current_company_name: str
-    selected_company_codes: list[str] = Field(
-        default_factory=list,
-        description="Moabits company codes already configured for this source.",
-    )
-    selected_companies: list[MoabitsCompanyOut] = Field(
-        default_factory=list,
-        description=(
-            "Discovered Moabits companies whose companyCode is already configured "
-            "for this source."
-        ),
-    )
-    matched_companies: list[MoabitsCompanyOut] = Field(
-        default_factory=list,
-        description=(
-            "Discovered Moabits companies whose companyName matches the local "
-            "company name. Informational only; it does not configure source scope."
-        ),
-    )
-    companies: list[MoabitsCompanyOut]
-
-
-class MoabitsCompanySelectionItemIn(BaseModel):
-    company_code: str = Field(
-        validation_alias=AliasChoices("companyCode", "company_code"),
-        serialization_alias="companyCode",
-        description="Moabits company code selected for this source.",
-    )
-    company_name: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("companyName", "company_name"),
-        serialization_alias="companyName",
-        description="Optional Moabits company name from the discovery response.",
-    )
-    clie_id: int | None = None
-
-
-class MoabitsCompanySelectionIn(BaseModel):
-    company_codes: list[MoabitsCompanySelectionItemIn] = Field(
-        min_length=1,
-        description=(
-            "Moabits companies selected for this source, using the objects "
-            "returned by discovery."
-        ),
-    )

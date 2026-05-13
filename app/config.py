@@ -50,10 +50,18 @@ class Settings(BaseSettings):
     # failing the request.
     moabits_v2_enrichment_enabled: bool = True
     moabits_v2_base_url: str = "https://apiv2.myorion.co"
-    moabits_v2_max_batch: int = 50
-    moabits_v2_max_concurrent_chunks: int = 4
-    moabits_v2_detail_timeout_seconds: float = 10.0
-    moabits_v2_connectivity_timeout_seconds: float = 5.0
+    moabits_v2_max_batch: int = 125
+    moabits_v2_max_concurrent_chunks: int = 2
+    moabits_v2_detail_timeout_seconds: float = 20.0
+    moabits_v2_connectivity_timeout_seconds: float = 15.0
+    moabits_v2_enrichment_cache_ttl_seconds: float = 30.0
+    moabits_sim_list_cache_ttl_seconds: float = 30.0
+    moabits_request_timeout_seconds: float = 30.0
+    moabits_max_concurrent_requests: int = 20
+    tele2_request_timeout_seconds: float = 30.0
+    kite_request_timeout_seconds: float = 30.0
+    kite_max_concurrent_requests: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:

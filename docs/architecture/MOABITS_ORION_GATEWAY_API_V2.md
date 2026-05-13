@@ -40,6 +40,8 @@ This enrichment is enabled by default with `MOABITS_V2_ENRICHMENT_ENABLED=true`.
 Setting it to `false` keeps the legacy v1-only listing behavior. v2 failures are
 degradable: a failed detail/connectivity batch logs
 `moabits_v2_enrichment_chunk_failed` and the endpoint still returns the v1 rows.
+The v2 calls are batched and cached briefly per ICCID to avoid repeating the
+same detail/connectivity lookups during rapid UI refreshes.
 
 Common fields go under `normalized`; provider-specific or diagnostic fields stay
 under `provider_fields`. Notable Moabits mappings:

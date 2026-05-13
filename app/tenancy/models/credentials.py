@@ -2,7 +2,7 @@ import uuid as _uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, DateTime, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,4 +37,14 @@ class CompanyProviderCredentials(Base):
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "company_provider_credentials_active_idx",
+            "company_id",
+            "provider",
+            unique=True,
+            postgresql_where=active.is_(True),
+        ),
     )

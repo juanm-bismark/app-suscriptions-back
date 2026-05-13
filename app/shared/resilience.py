@@ -12,6 +12,7 @@ Parameters (from ADR-005):
 """
 
 import asyncio
+import math
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -63,16 +64,20 @@ class CircuitBreaker:
             "success_count": self._success_count,
         }
 
-    async def call(self, fn: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
+    async def call(
+        self, fn: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any
+    ) -> T:
         async with self._lock:
             now = time.monotonic()
 
             if self._state == _State.OPEN:
-                if now - self._opened_at >= self._open_duration:
+                remaining_open_s = self._open_duration - (now - self._opened_at)
+                if remaining_open_s <= 0:
                     self._state = _State.HALF_OPEN
                 else:
                     raise ProviderUnavailable(
-                        detail=f"circuit breaker is OPEN for provider '{self.name}'"
+                        detail=f"circuit breaker is OPEN for provider '{self.name}'",
+                        retry_after=math.ceil(remaining_open_s),
                     )
 
         try:
@@ -100,17 +105,25 @@ class CircuitBreaker:
             while self._failures and self._failures[0] < cutoff:
                 self._failures.popleft()
 
-            if self._state == _State.HALF_OPEN or len(self._failures) >= self._threshold:
+            if (
+                self._state == _State.HALF_OPEN
+                or len(self._failures) >= self._threshold
+            ):
                 self._state = _State.OPEN
                 self._opened_at = now
                 self._failures.clear()
 
 
-def with_circuit_breaker(breaker: CircuitBreaker) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
+def with_circuit_breaker(
+    breaker: CircuitBreaker,
+) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
     """Decorator that wraps an async method with the given circuit breaker."""
+
     def decorator(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> T:
             return await breaker.call(fn, *args, **kwargs)
+
         return wrapper
+
     return decorator

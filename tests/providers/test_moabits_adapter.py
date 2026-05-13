@@ -11,13 +11,16 @@ These tests use realistic Moabits/Orion API payloads to validate that:
 - The unified status / native_status / provider_fields contract is preserved.
 """
 
+import asyncio
 import base64
 import json
 import re
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.providers.moabits import adapter as moabits_adapter_mod
@@ -49,6 +52,10 @@ _USAGE_URL_RE = re.compile(r"^https://api\.moabits\.test/api/usage/simUsage(\?.*
 def _clear_moabits_token_cache() -> None:
     moabits_adapter_mod._TOKEN_CACHE.clear()
     moabits_adapter_mod._TOKEN_LOCKS.clear()
+    moabits_adapter_mod._SIM_LIST_CACHE.clear()
+    moabits_adapter_mod._SIM_LIST_LOCKS.clear()
+    moabits_adapter_mod._V2_ENRICHMENT_CACHE.clear()
+    moabits_adapter_mod._REQUEST_SEMAPHORES.clear()
     moabits_adapter_mod._TOKEN_CACHE["https://api.moabits.test|test-key"] = (
         "test-token",
         time.time() + 3600,
@@ -234,6 +241,54 @@ async def test_get_subscription_extracts_full_provider_fields(
     assert sub.status == AdministrativeStatus.ACTIVE
     assert sub.native_status == "Active"
     assert sub.provider == "moabits"
+
+
+@pytest.mark.asyncio
+async def test_get_subscription_uses_service_status_when_details_unavailable(
+    httpx_mock, moabits_creds: dict
+) -> None:
+    iccid = "8934070100000000001"
+    httpx_mock.add_response(
+        url=f"https://api.moabits.test/api/sim/details/{iccid}",
+        status_code=500,
+        json={"error": "temporary failure"},
+    )
+    httpx_mock.add_response(
+        url=f"https://api.moabits.test/api/sim/serviceStatus/{iccid}",
+        json=_service_status_payload(),
+    )
+
+    sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
+
+    assert sub.iccid == iccid
+    assert sub.status == AdministrativeStatus.ACTIVE
+    assert sub.native_status == "Active"
+    assert sub.provider_fields["data_service"] == "Enabled"
+    assert sub.provider_fields["sms_service"] == "Enabled"
+
+
+@pytest.mark.asyncio
+async def test_get_subscription_uses_details_when_service_status_unavailable(
+    httpx_mock, moabits_creds: dict
+) -> None:
+    iccid = "8934070100000000001"
+    httpx_mock.add_response(
+        url=f"https://api.moabits.test/api/sim/details/{iccid}",
+        json=_details_payload(),
+    )
+    httpx_mock.add_response(
+        url=f"https://api.moabits.test/api/sim/serviceStatus/{iccid}",
+        status_code=500,
+        json={"error": "temporary failure"},
+    )
+
+    sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
+
+    assert sub.iccid == iccid
+    assert sub.status == AdministrativeStatus.UNKNOWN
+    assert sub.native_status == "Unknown"
+    assert sub.provider_fields["product_name"] == "IoT Plan 100MB"
+    assert sub.msisdn == "346000000001"
 
 
 @pytest.mark.asyncio
@@ -904,6 +959,44 @@ async def test_list_subscriptions_stops_fetching_company_codes_after_page_is_ful
 
 
 @pytest.mark.asyncio
+async def test_list_subscriptions_reuses_cached_company_sim_list_for_local_pages(
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
+) -> None:
+    rows = [
+        {
+            "iccid": f"8910300000003501{i:03d}",
+            "simStatus": "Ready",
+            "dataService": "Enabled",
+            "smsService": "Enabled",
+        }
+        for i in range(3)
+    ]
+    httpx_mock.add_response(
+        url="https://api.moabits.test/api/company/simList/ACME",
+        json={"status": "Ok", "info": {"iccidList": rows}},
+    )
+
+    first_page, first_cursor = await MoabitsAdapter().list_subscriptions(
+        moabits_creds,
+        cursor=None,
+        limit=1,
+        filters=SubscriptionSearchFilters(),
+    )
+    second_page, second_cursor = await MoabitsAdapter().list_subscriptions(
+        moabits_creds,
+        cursor=first_cursor,
+        limit=1,
+        filters=SubscriptionSearchFilters(),
+    )
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 1
+    assert first_page[0].iccid == "8910300000003501000"
+    assert second_page[0].iccid == "8910300000003501001"
+    assert second_cursor == "2"
+
+
+@pytest.mark.asyncio
 async def test_list_subscriptions_fails_when_status_rows_unavailable(
     httpx_mock, moabits_creds: dict
 ) -> None:
@@ -947,6 +1040,7 @@ def enable_moabits_v2(monkeypatch):
     monkeypatch.setenv("MOABITS_V2_MAX_CONCURRENT_CHUNKS", "4")
     monkeypatch.setenv("MOABITS_V2_DETAIL_TIMEOUT_SECONDS", "10.0")
     monkeypatch.setenv("MOABITS_V2_CONNECTIVITY_TIMEOUT_SECONDS", "5.0")
+    monkeypatch.setenv("MOABITS_V2_ENRICHMENT_CACHE_TTL_SECONDS", "30.0")
     _get_settings.cache_clear()
     try:
         yield
@@ -1330,6 +1424,62 @@ async def test_list_subscriptions_v2_chunks_when_over_max_batch(
 
 
 @pytest.mark.asyncio
+async def test_list_subscriptions_v2_reuses_cached_enrichment_rows(
+    httpx_mock, moabits_creds: dict, enable_moabits_v2
+) -> None:
+    iccid_a = "8910300000000000001"
+    iccid_b = "8910300000000000002"
+    httpx_mock.add_response(
+        url="https://api.moabits.test/api/company/simList/ACME",
+        json=_v1_simlist_payload([iccid_a, iccid_b], status="Active"),
+    )
+    httpx_mock.add_response(
+        url=f"https://apiv2.moabits.test/api/v2/sim/{iccid_a}",
+        json=_v2_detail_payload([iccid_a]),
+    )
+    httpx_mock.add_response(
+        url=f"https://apiv2.moabits.test/api/v2/sim/connectivity/{iccid_a}",
+        json=_v2_connectivity_payload([iccid_a]),
+    )
+    httpx_mock.add_response(
+        url=f"https://apiv2.moabits.test/api/v2/sim/{iccid_b}",
+        json=_v2_detail_payload([iccid_b]),
+    )
+    httpx_mock.add_response(
+        url=f"https://apiv2.moabits.test/api/v2/sim/connectivity/{iccid_b}",
+        json=_v2_connectivity_payload([iccid_b]),
+    )
+
+    first_page, _ = await MoabitsAdapter().list_subscriptions(
+        moabits_creds,
+        cursor=None,
+        limit=1,
+        filters=SubscriptionSearchFilters(),
+    )
+    second_page, _ = await MoabitsAdapter().list_subscriptions(
+        moabits_creds,
+        cursor=None,
+        limit=2,
+        filters=SubscriptionSearchFilters(),
+    )
+
+    assert first_page[0].provider_fields["enrichment_status"] == "full"
+    assert [s.provider_fields["enrichment_status"] for s in second_page] == [
+        "full",
+        "full",
+    ]
+    v2_paths = [
+        r.url.path
+        for r in httpx_mock.get_requests()
+        if r.url.path.startswith("/api/v2/")
+    ]
+    assert v2_paths.count(f"/api/v2/sim/{iccid_a}") == 1
+    assert v2_paths.count(f"/api/v2/sim/connectivity/{iccid_a}") == 1
+    assert v2_paths.count(f"/api/v2/sim/{iccid_b}") == 1
+    assert v2_paths.count(f"/api/v2/sim/connectivity/{iccid_b}") == 1
+
+
+@pytest.mark.asyncio
 async def test_list_subscriptions_v2_uses_x_api_key_header_directly(
     httpx_mock, moabits_creds: dict, enable_moabits_v2
 ) -> None:
@@ -1367,3 +1517,45 @@ async def test_list_subscriptions_v2_uses_x_api_key_header_directly(
         r.url.path == "/integrity/authorization-token"
         for r in httpx_mock.get_requests()
     )
+
+
+@pytest.mark.asyncio
+async def test_moabits_v1_requests_are_limited_by_semaphore(
+    monkeypatch, moabits_creds: dict
+) -> None:
+    monkeypatch.setattr(
+        moabits_adapter_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            moabits_request_timeout_seconds=30.0,
+            moabits_max_concurrent_requests=2,
+        ),
+    )
+    moabits_adapter_mod._REQUEST_SEMAPHORES.clear()
+
+    in_flight = 0
+    peak = 0
+    lock = asyncio.Lock()
+
+    async def fake_get(
+        _client: httpx.AsyncClient,
+        path: str,
+        params: dict | None = None,
+    ) -> httpx.Response:
+        nonlocal in_flight, peak
+        async with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        async with lock:
+            in_flight -= 1
+        return httpx.Response(200, json={"status": "Ok"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    creds = moabits_adapter_mod._creds(moabits_creds)
+    await asyncio.gather(
+        *(moabits_adapter_mod._get(creds, f"/api/test/{i}") for i in range(6))
+    )
+
+    assert peak == 2

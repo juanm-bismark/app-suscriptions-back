@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import base64
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import respx
 
+from app.providers.tele2 import adapter as tele2_adapter_mod
 from app.providers.tele2.adapter import Tele2Adapter
 from app.shared.errors import (
+    ProviderProtocolError,
     ProviderRateLimited,
     ProviderUnavailable,
     ProviderValidationError,
@@ -48,6 +51,48 @@ async def test_basic_auth_header_and_path_prefix() -> None:
     assert auth is not None and auth.startswith("Basic ")
     token = auth.split(" ", 1)[1]
     assert token == base64.b64encode(b"alice:sekret").decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_tele2_client_uses_configured_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tele2_adapter_mod,
+        "get_settings",
+        lambda: SimpleNamespace(tele2_request_timeout_seconds=7.5),
+    )
+    creds = tele2_adapter_mod._creds(
+        {
+            "base_url": "https://api.tele2.test",
+            "username": "alice",
+            "api_key": "sekret",
+        }
+    )
+
+    client = tele2_adapter_mod._client(creds)
+    try:
+        assert client.timeout.connect == 7.5
+        assert client.timeout.read == 7.5
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_tele2_get_maps_non_json_response() -> None:
+    base = "https://api.tele2.test"
+    creds = {
+        "base_url": base,
+        "username": "alice",
+        "api_key": "sekret",
+    }
+    respx.get(f"{base}/rws/api/v1/devices/893").mock(
+        return_value=httpx.Response(200, text="<html>not json</html>")
+    )
+
+    with pytest.raises(ProviderProtocolError) as exc_info:
+        await Tele2Adapter().get_subscription("893", creds)
+
+    assert exc_info.value.detail == "Tele2 returned non-JSON response"
 
 
 @respx.mock

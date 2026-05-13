@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
+from app.providers.kite import client as kite_client_mod
 from app.providers.kite.adapter import KiteAdapter
 from app.shared.errors import UnsupportedOperation
 from app.subscriptions.domain import (
@@ -56,6 +60,12 @@ class TestKiteStatusMapping:
         assert to_native(AdministrativeStatus.PURGED) is None
         assert to_native(AdministrativeStatus.TERMINATED) is None
         assert to_native(AdministrativeStatus.SUSPENDED) is None
+
+
+@pytest.fixture(autouse=True)
+def _clear_kite_transport_state() -> None:
+    kite_client_mod._REQUEST_SEMAPHORES.clear()
+    kite_client_mod._SSL_CONTEXT_CACHE.clear()
 
 
 class TestKiteAdapterBehavior:
@@ -159,6 +169,111 @@ class TestKiteAdapterBehavior:
           </soapenv:Body>
         </soapenv:Envelope>
         """
+
+    @pytest.mark.asyncio
+    async def test_kite_client_uses_configured_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, kite_creds: dict[str, str]
+    ) -> None:
+        monkeypatch.setattr(
+            kite_client_mod,
+            "get_settings",
+            lambda: SimpleNamespace(
+                kite_request_timeout_seconds=6.5,
+                kite_max_concurrent_requests=10,
+            ),
+        )
+        seen_timeout = None
+
+        async def fake_post(
+            client: httpx.AsyncClient,
+            _url: str,
+            content: bytes | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> httpx.Response:
+            nonlocal seen_timeout
+            seen_timeout = client.timeout.read
+            return httpx.Response(
+                200, text=TestKiteAdapterBehavior._presence_response()
+            )
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        await kite_client_mod.KiteClient(kite_creds).get_presence_detail(
+            "8934070100000000001"
+        )
+
+        assert seen_timeout == 6.5
+
+    @pytest.mark.asyncio
+    async def test_kite_requests_are_limited_by_semaphore(
+        self, monkeypatch: pytest.MonkeyPatch, kite_creds: dict[str, str]
+    ) -> None:
+        monkeypatch.setattr(
+            kite_client_mod,
+            "get_settings",
+            lambda: SimpleNamespace(
+                kite_request_timeout_seconds=30.0,
+                kite_max_concurrent_requests=2,
+            ),
+        )
+
+        in_flight = 0
+        peak = 0
+        lock = asyncio.Lock()
+
+        async def fake_post(
+            _client: httpx.AsyncClient,
+            _url: str,
+            content: bytes | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> httpx.Response:
+            nonlocal in_flight, peak
+            async with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            async with lock:
+                in_flight -= 1
+            return httpx.Response(
+                200, text=TestKiteAdapterBehavior._presence_response()
+            )
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        client = kite_client_mod.KiteClient(kite_creds)
+
+        await asyncio.gather(
+            *(client.get_presence_detail(f"893407010000000000{i}") for i in range(6))
+        )
+
+        assert peak == 2
+
+    def test_kite_ssl_context_is_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        created = 0
+
+        class FakeContext:
+            def load_verify_locations(self, cadata: str | None = None) -> None:
+                assert cadata == "test-ca"
+
+        def fake_create_default_context(cafile: str | None = None) -> FakeContext:
+            nonlocal created
+            created += 1
+            return FakeContext()
+
+        monkeypatch.setattr(kite_client_mod.certifi, "where", lambda: "certifi.pem")
+        monkeypatch.setattr(
+            kite_client_mod.ssl,
+            "create_default_context",
+            fake_create_default_context,
+        )
+        creds = kite_client_mod._creds(
+            {"endpoint": "https://kite.test/soap", "server_ca_bundle_pem": "test-ca"}
+        )
+
+        first = kite_client_mod._ssl_context(creds)
+        second = kite_client_mod._ssl_context(creds)
+
+        assert first is second
+        assert created == 1
 
     @pytest.mark.asyncio
     async def test_get_subscription_parses_soap(

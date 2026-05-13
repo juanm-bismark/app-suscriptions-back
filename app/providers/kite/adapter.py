@@ -43,6 +43,7 @@ Provider-specific fields returned in Subscription.provider_fields (Kite block):
     consumption_monthly (same shape as consumption_daily).
 """
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -127,6 +128,12 @@ def _kite_search_parameters(
             )
         params[f"customField{normalized[-1]}"] = value
     return params
+
+
+def _parse_subscription_list(
+    items: list[Any], company_id: str
+) -> list[Subscription]:
+    return [parse_subscription(el, "", company_id) for el in items]
 
 
 class KiteAdapter(BaseAdapter):
@@ -288,6 +295,12 @@ class KiteAdapter(BaseAdapter):
             )
         await KiteClient(credentials).network_reset(iccid)
 
+    def supports_list_filter(self, filter_name: str) -> bool:
+        return filter_name == "iccid"
+
+    def bootstrap_filters(self) -> SubscriptionSearchFilters:
+        return SubscriptionSearchFilters()
+
     async def list_subscriptions(
         self,
         credentials: dict[str, Any],
@@ -315,7 +328,7 @@ class KiteAdapter(BaseAdapter):
             searchParameters=search_parameters,
         )
         items = root.findall(".//{*}subscriptionData")
-        subs = [parse_subscription(el, "", company_id) for el in items]
+        subs = await asyncio.to_thread(_parse_subscription_list, items, company_id)
         next_cursor = str(start_index + len(subs)) if len(subs) == batch_size else None
         return subs, next_cursor
 

@@ -62,10 +62,11 @@ Valores actuales en `app/config.py`:
 |---|---:|---|
 | `MOABITS_V2_ENRICHMENT_ENABLED` | `true` | Activa enrichment en listado Moabits |
 | `MOABITS_V2_BASE_URL` | `https://apiv2.myorion.co` | Host v2 global |
-| `MOABITS_V2_MAX_BATCH` | `50` | ICCIDs por request v2 |
-| `MOABITS_V2_MAX_CONCURRENT_CHUNKS` | `4` | Concurrencia máxima de chunks |
-| `MOABITS_V2_DETAIL_TIMEOUT_SECONDS` | `10.0` | Timeout de detail |
-| `MOABITS_V2_CONNECTIVITY_TIMEOUT_SECONDS` | `5.0` | Timeout de connectivity |
+| `MOABITS_V2_MAX_BATCH` | `125` | ICCIDs por request v2 |
+| `MOABITS_V2_MAX_CONCURRENT_CHUNKS` | `2` | Concurrencia máxima de chunks |
+| `MOABITS_V2_DETAIL_TIMEOUT_SECONDS` | `20.0` | Timeout de detail |
+| `MOABITS_V2_CONNECTIVITY_TIMEOUT_SECONDS` | `15.0` | Timeout de connectivity |
+| `MOABITS_V2_ENRICHMENT_CACHE_TTL_SECONDS` | `30.0` | Cache corto por ICCID para detail/connectivity |
 
 El código actual reutiliza `x_api_key` de la credencial Moabits v1 para
 v2. No existe todavía `x_api_key_v2` ni `base_url_v2` dentro de
