@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlalchemy import apaginate
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
@@ -14,6 +14,7 @@ from app.config import Settings, get_settings, require_fernet_key
 from app.database import get_db
 from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
+from app.identity.models.user import User
 from app.providers.base import Provider
 from app.providers.moabits.adapter import fetch_child_companies
 from app.shared.crypto import decrypt_credentials
@@ -722,6 +723,31 @@ async def update_company(
 
     await db.refresh(company)
     return company
+
+
+@router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_company(
+    company_id: uuid.UUID,
+    current: AdminProfile,
+    db: DbSession,
+) -> None:
+    """Delete a company and all its associated data. Admin only. Cannot delete own company."""
+    if current.company_id == company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own company",
+        )
+    await _get_company_or_404(company_id, db)
+
+    profile_ids_result = await db.execute(
+        select(Profile.id).where(Profile.company_id == company_id)
+    )
+    profile_ids = list(profile_ids_result.scalars().all())
+    if profile_ids:
+        await db.execute(delete(User).where(User.id.in_(profile_ids)))
+
+    await db.execute(delete(Company).where(Company.id == company_id))
+    await db.commit()
 
 
 @router.get("/me/settings", response_model=CompanySettingsOut)

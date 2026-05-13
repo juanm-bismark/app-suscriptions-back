@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import httpx
@@ -169,6 +170,47 @@ class TestKiteAdapterBehavior:
           </soapenv:Body>
         </soapenv:Envelope>
         """
+
+    @pytest.mark.asyncio
+    async def test_list_subscriptions_sends_limit_as_batch_size(
+        self, monkeypatch: pytest.MonkeyPatch, kite_creds: dict[str, str]
+    ) -> None:
+        captured = {}
+
+        async def fake_get_subscriptions(
+            self,
+            *,
+            start_index: int | None = None,
+            batch_size: int | None = None,
+            searchParameters: dict[str, str] | None = None,
+            maxBatchSize: int | None = None,
+        ) -> ET.Element:
+            captured["start_index"] = start_index
+            captured["batch_size"] = batch_size
+            captured["searchParameters"] = searchParameters
+            captured["maxBatchSize"] = maxBatchSize
+            return ET.fromstring("<root />")
+
+        monkeypatch.setattr(
+            kite_client_mod.KiteClient,
+            "get_subscriptions",
+            fake_get_subscriptions,
+        )
+
+        subs, next_cursor = await KiteAdapter().list_subscriptions(
+            kite_creds,
+            cursor="5",
+            limit=1,
+        )
+
+        assert subs == []
+        assert next_cursor is None
+        assert captured == {
+            "start_index": 5,
+            "batch_size": 1,
+            "searchParameters": None,
+            "maxBatchSize": None,
+        }
 
     @pytest.mark.asyncio
     async def test_kite_client_uses_configured_timeout(

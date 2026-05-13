@@ -292,6 +292,76 @@ def test_test_endpoint_returns_provider_failure_without_persisting() -> None:
     assert db.rows == []
 
 
+def test_moabits_test_endpoint_uses_child_company_discovery_without_persisting(
+    monkeypatch,
+) -> None:
+    db = _Db([])
+    provider = _Provider(fail=True)
+    captured: dict[str, Any] = {}
+
+    async def _fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+        captured.update(credentials)
+        return [{"companyCode": "48123", "companyName": "Bismark Colombia"}]
+
+    monkeypatch.setattr(
+        credentials_router,
+        "fetch_child_companies",
+        _fetch_child_companies,
+    )
+    client = _client(AppRole.admin, db, provider)
+
+    response = client.post(
+        "/v1/companies/me/credentials/moabits/test",
+        json={
+            "credentials": {
+                "base_url": "https://www.api.myorion.co",
+                "x_api_key": "new-key",
+                "parent_company_code": "48123",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"provider": "moabits", "ok": True, "detail": None}
+    assert db.rows == []
+    assert provider.calls == []
+    assert captured["company_id"] == str(COMPANY_ID)
+    assert captured["x_api_key"] == "new-key"
+    assert captured["parent_company_code"] == "48123"
+
+
+def test_moabits_test_endpoint_returns_discovery_failure(monkeypatch) -> None:
+    db = _Db([])
+
+    async def _fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+        raise ProviderAuthFailed(detail="Moabits x-api-key is cancelled")
+
+    monkeypatch.setattr(
+        credentials_router,
+        "fetch_child_companies",
+        _fetch_child_companies,
+    )
+    client = _client(AppRole.admin, db)
+
+    response = client.post(
+        "/v1/companies/me/credentials/moabits/test",
+        json={
+            "credentials": {
+                "base_url": "https://www.api.myorion.co",
+                "x_api_key": "bad-key",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider": "moabits",
+        "ok": False,
+        "detail": "Moabits x-api-key is cancelled",
+    }
+    assert db.rows == []
+
+
 def test_patch_updates_existing_active_credential_and_encrypts_credentials() -> None:
     old = _row()
     db = _Db([old])
@@ -419,7 +489,7 @@ def test_admin_patch_merges_only_sent_fields() -> None:
     assert provider.calls[0]["max_tps"] == 5
 
 
-def test_manager_can_update_moabits_x_api_key_with_mapping() -> None:
+def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
     old = _row(
         provider="moabits",
         credentials={
@@ -432,6 +502,17 @@ def test_manager_can_update_moabits_x_api_key_with_mapping() -> None:
     db = _Db([old], moabits_mapping=_moabits_mapping())
     provider = _Provider()
     client = _client(AppRole.manager, db, provider)
+    discovered: list[dict[str, Any]] = []
+
+    async def _fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+        discovered.append(credentials)
+        return [{"companyCode": "48123", "companyName": "Bismark Colombia"}]
+
+    monkeypatch.setattr(
+        credentials_router,
+        "fetch_child_companies",
+        _fetch_child_companies,
+    )
 
     response = client.patch(
         "/v1/companies/me/credentials/moabits",
@@ -446,6 +527,7 @@ def test_manager_can_update_moabits_x_api_key_with_mapping() -> None:
         "parent_company_code": "48123",
     }
     assert old.account_scope == {"environment": "production"}
+    assert discovered[0]["x_api_key"] == "new-key"
     assert "new-key" not in response.text
 
 

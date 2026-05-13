@@ -117,6 +117,8 @@ async def test_list_subscriptions_sends_required_modified_since_from_cursor() ->
     subs, next_cursor = await adapter.list_subscriptions(creds, cursor=cursor, limit=10)
     assert route_a.called
     req_a = route_a.calls[-1].request
+    assert req_a.url.params.get("pageNumber") == "2"
+    assert req_a.url.params.get("pageSize") == "10"
     assert req_a.url.params.get("modifiedSince") == "2026-04-18T17:31:34Z"
     assert req_a.url.params.get("modifiedTill") == "2027-04-18T17:31:34Z"
 

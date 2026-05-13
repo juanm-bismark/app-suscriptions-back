@@ -227,7 +227,7 @@ async def test_global_listing_bootstraps_empty_routing_map(monkeypatch) -> None:
         registry=_SearchRegistry(),
     )
 
-    assert calls == [("kite", 25), ("tele2", 25), ("moabits", 25)]
+    assert calls == [("kite", 17), ("tele2", 17), ("moabits", 16)]
     assert db.commit_calls == 1
     assert result.total is None
     assert [item.provider for item in result.items] == ["kite", "tele2", "moabits"]
@@ -315,7 +315,7 @@ async def test_global_listing_uses_provider_summaries_without_detail_calls(
         registry=_SearchRegistry(),
     )
 
-    assert calls == [("kite", 25), ("tele2", 25), ("moabits", 25)]
+    assert calls == [("kite", 17), ("tele2", 17), ("moabits", 16)]
     assert db.commit_calls == 1
     assert result.total is None
     assert len(result.items) == 3
@@ -390,7 +390,7 @@ async def test_global_listing_queries_providers_concurrently(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_global_listing_reads_twenty_five_summaries_per_provider(
+async def test_global_listing_respects_total_limit_across_providers(
     monkeypatch,
 ) -> None:
     class _Db:
@@ -459,10 +459,10 @@ async def test_global_listing_reads_twenty_five_summaries_per_provider(
     )
 
     providers = [item.provider for item in result.items]
-    assert providers.count("kite") == 25
-    assert providers.count("tele2") == 25
-    assert providers.count("moabits") == 25
-    assert len(result.items) == 75
+    assert providers.count("kite") == 17
+    assert providers.count("tele2") == 17
+    assert providers.count("moabits") == 16
+    assert len(result.items) == 50
     assert result.next_cursor is not None
     assert result.next_cursor.startswith("global:")
     assert db.commit_calls == 1
@@ -470,9 +470,93 @@ async def test_global_listing_reads_twenty_five_summaries_per_provider(
         (status.provider, status.status, status.count)
         for status in result.provider_statuses
     ] == [
-        ("kite", "ok", 25),
-        ("tele2", "ok", 25),
-        ("moabits", "ok", 25),
+        ("kite", "ok", 17),
+        ("tele2", "ok", 17),
+        ("moabits", "ok", 16),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_global_listing_carries_unqueried_providers_in_cursor(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _Provider:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls.append((self.provider, limit))
+            return (
+                [
+                    Subscription(
+                        iccid=f"iccid-{self.provider}",
+                        msisdn=None,
+                        imsi=None,
+                        status=AdministrativeStatus.ACTIVE,
+                        native_status="active",
+                        provider=self.provider,
+                        company_id=str(COMPANY_ID),
+                        activated_at=None,
+                        updated_at=None,
+                    )
+                ],
+                None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            return _Provider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {"company_codes": ["48123"]}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=2,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid=None,
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_Registry(),
+    )
+
+    assert calls == [("kite", 1), ("tele2", 1)]
+    assert [item.provider for item in result.items] == ["kite", "tele2"]
+    assert sims._decode_global_cursor(result.next_cursor) == {"moabits": None}
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 1),
+        ("tele2", "ok", 1),
+        ("moabits", "not_queried", 0),
     ]
 
 

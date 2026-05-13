@@ -17,6 +17,7 @@ from app.database import get_db
 from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
 from app.providers.base import Provider, SearchableProvider
+from app.providers.moabits.adapter import fetch_child_companies
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials, encrypt_credentials
 from app.shared.errors import DomainError
@@ -346,6 +347,23 @@ async def _live_test_credentials(
         return CredentialTestOut(provider=provider.value, ok=False, detail=str(exc))
     credentials = dict(normalized_body.credentials)
     credentials["company_id"] = str(company_id) if company_id is not None else ""
+    if provider == Provider.MOABITS:
+        try:
+            await fetch_child_companies(credentials)
+        except DomainError as exc:
+            return CredentialTestOut(
+                provider=provider.value,
+                ok=False,
+                detail=exc.detail or exc.title,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return CredentialTestOut(
+                provider=provider.value,
+                ok=False,
+                detail=str(exc),
+            )
+        return CredentialTestOut(provider=provider.value, ok=True, detail=None)
+
     cursor = None
     if provider == Provider.TELE2:
         since = datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)

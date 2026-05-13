@@ -37,7 +37,7 @@ Implementation pointers:
    - `GET /v1/companies/me` / `PUT /v1/companies/me`
    - `GET /v1/companies/me/settings` / `PUT /v1/companies/me/settings`
    - `GET /v1/companies` / `POST /v1/companies` (admin)
-   - `GET /v1/companies/{company_id}` / `PUT /v1/companies/{company_id}` (admin)
+   - `GET /v1/companies/{company_id}` / `PUT /v1/companies/{company_id}` / `DELETE /v1/companies/{company_id}` (admin)
 4. [Tenancy — provider credentials](#3-tenancy--provider-credentials)
    - `GET /v1/companies/me/credentials`
    - `GET /v1/companies/me/credentials/{provider}`
@@ -411,6 +411,22 @@ Rename a company by ID.
 **Response 200**: `CompanyOut`.
 **Errors**: `404 Company not found`, `409 Company name already exists`, `422 name cannot be empty`.
 
+### 2.9 `DELETE /v1/companies/{company_id}`
+
+Permanently delete a company and **all** its associated data: users/profiles, credentials, SIM routing entries, provider mappings, idempotency keys, settings, Moabits source-company cache, and lifecycle-change history references.
+
+**Auth**: `admin` only. Cannot delete own company.
+
+**Response 204** (no body).
+
+**What is deleted** (in order):
+1. All `users` (and their `profiles` via cascade) scoped to this company.
+2. The `companies` row — the DB `ON DELETE CASCADE` constraints then remove: `company_settings`, `company_provider_credentials`, `company_provider_mappings`, `sim_routing_map`, `idempotency_keys`, `moabits_source_companies`.
+
+**Errors**:
+- `400 Cannot delete your own company`
+- `404 Company not found`
+
 ---
 
 ## 3. Tenancy — provider credentials
@@ -520,6 +536,12 @@ Backend normalizes `cobrand_url`/`base_url` to `https://<host>` and copies
 On failure `ok` is `false` and `detail` is a human-readable message
 (provider error, missing field, etc.) — the endpoint **always** returns 200
 with this envelope (errors do not bubble up).
+
+Live-test probes are backend-only and do not expose secrets to the browser:
+Kite calls `getSubscriptions` with `limit=1`, Tele2 calls `/devices` with
+`pageSize=1`, and Moabits validates the API key through child-company
+discovery (`/api/company/childs/{parent_company_code}`) instead of relying on
+`simList` without a company mapping.
 
 ### 3.4 `PATCH /v1/companies/me/credentials/{provider}` — partial credential update
 
@@ -834,9 +856,8 @@ Two modes:
 
 1. **Provider-scoped** (`?provider=kite|tele2|moabits`) — calls the
    adapter's native listing. Lazy-populates the local `sim_routing_map`.
-2. **Global** (no `provider`) — walks `sim_routing_map` and fetches each
-   SIM individually. Requires the routing map to be bootstrapped first
-   (provider-scoped listing or `POST /sims/import`).
+2. **Global** (no `provider`) — fans out to searchable providers, requests
+   provider summary pages, and lazy-populates `sim_routing_map`.
 
 **Auth**: any authenticated tenant user.
 
@@ -845,7 +866,7 @@ Two modes:
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `cursor` | string | `null` | Opaque pagination cursor returned in `next_cursor`. |
-| `limit` | int | `50` | Provider-dependent upper bound; global path clamps to `[1, 500]`. |
+| `limit` | int | `50` | Provider-dependent upper bound; global path clamps to `[1, 500]` and distributes that total budget across queried providers. |
 | `provider` | enum | `null` | `kite \| tele2 \| moabits`. Omit for global listing. |
 | `status` | string | `null` | Canonical `AdministrativeStatus` (see § 7). Provider-scoped only. |
 | `modified_since` | string | `null` | `yyyy-MM-ddTHH:mm:ssZ`. **Required** when `provider=tele2` and no cursor. Ignored by Moabits. |
@@ -926,8 +947,8 @@ Two modes:
   See [_tele2_missing_modified_since_response](app/subscriptions/routers/sims.py#L468-L475).
 - Moabits provider-scoped listing returns `412 subscription.listing_precondition_failed`
   if no Moabits company codes are configured (see § 3.7).
-- Global listing without a bootstrapped routing map returns `412 subscription.listing_precondition_failed`
-  with `extra.reason = "routing_map_empty"`.
+- Global listing may return `not_queried` in `provider_statuses` when a small
+  `limit` budget leaves one or more providers for the returned global cursor.
 - **Global ICCID search** (`?iccid=<value>` with no other filters): special fast path — the
   backend checks the routing map first (one provider call if known), otherwise fans out to
   providers that support ICCID-filtered listing (currently Kite + Tele2). Moabits is always

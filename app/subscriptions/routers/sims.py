@@ -70,7 +70,6 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/sims", tags=["sims"])
 _REQUEST_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-_GLOBAL_PROVIDER_PAGE_SIZE = 25
 _GLOBAL_CURSOR_PREFIX = "global:"
 
 
@@ -130,7 +129,6 @@ async def _load_credentials(
             "clie_id": mapping.clie_id,
         }
     return creds
-
 
 
 def _warn_if_kite_certificate_expiring(row: CompanyProviderCredentials) -> None:
@@ -732,14 +730,13 @@ async def _list_via_provider_search(
 
 
 def _encode_global_cursor(provider_cursors: dict[str, str | None]) -> str | None:
-    active = {
-        provider: cursor
-        for provider, cursor in provider_cursors.items()
-        if cursor is not None
-    }
-    if not active:
+    if not provider_cursors:
         return None
-    payload = json.dumps(active, separators=(",", ":"), sort_keys=True).encode()
+    payload = json.dumps(
+        provider_cursors,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
     token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     return f"{_GLOBAL_CURSOR_PREFIX}{token}"
 
@@ -759,10 +756,17 @@ def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
     if not isinstance(decoded, dict):
         return {}
     return {
-        str(provider): str(provider_cursor)
+        str(provider): str(provider_cursor) if provider_cursor is not None else None
         for provider, provider_cursor in decoded.items()
-        if provider in {p.value for p in Provider} and provider_cursor is not None
+        if provider in {p.value for p in Provider}
     }
+
+
+def _global_provider_call_limits(page_limit: int, provider_count: int) -> list[int]:
+    if provider_count <= 0:
+        return []
+    base, remainder = divmod(page_limit, provider_count)
+    return [base + (1 if index < remainder else 0) for index in range(provider_count)]
 
 
 def _global_provider_failure(
@@ -959,6 +963,7 @@ async def _list_via_routing_index(
             detail="Canonical filters require provider-scoped listing (?provider=<name>)"
         )
     provider_cursors = _decode_global_cursor(cursor)
+    page_limit = min(max(limit, 1), 500)
     items: list[SubscriptionOut] = []
     failed_providers_by_name: dict[str, dict[str, str]] = {}
     provider_statuses_by_name: dict[str, ProviderStatusOut] = {}
@@ -972,6 +977,9 @@ async def _list_via_routing_index(
                 provider=provider_name, status="not_queried"
             )
             continue
+        provider_cursor = (
+            None if provider_cursors is None else provider_cursors.get(provider_name)
+        )
         try:
             creds = await _load_credentials(company_id, provider_name, db, settings)
             adapter = registry.get(provider_name)
@@ -987,9 +995,7 @@ async def _list_via_routing_index(
                     provider_name,
                     adapter,
                     creds,
-                    None
-                    if provider_cursors is None
-                    else provider_cursors.get(provider_name),
+                    provider_cursor,
                 )
             )
         except Exception as exc:
@@ -1004,21 +1010,50 @@ async def _list_via_routing_index(
                 error=str(exc),
             )
 
+    active_provider_calls: list[tuple[str, Any, dict[str, Any], str | None, int]] = []
+    for (
+        provider_name,
+        adapter,
+        creds,
+        provider_cursor,
+    ), call_limit in zip(
+        provider_calls,
+        _global_provider_call_limits(page_limit, len(provider_calls)),
+        strict=True,
+    ):
+        if call_limit <= 0:
+            next_provider_cursors[provider_name] = provider_cursor
+            provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                provider=provider_name,
+                status="not_queried",
+                count=0,
+            )
+            continue
+        active_provider_calls.append(
+            (provider_name, adapter, creds, provider_cursor, call_limit)
+        )
+
     provider_results = await asyncio.gather(
         *(
             adapter.list_subscriptions(
                 creds,
                 cursor=provider_cursor,
-                limit=_GLOBAL_PROVIDER_PAGE_SIZE,
+                limit=call_limit,
                 filters=_adapter_bootstrap_filters(provider_name, adapter),
             )
-            for provider_name, adapter, creds, provider_cursor in provider_calls
+            for (
+                provider_name,
+                adapter,
+                creds,
+                provider_cursor,
+                call_limit,
+            ) in active_provider_calls
         ),
         return_exceptions=True,
     )
 
-    for (provider_name, _adapter, _creds, _provider_cursor), result in zip(
-        provider_calls, provider_results, strict=True
+    for (provider_name, _adapter, _creds, _provider_cursor, _call_limit), result in zip(
+        active_provider_calls, provider_results, strict=True
     ):
         if isinstance(result, Exception):
             failed_provider, provider_status = _global_provider_failure(
@@ -1038,7 +1073,8 @@ async def _list_via_routing_index(
             for sub in subs:
                 await _upsert_routing(db, sub.iccid, provider_name, company_id)
             items.extend(_to_out(sub) for sub in subs)
-            next_provider_cursors[provider_name] = next_cursor
+            if next_cursor is not None:
+                next_provider_cursors[provider_name] = next_cursor
             provider_statuses_by_name[provider_name] = ProviderStatusOut(
                 provider=provider_name,
                 status="ok",
