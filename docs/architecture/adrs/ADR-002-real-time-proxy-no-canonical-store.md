@@ -24,8 +24,9 @@ Modos soportados, en orden de preferencia:
 - **CSV bootstrap** — el equipo importa un dump del proveedor con `iccid, provider, company_id`. Es la opción operacionalmente sana.
 - **Provider-scoped discovery** — una llamada `GET /v1/sims?provider=<name>` usa el listing nativo del adapter y actualiza el routing map con las SIMs observadas.
 - **Import manual** — `POST /v1/sims/import` permite poblar `iccid/provider` cuando el dump inicial viene de otro proceso.
+- **Lazy cross-provider discovery (revisión 2026-05-14)** — al consultar un `iccid` específico vía `GET /v1/sims/{iccid}` (y `/usage`, `/presence`), si no hay entrada en `sim_routing_map` el backend hace fan-out paralelo a los adapters que declaren `supports_list_filter("iccid")`, con `limit=1` y el filtro por ICCID. La primera respuesta positiva puebla el routing map y satisface la consulta sin un segundo round-trip; los misses se memorizan ~60s en un negative cache in-process para evitar amplificación contra ICCIDs inválidos. Esto ataca el caso "el usuario no sabe qué proveedor tiene la SIM" sin reintroducir el fan-out cross-provider en cada request (la alternativa 2, abajo, sigue rechazada porque el routing map sigue siendo el camino feliz).
 
-No se implementa lazy discovery por fan-out cross-provider en v1. Si una request por `iccid` llega sin entrada en `sim_routing_map`, el backend responde `404 SubscriptionNotFound` o pide bootstrap/listing previo, según el endpoint.
+**Las mutaciones siguen estrictas**: `PUT /v1/sims/{iccid}/status` y `POST /v1/sims/{iccid}/purge` no disparan lazy discovery — un mutador implícito sobre una SIM "desconocida" es un footgun (el cliente puede actuar sobre la SIM equivocada si el ICCID está mal). El cliente debe consultar primero (`GET`) o haber bootstrapeado el routing map.
 
 ## Consecuencias
 

@@ -231,6 +231,7 @@ PATCH  /v1/companies/me/credentials/{provider}          # manager/admin — rota
 GET    /v1/companies/me/credentials/moabits/companies/discover  # manager/admin — read-only discovery
 PUT    /v1/companies/me/credentials/moabits/company-codes       # admin — configure Moabits source scope
 DELETE /v1/companies/me/credentials/{provider}          # admin — deactivate
+POST   /v1/admin/companies/{company_id}/credentials/{provider}/probe  # admin — stored credential smoke test
 GET    /v1/providers/{provider}/capabilities             # supported / not_supported / feature-flag / confirmation
 
 GET    /v1/sims?provider=<name>                          # provider-scoped listing required by default

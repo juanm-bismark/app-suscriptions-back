@@ -57,17 +57,14 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
             "Web Client application key. The adapter sends it as the x-api-key "
             "header to GET /integrity/authorization-token, caches the returned "
             "JWT, and refreshes/retries once when a provider business endpoint "
-            "returns 401. parent_company_code is used to discover child companies "
-            "through GET /api/company/childs/{companyCode}."
+            "returns 401. Company codes are configured separately via the company-codes endpoint."
         ),
         "value": {
             "credentials": {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "MOABITS_ORION_X_API_KEY",
-                "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
             },
             "account_scope": {
-                "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
                 "environment": "production",
             },
         },
@@ -127,3 +124,9 @@ class CredentialTestOut(BaseModel):
     ok: bool
     detail: str | None = None
 
+
+class CredentialProbeOut(BaseModel):
+    provider: str
+    ok: bool
+    detail: str | None = None
+    sample_count: int = 0

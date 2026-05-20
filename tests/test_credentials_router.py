@@ -89,10 +89,17 @@ class _Db:
 
 
 class _Provider:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        subscriptions: list[Any] | None = None,
+    ) -> None:
         self.fail = fail
+        self.subscriptions = subscriptions or []
         self.calls: list[dict[str, Any]] = []
         self.cursors: list[str | None] = []
+        self.limits: list[int] = []
 
     async def list_subscriptions(
         self,
@@ -104,9 +111,10 @@ class _Provider:
     ) -> tuple[list[Any], None]:
         self.calls.append(credentials)
         self.cursors.append(cursor)
+        self.limits.append(limit)
         if self.fail:
             raise ProviderAuthFailed(detail="bad provider credentials")
-        return [], None
+        return self.subscriptions, None
 
     def supports_list_filter(self, filter_name: str) -> bool:
         return False
@@ -292,21 +300,20 @@ def test_test_endpoint_returns_provider_failure_without_persisting() -> None:
     assert db.rows == []
 
 
-def test_moabits_test_endpoint_uses_child_company_discovery_without_persisting(
+def test_moabits_test_endpoint_validates_credentials_without_persisting(
     monkeypatch,
 ) -> None:
     db = _Db([])
     provider = _Provider(fail=True)
     captured: dict[str, Any] = {}
 
-    async def _fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _moabits_test_credentials(credentials: dict[str, Any]) -> None:
         captured.update(credentials)
-        return [{"companyCode": "48123", "companyName": "Bismark Colombia"}]
 
     monkeypatch.setattr(
         credentials_router,
-        "fetch_child_companies",
-        _fetch_child_companies,
+        "moabits_test_credentials",
+        _moabits_test_credentials,
     )
     client = _client(AppRole.admin, db, provider)
 
@@ -316,7 +323,6 @@ def test_moabits_test_endpoint_uses_child_company_discovery_without_persisting(
             "credentials": {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "new-key",
-                "parent_company_code": "48123",
             }
         },
     )
@@ -327,19 +333,18 @@ def test_moabits_test_endpoint_uses_child_company_discovery_without_persisting(
     assert provider.calls == []
     assert captured["company_id"] == str(COMPANY_ID)
     assert captured["x_api_key"] == "new-key"
-    assert captured["parent_company_code"] == "48123"
 
 
-def test_moabits_test_endpoint_returns_discovery_failure(monkeypatch) -> None:
+def test_moabits_test_endpoint_returns_auth_failure(monkeypatch) -> None:
     db = _Db([])
 
-    async def _fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _moabits_test_credentials(credentials: dict[str, Any]) -> None:
         raise ProviderAuthFailed(detail="Moabits x-api-key is cancelled")
 
     monkeypatch.setattr(
         credentials_router,
-        "fetch_child_companies",
-        _fetch_child_companies,
+        "moabits_test_credentials",
+        _moabits_test_credentials,
     )
     client = _client(AppRole.admin, db)
 
@@ -393,7 +398,6 @@ def test_patch_updates_existing_active_credential_and_encrypts_credentials() -> 
     assert "cobrand_url" not in decrypted
     assert provider.calls[0]["company_id"] == str(COMPANY_ID)
     assert provider.calls[0]["base_url"] == "https://restapi3.jasper.com"
-    assert provider.calls[0]["max_tps"] == 5
     assert provider.cursors[0] is not None
     assert "since:" in provider.cursors[0]
     assert "new-secret" not in response.text
@@ -486,7 +490,6 @@ def test_admin_patch_merges_only_sent_fields() -> None:
     assert old.account_scope == {"account_id": "acct-1", "max_tps": 5}
     assert provider.calls[0]["username"] == "alice"
     assert provider.calls[0]["api_key"] == "new-secret"
-    assert provider.calls[0]["max_tps"] == 5
 
 
 def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
@@ -495,23 +498,21 @@ def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
         credentials={
             "base_url": "https://www.api.myorion.co",
             "x_api_key": "old-key",
-            "parent_company_code": "48123",
         },
         account_scope={"environment": "production"},
     )
     db = _Db([old], moabits_mapping=_moabits_mapping())
     provider = _Provider()
     client = _client(AppRole.manager, db, provider)
-    discovered: list[dict[str, Any]] = []
+    tested: list[dict[str, Any]] = []
 
-    async def _fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
-        discovered.append(credentials)
-        return [{"companyCode": "48123", "companyName": "Bismark Colombia"}]
+    async def _moabits_test_credentials(credentials: dict[str, Any]) -> None:
+        tested.append(credentials)
 
     monkeypatch.setattr(
         credentials_router,
-        "fetch_child_companies",
-        _fetch_child_companies,
+        "moabits_test_credentials",
+        _moabits_test_credentials,
     )
 
     response = client.patch(
@@ -524,10 +525,9 @@ def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
     assert decrypted == {
         "base_url": "https://www.api.myorion.co",
         "x_api_key": "new-key",
-        "parent_company_code": "48123",
     }
     assert old.account_scope == {"environment": "production"}
-    assert discovered[0]["x_api_key"] == "new-key"
+    assert tested[0]["x_api_key"] == "new-key"
     assert "new-key" not in response.text
 
 
@@ -541,7 +541,9 @@ def test_manager_cannot_update_moabits_extra_fields() -> None:
 
     response = client.patch(
         "/v1/companies/me/credentials/moabits",
-        json={"credentials": {"x_api_key": "new-key", "base_url": "https://other.example"}},
+        json={
+            "credentials": {"x_api_key": "new-key", "base_url": "https://other.example"}
+        },
     )
 
     assert response.status_code == 403
@@ -554,7 +556,6 @@ def test_manager_cannot_rotate_moabits_credential_without_company_mapping() -> N
         credentials={
             "base_url": "https://www.api.myorion.co",
             "x_api_key": "old-key",
-            "parent_company_code": "48123",
         },
     )
     db = _Db([old])  # no moabits_mapping
@@ -643,7 +644,7 @@ def test_patch_kite_rotates_certificate_credentials_without_returning_secrets() 
     assert decrypted["client_cert_password"] == "pfx-secret"
     assert decrypted["server_ca_bundle_pem_b64"] == "BASE64-CA"
     assert "server_ca_cert_pem_b64" not in decrypted
-    assert decrypted["end_customer_id"] == "end-customer-1"
+    assert "end_customer_id" not in decrypted
     assert db.rows[-1].account_scope["cert_expires_at"] == "2026-12-31T00:00:00Z"
     assert provider.calls[0]["company_id"] == str(COMPANY_ID)
     assert provider.calls[0]["client_cert_pfx_b64"] == pfx_b64
@@ -787,6 +788,94 @@ def test_admin_can_test_company_credential_without_persisting() -> None:
     assert response.json() == {"provider": "tele2", "ok": True, "detail": None}
     assert db.rows == []
     assert provider.calls[0]["company_id"] == str(COMPANY_ID)
+
+
+def test_admin_can_probe_company_stored_credential_without_candidate_secrets() -> None:
+    row = _row(
+        provider="tele2",
+        credentials={"username": "alice", "api_key": "stored-secret"},
+        account_scope={"account_id": "acct-1", "max_tps": 5},
+    )
+    provider = _Provider(subscriptions=[object()])
+    db = _Db([row])
+    client = _client(AppRole.admin, db, provider)
+
+    response = client.post(
+        f"/v1/admin/companies/{COMPANY_ID}/credentials/tele2/probe",
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider": "tele2",
+        "ok": True,
+        "detail": "Stored credential probe succeeded with a sample SIM",
+        "sample_count": 1,
+    }
+    assert db.commits == 0
+    assert provider.calls[0]["company_id"] == str(COMPANY_ID)
+    assert provider.calls[0]["api_key"] == "stored-secret"
+    assert provider.calls[0]["account_scope"] == {"account_id": "acct-1", "max_tps": 5}
+    assert provider.calls[0]["max_tps"] == 5
+    assert provider.cursors == [None]
+    assert provider.limits == [1]
+
+
+def test_admin_probe_company_credential_bubbles_provider_failure() -> None:
+    db = _Db([_row(provider="tele2")])
+    provider = _Provider(fail=True)
+    client = _client(AppRole.admin, db, provider)
+
+    response = client.post(
+        f"/v1/admin/companies/{COMPANY_ID}/credentials/tele2/probe",
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "code": "provider.auth_failed",
+        "detail": "bad provider credentials",
+    }
+
+
+def test_admin_probe_company_credential_requires_stored_credentials() -> None:
+    client = _client(AppRole.admin, _Db([]))
+
+    response = client.post(
+        f"/v1/admin/companies/{COMPANY_ID}/credentials/tele2/probe",
+    )
+
+    assert response.status_code == 412
+    assert response.json() == {
+        "code": "tenant.credentials_missing",
+        "detail": "No active credentials for provider 'tele2'",
+    }
+
+
+def test_admin_probe_moabits_requires_company_mapping() -> None:
+    row = _row(
+        provider="moabits",
+        credentials={
+            "base_url": "https://www.api.myorion.co",
+            "x_api_key": "stored-key",
+        },
+    )
+    provider = _Provider()
+    db = _Db([row])
+    client = _client(AppRole.admin, db, provider)
+
+    response = client.post(
+        f"/v1/admin/companies/{COMPANY_ID}/credentials/moabits/probe",
+    )
+
+    assert response.status_code == 412
+    assert response.json() == {
+        "code": "subscription.listing_precondition_failed",
+        "detail": (
+            "Company is not linked to a Moabits company code. "
+            "An admin must configure the provider mapping first."
+        ),
+        "provider": "moabits",
+    }
+    assert provider.calls == []
 
 
 def test_admin_delete_company_credential_deactivates_target_provider() -> None:

@@ -56,6 +56,7 @@ Implementation pointers:
    - `PATCH /v1/admin/companies/{company_id}/credentials/{provider}`
    - `DELETE /v1/admin/companies/{company_id}/credentials/{provider}`
    - `POST /v1/admin/companies/{company_id}/credentials/{provider}/test`
+   - `POST /v1/admin/companies/{company_id}/credentials/{provider}/probe`
 5. [SIMs](#4-sims)
    - `GET /v1/sims`
    - `GET /v1/sims/{iccid}`
@@ -89,6 +90,7 @@ Implementation pointers:
 |---|---|
 | `X-Request-ID` | echoed/generated request id |
 | `X-API-Version` | always `v1` |
+| `Retry-After` | only on `429 provider.rate_limited` and `503 provider.unavailable` when the upstream provider supplied a hint. Value is in **seconds** (integer string). The same value is also mirrored inside the problem+json body as `extra.retry_after`. See [app/main.py:74-77](app/main.py#L74-L77). |
 
 ### CORS
 
@@ -182,6 +184,15 @@ server `JWT_SECRET`. The frontend should treat it as opaque — do not depend
 on additional claims.
 
 **Errors**: `401 Invalid credentials`.
+
+#### JWT bearer validation (every authenticated endpoint)
+
+When a request carries `Authorization: Bearer <jwt>`, the server validates it and may return:
+- `401 {"detail": "Token expired"}` — JWT signature is valid but `exp` has passed. The frontend should attempt `POST /v1/auth/refresh` with the stored `refresh_token` and retry the original request once.
+- `401 {"detail": "Invalid token"}` — JWT signature/structure invalid or `sub` missing. Force a re-login (clear stored tokens).
+- `401 {"detail": "User not found"}` — the JWT is well-formed but the referenced profile no longer exists in the database (e.g. user deleted by an admin while logged in). Force a re-login.
+
+See [app/identity/dependencies.py:18-44](app/identity/dependencies.py#L18-L44). These errors use FastAPI's default `{"detail": ...}` shape — not `application/problem+json`.
 
 ### 1.3 `POST /v1/auth/refresh`
 
@@ -446,7 +457,13 @@ The `{provider}` path parameter is enforced as the `Provider` enum →
 List active credentials for the current company.
 
 **Auth**: `admin` or `manager`.
-**Response 200**: `CredentialMetadataOut[]` (see § 3.4).
+
+**Query parameters**:
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `q` | string | `null` | Filter by provider name or `account_scope` text (case-insensitive `ILIKE`). |
+
+**Response 200**: `CredentialMetadataOut[]` (see § 3.4) — flat JSON array, **not paginated**, ordered by provider name.
 
 ### 3.2 `GET /v1/companies/me/credentials/{provider}`
 
@@ -512,18 +529,18 @@ certificate, overwriting any value sent by the client.
 }
 ```
 Backend normalizes `cobrand_url`/`base_url` to `https://<host>` and copies
-`account_id`/`max_tps` from `account_scope` into `credentials` if missing.
+`account_id` from `account_scope` into `credentials` if missing. `max_tps`
+stays in `account_scope` and is injected at runtime by the service layer — it
+is not stored inside `credentials_enc`.
 
 **Moabits** (`POST /credentials/moabits/test`):
 ```json
 {
   "credentials": {
     "base_url": "https://www.api.myorion.co",
-    "x_api_key": "MOABITS_ORION_X_API_KEY",
-    "parent_company_code": "MOABITS_PARENT_COMPANY_CODE"
+    "x_api_key": "MOABITS_ORION_X_API_KEY"
   },
   "account_scope": {
-    "parent_company_code": "MOABITS_PARENT_COMPANY_CODE",
     "environment": "production"
   }
 }
@@ -539,9 +556,9 @@ with this envelope (errors do not bubble up).
 
 Live-test probes are backend-only and do not expose secrets to the browser:
 Kite calls `getSubscriptions` with `limit=1`, Tele2 calls `/devices` with
-`pageSize=1`, and Moabits validates the API key through child-company
-discovery (`/api/company/childs/{parent_company_code}`) instead of relying on
-`simList` without a company mapping.
+`pageSize=1`, and Moabits validates `x_api_key` by exchanging it for a JWT
+(`GET /integrity/authorization-token`). No company code is required or stored
+as part of credentials — the fixed Moabits parent code is an adapter constant.
 
 ### 3.4 `PATCH /v1/companies/me/credentials/{provider}` — partial credential update
 
@@ -563,6 +580,10 @@ result is tested live against the provider before persisting.
 - `account_scope` defaults to `null` (preserve existing account scope without merging).
 - For `provider=kite`, `account_scope.cert_expires_at` is always derived from
   `client_cert_pfx_b64`; clients should not ask users to enter it manually.
+- For `provider=moabits`, the hyphenated `x-api-key` key is also accepted in
+  `credentials` and is normalized to `x_api_key` before merge (so a form field
+  named exactly like the Moabits header still works). See
+  [_patch_credentials](app/tenancy/routers/credentials.py#L429-L433).
 
 **Manager**: may update any field on any provider credential for their own company.
 Cannot create credentials (own-company path requires the credential to exist → `404`).
@@ -633,13 +654,17 @@ performs a live Moabits child-company lookup and returns both local companies
 from the backend DB and provider companies from Moabits.
 
 ```txt
-GET    /v1/companies/me/provider-mappings/moabits          (manager or admin — own company)
-GET    /v1/companies/provider-mappings/moabits             (admin — all companies, paginated)
+GET    /v1/companies/me/provider-mappings/{provider}          (manager or admin — own company)
+GET    /v1/companies/provider-mappings/moabits                (admin — all companies, paginated)
 GET    /v1/companies/provider-mappings/moabits/source-companies
-GET    /v1/companies/provider-mappings/moabits/discover    (admin — live Moabits lookup)
-PUT    /v1/companies/{company_id}/provider-mappings/moabits
-DELETE /v1/companies/{company_id}/provider-mappings/moabits
+GET    /v1/companies/provider-mappings/moabits/discover       (admin — live Moabits lookup)
+PUT    /v1/companies/{company_id}/provider-mappings/{provider}
+DELETE /v1/companies/{company_id}/provider-mappings/{provider}
 ```
+
+The `{provider}` path parameter is the `Provider` enum (`kite | tele2 | moabits`),
+but only `moabits` is currently supported on these endpoints. Passing `kite` or
+`tele2` returns `422 "Only Moabits company mappings are supported"`.
 
 **`GET /v1/companies/me/provider-mappings/moabits`** — `manager` or `admin`
 
@@ -746,8 +771,11 @@ discovery.
 ```
 
 `PUT` updates only the mapping for `{company_id}`. The `companyCode` is valid
-when it is already in the saved source scope or when it is visible in the live
-Moabits discovery response for the stored X-API-KEY.
+when it is already in the cached `moabits_source_companies` (populated by
+`/discover`) **or** when a live Moabits child-companies call resolves it for
+the admin's stored X-API-KEY. Validation hits the cache first; the live call
+is only made on cache miss. `companyName` and `clie_id`, when omitted in the
+request body, are auto-populated from the discovered/cached entry.
 
 **Response 200**:
 ```json
@@ -829,16 +857,34 @@ All admin credential responses use `AdminCredentialMetadataOut`, which is
 
 Endpoints:
 - `GET /v1/admin/credentials` — list all active credentials in the platform.
+  Accepts optional `q` (matches provider name, `account_scope` text, or owning
+  company name). Returns a flat `AdminCredentialMetadataOut[]` (not paginated).
 - `GET /v1/admin/companies/{company_id}/credentials` — list active credentials
-  for one company.
+  for one company. Accepts optional `q` (provider or `account_scope`). Returns
+  `AdminCredentialMetadataOut[]` (not paginated).
 - `GET /v1/admin/companies/{company_id}/credentials/{provider}` — get one active
   credential metadata record; `404` when missing.
 - `POST /v1/admin/companies/{company_id}/credentials/{provider}/test` — live
-  test candidate credentials for that company without persisting.
+  test candidate credentials for that company without persisting. Same body and
+  response shape as `POST /v1/companies/me/credentials/{provider}/test` (see § 3.3).
+- `POST /v1/admin/companies/{company_id}/credentials/{provider}/probe` — live
+  smoke test the already-stored active credential for that company/provider
+  without sending secrets in the request body. Calls the provider listing with
+  `limit=1`. Success returns
+  `{ "provider": "kite|tele2|moabits", "ok": true, "detail": "...", "sample_count": 0|1 }`.
+  Failures bubble as `application/problem+json` using the same codes as SIM
+  listings: `tenant.credentials_missing`, `subscription.listing_precondition_failed`,
+  `provider.auth_failed`, `provider.protocol_error`, `provider.unavailable`,
+  or `provider.rate_limited`.
 - `PATCH /v1/admin/companies/{company_id}/credentials/{provider}` — update or
-  create the active credential for that company/provider.
+  create the active credential for that company/provider. Same merge semantics
+  as § 3.4; admin scope always allows create (no manager-only restrictions).
 - `DELETE /v1/admin/companies/{company_id}/credentials/{provider}` — soft
-  deactivate the active credential.
+  deactivate the active credential. `404` when no active credential exists.
+
+`{company_id}` is validated up-front on every endpoint in this group — an
+unknown company returns `404 Company not found` before any credential lookup
+runs.
 
 ---
 
@@ -946,14 +992,14 @@ Two modes:
   ```
   See [_tele2_missing_modified_since_response](app/subscriptions/routers/sims.py#L468-L475).
 - Moabits provider-scoped listing returns `412 subscription.listing_precondition_failed`
-  if no Moabits company codes are configured (see § 3.7).
+  if no Moabits company code mapping is configured (see § 3.7).
 - Global listing may return `not_queried` in `provider_statuses` when a small
   `limit` budget leaves one or more providers for the returned global cursor.
 - **Global ICCID search** (`?iccid=<value>` with no other filters): special fast path — the
   backend checks the routing map first (one provider call if known), otherwise fans out to
-  providers that support ICCID-filtered listing (currently Kite + Tele2). Moabits is always
-  reported in `failed_providers` with `provider.unsupported_operation` because its list API
-  does not accept an ICCID filter. Response is `200` with `partial: true`.
+  providers that support ICCID lookup. Kite and Tele2 use native ICCID search; Moabits loads
+  `simList/{company_code}` and filters the returned array locally. If a provider fails, the
+  response is `200` with `partial: true`.
 - Global listing with **any other filter** (`status`, `modified_since`, `modified_till`, `imsi`,
   `msisdn`, `custom`) — or with `iccid` combined with those — returns
   `409 provider.unsupported_operation` (canonical filters require `?provider=<name>` scope).
@@ -964,9 +1010,18 @@ Two modes:
 
 **Auth**: any authenticated tenant user.
 **Response 200**: `SubscriptionOut`.
+
+**Lookup flow** (lazy discovery):
+1. Look up `iccid` in `sim_routing_map`. Hit → call the resolved provider's `get_subscription` directly.
+2. Miss → fan out to every registered provider whose adapter declares `supports_list_filter("iccid")` (today: kite, tele2, moabits) in parallel with `limit=1` and an `iccid` filter. The first provider returning a match populates `sim_routing_map` and the response is served from that prefetched subscription (no extra round-trip).
+3. Still no match → return `404 subscription.not_found` and record a short-lived (~60s) negative cache so a repeated query for the same unknown ICCID short-circuits without hitting the providers again.
+
+Provider-level errors during the fan-out (timeouts, 5xx, credential issues) are logged and treated as "miss from that provider" — discovery succeeds if any provider returns a match.
+
+`GET /v1/sims/{iccid}/usage` and `GET /v1/sims/{iccid}/presence` share the same resolution flow (routing map → fan-out → 404). Write endpoints (`PUT .../status`, `POST .../purge`) remain strict and return `404` immediately on routing-map miss — they require the SIM to be known before performing a mutation.
+
 **Errors**:
-- `404 subscription.not_found` — not present in routing map. The detail
-  message instructs the caller to bootstrap routing first.
+- `404 subscription.not_found` — neither the routing map nor any provider that supports ICCID filtering returned a match. The detail message explains how to bootstrap (e.g. for a SIM on a provider whose listing cannot filter by ICCID).
 - `412 tenant.credentials_missing` — no active credential for this SIM's provider.
 
 ### 4.3 `GET /v1/sims/{iccid}/usage`
@@ -1129,7 +1184,7 @@ server-side regardless of whether this was a first call or an idempotency replay
 |---|---|---|---|
 | `400` | `request.idempotency_key_required` | `Idempotency-Key` header missing | Show "retry" with a generated key |
 | `403` | _(FastAPI default `{"detail":"..."}`)_ | Caller is not `admin` | Hide button for non-admin roles |
-| `404` | `subscription.not_found` | ICCID not in routing map | Show "SIM not found. Try refreshing the SIM list." |
+| `404` | `subscription.not_found` | Purge target unknown (routing-map miss; purge does not trigger lazy discovery) | Show "SIM not found. Open the SIM detail or refresh the list to populate routing first." |
 | `409` | `provider.unsupported_operation` | `LIFECYCLE_WRITES_ENABLED` is off in backend config | Hide purge UI; lifecycle writes are disabled by ops |
 | `412` | `tenant.credentials_missing` | Provider has no active credential for this company | Show "Provider credentials missing. Contact admin." |
 | `422` | `provider.validation_error` | Provider rejected the call (e.g. Moabits did not confirm `info.purged=true`) | Show `detail`. Log `instance` for support. |
@@ -1338,12 +1393,12 @@ Source: [app/shared/errors.py](app/shared/errors.py).
 
 | Code | HTTP | Title | Surfaces from |
 |---|---|---|---|
-| `subscription.not_found` | 404 | Subscription not found | `/sims/{iccid}*` and lifecycle writes when ICCID is not in the routing map |
+| `subscription.not_found` | 404 | Subscription not found | `GET /sims/{iccid}*` after both the routing map and cross-provider fan-out miss; lifecycle writes (`PUT .../status`, `POST .../purge`) on routing-map miss (writes do not trigger fan-out) |
 | `subscription.invalid_iccid` | 400 | Invalid ICCID format | provider adapters |
 | `subscription.partial_result` | 207 | Partial result — some providers failed | currently surfaced as `200` with `partial: true` in `SimListOut` |
 | `subscription.listing_precondition_failed` | 412 | Listing precondition failed | global `GET /sims` with empty routing map; provider-scoped Moabits listing without company codes |
-| `provider.unavailable` | 503 | Provider temporarily unavailable | adapter network/timeouts |
-| `provider.rate_limited` | 429 | Provider rate limit reached | adapter; `extra.retry_after` if provider supplied it |
+| `provider.unavailable` | 503 | Provider temporarily unavailable | adapter network/timeouts; may include `Retry-After` HTTP header + `extra.retry_after` body field |
+| `provider.rate_limited` | 429 | Provider rate limit reached | adapter; may include `Retry-After` HTTP header + `extra.retry_after` body field if provider supplied it |
 | `provider.auth_failed` | 502 | Provider authentication failed | bad/expired upstream credentials |
 | `provider.protocol_error` | 502 | Unexpected response from provider | parsing/contract violation |
 | `provider.resource_not_found` | 404 | Resource not found on provider | provider-side 404; may include `extra.provider_request_id`, `provider_error_code`, `provider_error_message` |

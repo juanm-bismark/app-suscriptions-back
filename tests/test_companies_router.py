@@ -104,7 +104,6 @@ def _moabits_credential() -> CompanyProviderCredentials:
             {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "secret-key",
-                "parent_company_code": "48123",
             },
             FERNET_KEY,
         ),

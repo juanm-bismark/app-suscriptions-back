@@ -6,7 +6,7 @@ Credentials dict keys:
         token via GET /integrity/authorization-token. v2 paths
         (/api/v2/sim/{iccids}, /api/v2/sim/connectivity/{iccids}) accept the
         same key directly as the X-API-KEY header — no token exchange.
-    company_codes (list[str]): Company codes owned by this tenant.
+    company_code (str): Moabits company code mapped to this tenant.
     company_id (str): Injected by the service layer — not a stored credential.
 
 Provider-specific fields returned in Subscription.provider_fields (Moabits block):
@@ -89,8 +89,7 @@ _SIM_LIST_LOCKS_GUARD = asyncio.Lock()
 _V2_ENRICHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _REQUEST_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 _REQUEST_SEMAPHORES_GUARD = asyncio.Lock()
-MOABITS_DEFAULT_PARENT_COMPANY_CODE = "48123"
-
+MOABITS_PARENT_COMPANY_CODE = "48123"
 logger = structlog.get_logger(__name__)
 
 
@@ -98,13 +97,9 @@ logger = structlog.get_logger(__name__)
 class _MoabitsCreds:
     base_url: str
     x_api_key: str
-    company_codes: list[str]
 
 
 def _creds(d: dict[str, Any]) -> _MoabitsCreds:
-    codes = d.get("company_codes", [])
-    if isinstance(codes, str):
-        codes = [codes]
     x_api_key = d.get("x_api_key")
     if not x_api_key:
         raise ProviderAuthFailed(
@@ -113,7 +108,6 @@ def _creds(d: dict[str, Any]) -> _MoabitsCreds:
     return _MoabitsCreds(
         base_url=d["base_url"].rstrip("/"),
         x_api_key=str(x_api_key),
-        company_codes=codes,
     )
 
 
@@ -172,16 +166,14 @@ def _check(resp: httpx.Response, label: str = "Moabits") -> None:
         )
 
 
-def _parent_company_code(credentials: dict[str, Any], creds: _MoabitsCreds) -> str:
-    raw = (
-        credentials.get("parent_company_code")
-        or credentials.get("root_company_code")
-        or credentials.get("company_code")
-    )
-    if raw is None and creds.company_codes:
-        raw = creds.company_codes[0]
-    company_code = str(raw or MOABITS_DEFAULT_PARENT_COMPANY_CODE).strip()
-    return company_code or MOABITS_DEFAULT_PARENT_COMPANY_CODE
+def _parent_company_code() -> str:
+    return MOABITS_PARENT_COMPANY_CODE
+
+
+async def test_credentials(credentials: dict[str, Any]) -> None:
+    """Validate Moabits credentials by exchanging x_api_key for a JWT."""
+    creds = _creds(credentials)
+    await _fetch_authorization_token(creds)
 
 
 async def fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, Any]]:
@@ -189,7 +181,7 @@ async def fetch_child_companies(credentials: dict[str, Any]) -> list[dict[str, A
     creds = _creds(credentials)
     data = await _get(
         creds,
-        f"/api/company/childs/{_parent_company_code(credentials, creds)}",
+        f"/api/company/childs/{_parent_company_code()}",
     )
     info = data.get("info") if isinstance(data, dict) else None
     rows = info.get("companyChilds") if isinstance(info, dict) else None
@@ -1290,7 +1282,7 @@ class MoabitsAdapter(BaseAdapter):
             )
 
     def supports_list_filter(self, filter_name: str) -> bool:
-        return False
+        return filter_name == "iccid"
 
     def bootstrap_filters(self) -> SubscriptionSearchFilters:
         return SubscriptionSearchFilters()
@@ -1303,7 +1295,7 @@ class MoabitsAdapter(BaseAdapter):
         limit: int,
         filters: SubscriptionSearchFilters | None = None,
     ) -> tuple[list[Subscription], str | None]:
-        """List subscriptions across the company codes these credentials grant.
+        """List subscriptions for the mapped Moabits company code.
 
         Moabits has no native pagination: `getSimListByCompany` returns all SIMs
         at once. Pagination is applied locally via `cursor` (offset) + `limit`.
@@ -1318,17 +1310,17 @@ class MoabitsAdapter(BaseAdapter):
         """
         if filters and (
             filters.status is not None
-            or bool(filters.iccid)
             or bool(filters.imsi)
             or bool(filters.msisdn)
             or bool(filters.custom)
         ):
             raise UnsupportedOperation(
-                detail="Moabits Search Devices filters are not documented"
+                detail="Moabits listing supports only local ICCID filtering"
             )
         creds = _creds(credentials)
         company_id = credentials.get("company_id", "")
-        if not creds.company_codes:
+        company_code = str(credentials.get("company_code") or "")
+        if not company_code:
             return [], None
 
         try:
@@ -1336,26 +1328,17 @@ class MoabitsAdapter(BaseAdapter):
         except ValueError:
             offset = 0
         page_size = min(max(limit, 1), 500)
-        page: list[dict[str, Any]] = []
-        rows_seen = 0
-        has_more = False
 
-        for company_index, company_code in enumerate(creds.company_codes):
-            rows = await _company_sim_list_rows(creds, company_code)
-            if rows_seen + len(rows) <= offset:
-                rows_seen += len(rows)
-                continue
-
-            start = max(offset - rows_seen, 0)
-            remaining = page_size - len(page)
-            page.extend(rows[start : start + remaining])
-            rows_seen += len(rows)
-
-            if len(page) >= page_size:
-                has_more_in_company = start + remaining < len(rows)
-                has_more_companies = company_index < len(creds.company_codes) - 1
-                has_more = has_more_in_company or has_more_companies
-                break
+        rows = await _company_sim_list_rows(creds, company_code)
+        if filters and filters.iccid:
+            requested_iccid = filters.iccid.strip()
+            rows = [
+                row
+                for row in rows
+                if str(row.get("iccid") or "").strip() == requested_iccid
+            ]
+        page = rows[offset : offset + page_size]
+        has_more = offset + page_size < len(rows)
 
         v2_settings = _v2_settings_from_app_settings()
         detail_map: dict[str, dict[str, Any]] = {}

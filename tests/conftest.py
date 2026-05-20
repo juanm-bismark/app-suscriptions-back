@@ -8,7 +8,7 @@ def moabits_creds() -> dict:
     return {
         "base_url": "https://api.moabits.test",
         "x_api_key": "test-key",
-        "company_codes": ["ACME"],
+        "company_code": "ACME",
         "company_id": "00000000-0000-0000-0000-000000000001",
     }
 

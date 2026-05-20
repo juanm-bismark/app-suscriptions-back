@@ -200,7 +200,7 @@ async def test_global_listing_bootstraps_empty_routing_map(monkeypatch) -> None:
             return _SearchProvider(provider)
 
     async def _credentials(*args, **kwargs):
-        return {"company_codes": ["48123"]}
+        return {"company_code": "48123"}
 
     async def _upsert(*args, **kwargs):
         return None
@@ -288,7 +288,7 @@ async def test_global_listing_uses_provider_summaries_without_detail_calls(
             return _SearchProvider(provider)
 
     async def _credentials(*args, **kwargs):
-        return {"company_codes": ["48123"]}
+        return {"company_code": "48123"}
 
     async def _upsert(*args, **kwargs):
         return None
@@ -356,7 +356,7 @@ async def test_global_listing_queries_providers_concurrently(monkeypatch) -> Non
             return _SearchProvider(provider)
 
     async def _credentials(*args, **kwargs):
-        return {"company_codes": ["48123"]}
+        return {"company_code": "48123"}
 
     monkeypatch.setattr(sims, "_load_credentials", _credentials)
 
@@ -431,7 +431,7 @@ async def test_global_listing_respects_total_limit_across_providers(
             return _Provider(provider)
 
     async def _credentials(*args, **kwargs):
-        return {"company_codes": ["48123"]}
+        return {"company_code": "48123"}
 
     async def _upsert(*args, **kwargs):
         return None
@@ -520,7 +520,7 @@ async def test_global_listing_carries_unqueried_providers_in_cursor(
             return _Provider(provider)
 
     async def _credentials(*args, **kwargs):
-        return {"company_codes": ["48123"]}
+        return {"company_code": "48123"}
 
     async def _upsert(*args, **kwargs):
         return None
@@ -572,7 +572,6 @@ async def test_load_moabits_credentials_raises_without_mapping() -> None:
             {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "secret-key",
-                "parent_company_code": "48123",
             },
             fernet_key,
         ),
@@ -611,7 +610,6 @@ async def test_load_moabits_credentials_uses_mapping_company_code() -> None:
             {
                 "base_url": "https://www.api.myorion.co",
                 "x_api_key": "secret-key",
-                "parent_company_code": "48123",
             },
             fernet_key,
         ),
@@ -647,7 +645,7 @@ async def test_load_moabits_credentials_uses_mapping_company_code() -> None:
         Settings(fernet_key=fernet_key),
     )
 
-    assert loaded["company_codes"] == ["48123-99"]
+    assert loaded["company_code"] == "48123-99"
     assert loaded["provider_company_mapping"] == {
         "companyCode": "48123-99",
         "companyName": "3 POINTECH S.A.S.",
@@ -919,8 +917,7 @@ async def test_global_iccid_search_uses_routing_map_for_moabits(
         return {
             "base_url": "https://www.api.myorion.co",
             "x_api_key": "secret-key",
-            "parent_company_code": "48123",
-            "company_codes": ["48123"],
+            "company_code": "48123",
         }
 
     monkeypatch.setattr(sims, "_find_routing", _find)
@@ -958,7 +955,7 @@ async def test_global_iccid_search_uses_routing_map_for_moabits(
 
 
 @pytest.mark.asyncio
-async def test_global_iccid_search_skips_moabits_when_unmapped(
+async def test_global_iccid_search_queries_moabits_when_unmapped(
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, str | None]] = []
@@ -976,7 +973,7 @@ async def test_global_iccid_search_skips_moabits_when_unmapped(
 
         async def list_subscriptions(self, credentials, *, cursor, limit, filters):
             calls.append((self.provider, filters.iccid))
-            if self.provider == "kite":
+            if self.provider == "moabits":
                 return (
                     [
                         Subscription(
@@ -984,8 +981,8 @@ async def test_global_iccid_search_skips_moabits_when_unmapped(
                             msisdn=None,
                             imsi=None,
                             status=AdministrativeStatus.ACTIVE,
-                            native_status="ACTIVE",
-                            provider="kite",
+                            native_status="Active",
+                            provider="moabits",
                             company_id=str(COMPANY_ID),
                             activated_at=None,
                             updated_at=None,
@@ -993,12 +990,15 @@ async def test_global_iccid_search_skips_moabits_when_unmapped(
                     ],
                     None,
                 )
-            assert filters.modified_since is not None
+            if self.provider == "tele2":
+                assert filters.modified_since is not None
+            else:
+                assert filters.modified_since is None
             return [], None
 
     class _Registry:
         def get(self, provider):
-            assert provider in {"kite", "tele2"}
+            assert provider in {"kite", "tele2", "moabits"}
             return _Provider(provider)
 
     async def _find(*args, **kwargs):
@@ -1036,14 +1036,283 @@ async def test_global_iccid_search_skips_moabits_when_unmapped(
     assert calls == [
         ("kite", "8934070100000000001"),
         ("tele2", "8934070100000000001"),
+        ("moabits", "8934070100000000001"),
     ]
     assert db.commit_calls == 1
-    assert result.partial is True
-    assert [item.provider for item in result.items] == ["kite"]
-    assert result.failed_providers == [
-        {
-            "provider": "moabits",
-            "code": "provider.unsupported_operation",
-            "title": "Operation not supported by this provider",
-        }
+    assert result.partial is False
+    assert [item.provider for item in result.items] == ["moabits"]
+    assert result.failed_providers == []
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 0),
+        ("tele2", "ok", 0),
+        ("moabits", "ok", 1),
     ]
+
+
+# ── Lazy ICCID resolution (routing map → fan-out) ──────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clear_iccid_negative_cache():
+    sims._iccid_negative_cache.clear()
+    yield
+    sims._iccid_negative_cache.clear()
+
+
+def _make_subscription(iccid: str, provider: str) -> Subscription:
+    return Subscription(
+        iccid=iccid,
+        msisdn=None,
+        imsi=None,
+        status=AdministrativeStatus.ACTIVE,
+        native_status="active",
+        provider=provider,
+        company_id=str(COMPANY_ID),
+        activated_at=None,
+        updated_at=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_discover_hits_routing_map_without_fanout(
+    monkeypatch,
+) -> None:
+    async def _find(iccid, company_id, db):
+        return _Routing()
+
+    async def _discover(*args, **kwargs):
+        raise AssertionError("routing-map hit must not trigger fan-out")
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+
+    routing, prefetched = await sims._resolve_routing_or_discover(
+        "8934070100000000001",
+        COMPANY_ID,
+        db=object(),
+        settings=Settings(),
+        registry=object(),
+    )
+
+    assert routing.provider == "tele2"
+    assert prefetched is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_discover_falls_back_to_fanout_when_unmapped(
+    monkeypatch,
+) -> None:
+    discovery_calls: list[str] = []
+    discovered_sub = _make_subscription("8934070100000000001", "kite")
+
+    state: dict[str, int] = {"find_calls": 0}
+
+    async def _find(iccid, company_id, db):
+        state["find_calls"] += 1
+        if state["find_calls"] == 1:
+            return None
+        return _Routing()
+
+    async def _discover(iccid, company_id, db, settings, registry):
+        discovery_calls.append(iccid)
+        return discovered_sub
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+
+    routing, prefetched = await sims._resolve_routing_or_discover(
+        "8934070100000000001",
+        COMPANY_ID,
+        db=object(),
+        settings=Settings(),
+        registry=object(),
+    )
+
+    assert discovery_calls == ["8934070100000000001"]
+    assert prefetched is discovered_sub
+    assert routing.provider == "tele2"
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_discover_raises_and_caches_negative_on_miss(
+    monkeypatch,
+) -> None:
+    discovery_calls: list[str] = []
+
+    async def _find(iccid, company_id, db):
+        return None
+
+    async def _discover(iccid, company_id, db, settings, registry):
+        discovery_calls.append(iccid)
+        return None
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+
+    from app.shared.errors import SubscriptionNotFound
+
+    with pytest.raises(SubscriptionNotFound):
+        await sims._resolve_routing_or_discover(
+            "0000000000000000000",
+            COMPANY_ID,
+            db=object(),
+            settings=Settings(),
+            registry=object(),
+        )
+
+    with pytest.raises(SubscriptionNotFound):
+        await sims._resolve_routing_or_discover(
+            "0000000000000000000",
+            COMPANY_ID,
+            db=object(),
+            settings=Settings(),
+            registry=object(),
+        )
+
+    assert discovery_calls == ["0000000000000000000"]
+
+
+@pytest.mark.asyncio
+async def test_discover_iccid_skips_providers_without_iccid_filter(
+    monkeypatch,
+) -> None:
+    list_calls: list[str] = []
+
+    class _Adapter:
+        def __init__(self, provider: str, supports: bool):
+            self.provider = provider
+            self._supports = supports
+
+        def supports_list_filter(self, filter_name: str) -> bool:
+            return self._supports and filter_name == "iccid"
+
+        def bootstrap_filters(self):
+            from app.subscriptions.domain import SubscriptionSearchFilters
+
+            return SubscriptionSearchFilters()
+
+        async def list_subscriptions(self, creds, *, cursor, limit, filters):
+            list_calls.append(self.provider)
+            if self.provider == "tele2":
+                return [_make_subscription(filters.iccid, "tele2")], None
+            return [], None
+
+    class _Registry:
+        def get(self, provider):
+            return _Adapter(
+                provider,
+                supports=provider in {"kite", "tele2"},
+            )
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._discover_iccid_across_providers(
+        "8934070100000000001",
+        COMPANY_ID,
+        db=db,
+        settings=Settings(),
+        registry=_Registry(),
+    )
+
+    assert result is not None
+    assert result.provider == "tele2"
+    assert "moabits" not in list_calls
+    assert set(list_calls) == {"kite", "tele2"}
+    assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_discover_iccid_treats_provider_errors_as_provider_misses(
+    monkeypatch,
+) -> None:
+    class _Adapter:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        def supports_list_filter(self, filter_name: str) -> bool:
+            return filter_name == "iccid"
+
+        def bootstrap_filters(self):
+            from app.subscriptions.domain import SubscriptionSearchFilters
+
+            return SubscriptionSearchFilters()
+
+        async def list_subscriptions(self, creds, *, cursor, limit, filters):
+            if self.provider == "kite":
+                raise RuntimeError("kite is down")
+            if self.provider == "tele2":
+                return [_make_subscription(filters.iccid, "tele2")], None
+            return [], None
+
+    class _Registry:
+        def get(self, provider):
+            return _Adapter(provider)
+
+    class _Db:
+        async def execute(self, stmt):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+
+    result = await sims._discover_iccid_across_providers(
+        "8934070100000000001",
+        COMPANY_ID,
+        db=_Db(),
+        settings=Settings(),
+        registry=_Registry(),
+    )
+
+    assert result is not None
+    assert result.provider == "tele2"
+
+
+def test_set_status_does_not_trigger_fanout_on_routing_miss(monkeypatch) -> None:
+    async def _find(iccid, company_id, db):
+        return None
+
+    async def _discover(*args, **kwargs):
+        raise AssertionError("write endpoints must remain strict")
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+
+    client = _client(AppRole.admin)
+    response = client.put(
+        "/v1/sims/8934070100000000001/status",
+        headers={"Idempotency-Key": "k-1"},
+        json={"target": "active"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "subscription.not_found"

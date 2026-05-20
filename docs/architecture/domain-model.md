@@ -97,7 +97,7 @@ CompanyProviderCredentials {
   account_scope: {                      # qué cuenta/grupo del proveedor representa esta credencial
     kite?: { end_customer_id: string, cert_expires_at?: date, environment?: string }
     tele2?: { account_id: string }
-    moabits?: { parent_company_code?: string, environment?: string }
+    moabits?: { environment?: string }
   }
   active: bool
   rotated_at: timestamp

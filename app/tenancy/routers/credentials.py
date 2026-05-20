@@ -1,6 +1,6 @@
 import base64
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, cast as type_cast
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -11,16 +11,23 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from sqlalchemy import String, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
 from app.providers.base import Provider, SearchableProvider
-from app.providers.moabits.adapter import fetch_child_companies
+from app.providers.moabits.adapter import test_credentials as moabits_test_credentials
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials, encrypt_credentials
-from app.shared.errors import DomainError
+from app.shared.errors import (
+    CredentialsMissing,
+    DomainError,
+    ListingPreconditionFailed,
+    ProviderProtocolError,
+)
+from app.subscriptions.domain import SubscriptionSearchFilters
 from app.tenancy.credential_expiry import credential_expiry_status
 from app.tenancy.models.company import Company
 from app.tenancy.models.credentials import CompanyProviderCredentials
@@ -30,6 +37,7 @@ from app.tenancy.schemas.credentials import (
     AdminCredentialMetadataOut,
     CredentialMetadataOut,
     CredentialPatchIn,
+    CredentialProbeOut,
     CredentialTestOut,
     CredentialUpsertIn,
 )
@@ -170,10 +178,6 @@ def _normalized_kite_credentials(body: CredentialUpsertIn) -> dict[str, Any]:
         for alias in ("server_ca_cert_pem", "ca_bundle_pem", "ca_cert_pem"):
             credentials.pop(alias, None)
 
-    if body.account_scope.get("end_customer_id") is not None:
-        credentials["end_customer_id"] = body.account_scope["end_customer_id"]
-    if body.account_scope.get("environment") is not None:
-        credentials["environment"] = body.account_scope["environment"]
     return credentials
 
 
@@ -197,16 +201,14 @@ def _normalized_credentials(
 
     if "account_id" not in credentials and body.account_scope.get("account_id"):
         credentials["account_id"] = body.account_scope["account_id"]
-    if body.account_scope.get("max_tps") is not None:
-        credentials["max_tps"] = body.account_scope["max_tps"]
     return credentials
 
 
 def _format_expiry_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
 
 
@@ -254,7 +256,7 @@ async def _active_credential(
     return result.scalar_one_or_none()
 
 
-def _credential_search_clause(q: str):
+def _credential_search_clause(q: str) -> ColumnElement[bool]:
     pattern = f"%{q.strip()}%"
     return or_(
         CompanyProviderCredentials.provider.ilike(pattern),
@@ -316,17 +318,6 @@ async def _ensure_company_exists(company_id: UUID, db: AsyncSession) -> None:
     await _current_company(company_id, db)
 
 
-def _coerce_int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-
-
 async def _live_test_credentials(
     provider: Provider,
     body: CredentialUpsertIn,
@@ -349,7 +340,7 @@ async def _live_test_credentials(
     credentials["company_id"] = str(company_id) if company_id is not None else ""
     if provider == Provider.MOABITS:
         try:
-            await fetch_child_companies(credentials)
+            await moabits_test_credentials(credentials)
         except DomainError as exc:
             return CredentialTestOut(
                 provider=provider.value,
@@ -459,7 +450,6 @@ def _ensure_patch_has_fields(body: CredentialPatchIn) -> None:
     )
 
 
-
 async def _active_moabits_mapping(
     company_id: UUID | None,
     db: AsyncSession,
@@ -474,6 +464,108 @@ async def _active_moabits_mapping(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def _stored_probe_credentials(
+    company_id: UUID,
+    provider: Provider,
+    db: AsyncSession,
+    settings: Settings,
+) -> dict[str, Any]:
+    row = await _active_credential(company_id, provider, db)
+    if row is None:
+        raise CredentialsMissing(
+            detail=f"No active credentials for provider '{provider.value}'"
+        )
+
+    credentials = decrypt_credentials(
+        row.credentials_enc, _require_fernet_key(settings)
+    )
+    credentials["company_id"] = str(company_id)
+    credentials["account_scope"] = row.account_scope or {}
+    if (
+        provider == Provider.TELE2
+        and (row.account_scope or {}).get("max_tps") is not None
+    ):
+        credentials["max_tps"] = (row.account_scope or {})["max_tps"]
+    if provider == Provider.MOABITS:
+        mapping = await _active_moabits_mapping(company_id, db)
+        if mapping is None:
+            raise ListingPreconditionFailed(
+                detail=(
+                    "Company is not linked to a Moabits company code. "
+                    "An admin must configure the provider mapping first."
+                ),
+                extra={"provider": Provider.MOABITS.value},
+            )
+        credentials["company_code"] = mapping.provider_company_code
+        credentials["provider_company_mapping"] = {
+            "companyCode": mapping.provider_company_code,
+            "companyName": mapping.provider_company_name,
+            "clie_id": mapping.clie_id,
+        }
+    return credentials
+
+
+def _probe_bootstrap_filters(
+    provider: Provider,
+    adapter: SearchableProvider,
+) -> SubscriptionSearchFilters | None:
+    bootstrap_filters = getattr(adapter, "bootstrap_filters", None)
+    if callable(bootstrap_filters):
+        return type_cast(SubscriptionSearchFilters | None, bootstrap_filters())
+    if provider == Provider.TELE2:
+        return SubscriptionSearchFilters(
+            modified_since=datetime.now(UTC).replace(microsecond=0)
+            - timedelta(days=365)
+            + timedelta(seconds=1)
+        )
+    return SubscriptionSearchFilters()
+
+
+async def _probe_stored_credential(
+    provider: Provider,
+    company_id: UUID,
+    db: AsyncSession,
+    settings: Settings,
+    registry: ProviderRegistry,
+) -> CredentialProbeOut:
+    adapter = registry.get(provider.value)
+    if not isinstance(adapter, SearchableProvider):
+        raise ListingPreconditionFailed(
+            detail=(
+                f"Provider '{provider.value}' does not expose a native "
+                "subscription listing for stored credential probing"
+            ),
+            extra={
+                "provider": provider.value,
+                "missing_capability": "SearchableProvider",
+            },
+        )
+    credentials = await _stored_probe_credentials(company_id, provider, db, settings)
+    try:
+        subscriptions, _next_cursor = await adapter.list_subscriptions(
+            credentials,
+            cursor=None,
+            limit=1,
+            filters=_probe_bootstrap_filters(provider, adapter),
+        )
+    except DomainError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProviderProtocolError(detail=str(exc)) from exc
+
+    sample_count = len(subscriptions)
+    return CredentialProbeOut(
+        provider=provider.value,
+        ok=True,
+        detail=(
+            "Stored credential probe succeeded"
+            if sample_count == 0
+            else "Stored credential probe succeeded with a sample SIM"
+        ),
+        sample_count=sample_count,
+    )
 
 
 async def _persist_credential_patch(
@@ -493,9 +585,7 @@ async def _persist_credential_patch(
         raise HTTPException(status_code=404, detail="Credential not found")
 
     current_credentials = (
-        decrypt_credentials(row.credentials_enc, fernet_key)
-        if row is not None
-        else {}
+        decrypt_credentials(row.credentials_enc, fernet_key) if row is not None else {}
     )
     merged_credentials = {
         **current_credentials,
@@ -663,6 +753,23 @@ async def admin_test_company_credential(
     """Test candidate credentials for a specific company against the provider API without persisting. Admin only."""
     await _ensure_company_exists(company_id, db)
     return await _live_test_credentials(provider, body, company_id, registry)
+
+
+@admin_company_credentials_router.post(
+    "/{provider}/probe",
+    response_model=CredentialProbeOut,
+)
+async def admin_probe_company_credential(
+    company_id: UUID,
+    provider: Provider,
+    current: AdminProfile,
+    db: DbSession,
+    settings: SettingsDep,
+    registry: RegistryDep,
+) -> CredentialProbeOut:
+    """Probe a company's stored credential end-to-end with a one-row provider listing. Admin only."""
+    await _ensure_company_exists(company_id, db)
+    return await _probe_stored_credential(provider, company_id, db, settings, registry)
 
 
 @admin_company_credentials_router.patch(

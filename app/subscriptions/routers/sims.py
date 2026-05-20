@@ -122,7 +122,7 @@ async def _load_credentials(
                 ),
                 extra={"provider": Provider.MOABITS.value},
             )
-        creds["company_codes"] = [mapping.provider_company_code]
+        creds["company_code"] = mapping.provider_company_code
         creds["provider_company_mapping"] = {
             "companyCode": mapping.provider_company_code,
             "companyName": mapping.provider_company_name,
@@ -187,6 +187,173 @@ async def _find_routing(
         )
     )
     return result.scalar_one_or_none()
+
+
+# ── Lazy ICCID resolution (routing map → cross-provider fan-out) ────────────────
+
+
+_NEGATIVE_CACHE_TTL_SECONDS = 60.0
+_NEGATIVE_CACHE_MAX_ENTRIES = 10_000
+# Process-local cache; per worker is fine — a stale miss just costs one extra
+# fan-out, never a wrong answer.
+_iccid_negative_cache: dict[tuple[uuid.UUID, str], float] = {}
+
+
+def _negative_cache_hit(company_id: uuid.UUID, iccid: str) -> bool:
+    key = (company_id, iccid)
+    expires_at = _iccid_negative_cache.get(key)
+    if expires_at is None:
+        return False
+    if time.monotonic() >= expires_at:
+        _iccid_negative_cache.pop(key, None)
+        return False
+    return True
+
+
+def _negative_cache_record(company_id: uuid.UUID, iccid: str) -> None:
+    now = time.monotonic()
+    if len(_iccid_negative_cache) >= _NEGATIVE_CACHE_MAX_ENTRIES:
+        for key, expires_at in list(_iccid_negative_cache.items()):
+            if expires_at <= now:
+                _iccid_negative_cache.pop(key, None)
+        if len(_iccid_negative_cache) >= _NEGATIVE_CACHE_MAX_ENTRIES:
+            _iccid_negative_cache.pop(next(iter(_iccid_negative_cache)), None)
+    _iccid_negative_cache[(company_id, iccid)] = now + _NEGATIVE_CACHE_TTL_SECONDS
+
+
+def _negative_cache_forget(company_id: uuid.UUID, iccid: str) -> None:
+    _iccid_negative_cache.pop((company_id, iccid), None)
+
+
+def _unresolved_iccid_error(iccid: str) -> SubscriptionNotFound:
+    return SubscriptionNotFound(
+        detail=(
+            f"SIM {iccid} not found in any registered provider that supports "
+            "ICCID lookup. Verify the ICCID is correct. If the SIM lives on a "
+            "provider whose listing API cannot filter by ICCID (e.g. Moabits "
+            "without a populated company code), bootstrap the routing index via "
+            "POST /v1/sims/import or a provider-scoped listing."
+        )
+    )
+
+
+async def _discover_iccid_across_providers(
+    iccid: str,
+    company_id: uuid.UUID,
+    db: AsyncSession,
+    settings: Settings,
+    registry: ProviderRegistry,
+) -> Subscription | None:
+    """Fan out to every provider that supports listing filtered by ICCID.
+
+    Upserts the routing map for every SIM the providers return and commits
+    once at the end. Returns the Subscription whose ICCID matches the query
+    (so callers can short-circuit a second provider call), or None when no
+    provider claimed it. Provider-level failures during setup or the search
+    itself are logged and treated as misses for that provider — discovery
+    succeeds if *any* provider returns a match.
+    """
+    provider_calls: list[tuple[str, Any, dict[str, Any]]] = []
+    for provider in Provider:
+        provider_name = provider.value
+        try:
+            adapter = registry.get(provider_name)
+            if not _is_searchable_provider(adapter):
+                continue
+            if not _adapter_supports_list_filter(provider_name, adapter, "iccid"):
+                continue
+            creds = await _load_credentials(company_id, provider_name, db, settings)
+        except Exception as exc:
+            logger.warning(
+                "iccid_discovery_setup_error",
+                provider=provider_name,
+                iccid=iccid,
+                error=str(exc),
+            )
+            continue
+        provider_calls.append((provider_name, adapter, creds))
+
+    if not provider_calls:
+        return None
+
+    results = await asyncio.gather(
+        *(
+            adapter.list_subscriptions(
+                creds,
+                cursor=None,
+                limit=1,
+                filters=dataclasses.replace(
+                    _adapter_bootstrap_filters(provider_name, adapter),
+                    iccid=iccid,
+                ),
+            )
+            for provider_name, adapter, creds in provider_calls
+        ),
+        return_exceptions=True,
+    )
+
+    matched: Subscription | None = None
+    any_upserted = False
+    for (provider_name, _adapter, _creds), result in zip(
+        provider_calls, results, strict=True
+    ):
+        if isinstance(result, Exception):
+            logger.warning(
+                "iccid_discovery_provider_error",
+                provider=provider_name,
+                iccid=iccid,
+                error=str(result),
+            )
+            continue
+        subs, _next_cursor = result
+        for sub in subs:
+            await _upsert_routing(db, sub.iccid, provider_name, company_id)
+            any_upserted = True
+            if matched is None and sub.iccid == iccid:
+                matched = sub
+    if any_upserted:
+        await db.commit()
+    return matched
+
+
+async def _resolve_routing_or_discover(
+    iccid: str,
+    company_id: uuid.UUID,
+    db: AsyncSession,
+    settings: Settings,
+    registry: ProviderRegistry,
+) -> tuple[SimRoutingMap, Subscription | None]:
+    """Resolve ICCID → routing entry, discovering via fan-out on cache miss.
+
+    Returns (routing_entry, prefetched_subscription_or_None). The prefetched
+    Subscription is populated only when discovery hit a provider, letting the
+    caller skip a second provider round-trip. Raises SubscriptionNotFound when
+    neither the routing map nor any provider claims the ICCID.
+    """
+    routing = await _find_routing(iccid, company_id, db)
+    if routing is not None:
+        return routing, None
+
+    if _negative_cache_hit(company_id, iccid):
+        raise _unresolved_iccid_error(iccid)
+
+    discovered = await _discover_iccid_across_providers(
+        iccid, company_id, db, settings, registry
+    )
+    if discovered is None:
+        _negative_cache_record(company_id, iccid)
+        raise _unresolved_iccid_error(iccid)
+
+    _negative_cache_forget(company_id, iccid)
+    routing = await _find_routing(iccid, company_id, db)
+    if routing is None:
+        raise SubscriptionNotFound(
+            detail=(
+                f"SIM {iccid} was discovered on provider '{discovered.provider}' "
+                "but the routing entry could not be persisted. Retry the request."
+            )
+        )
+    return routing, discovered
 
 
 def _require_idempotency_key(
@@ -540,7 +707,11 @@ def _adapter_supports_list_filter(
     if callable(supports_list_filter):
         return bool(supports_list_filter(filter_name))
     if filter_name == "iccid":
-        return provider_name in {Provider.KITE.value, Provider.TELE2.value}
+        return provider_name in {
+            Provider.KITE.value,
+            Provider.TELE2.value,
+            Provider.MOABITS.value,
+        }
     return False
 
 
@@ -842,16 +1013,6 @@ async def _list_global_iccid_search(
     for provider in Provider:
         provider_name = provider.value
         try:
-            if provider_name == Provider.MOABITS.value:
-                unsupported = UnsupportedOperation(
-                    detail="moabits list_subscriptions does not support ICCID filters"
-                )
-                failed_provider, provider_status = _global_provider_failure(
-                    provider_name, unsupported
-                )
-                failed_providers_by_name[provider_name] = failed_provider
-                provider_statuses_by_name[provider_name] = provider_status
-                continue
             adapter = registry.get(provider_name)
             if not _is_searchable_provider(
                 adapter
@@ -1222,7 +1383,11 @@ async def get_sim(
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> SubscriptionOut:
-    routing = await _resolve_routing(iccid, company_id, db)
+    routing, prefetched = await _resolve_routing_or_discover(
+        iccid, company_id, db, settings, registry
+    )
+    if prefetched is not None:
+        return _to_out(prefetched)
     creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
     sub = await adapter.get_subscription(iccid, creds)
@@ -1240,7 +1405,9 @@ async def get_usage(
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> UsageOut:
-    routing = await _resolve_routing(iccid, company_id, db)
+    routing, _ = await _resolve_routing_or_discover(
+        iccid, company_id, db, settings, registry
+    )
     creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
     snap = await adapter.get_usage(
@@ -1261,7 +1428,9 @@ async def get_presence(
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> PresenceOut:
-    routing = await _resolve_routing(iccid, company_id, db)
+    routing, _ = await _resolve_routing_or_discover(
+        iccid, company_id, db, settings, registry
+    )
     creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
     presence = await adapter.get_presence(iccid, creds)

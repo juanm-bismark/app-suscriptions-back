@@ -393,7 +393,7 @@ async def test_get_usage_can_exchange_x_api_key_for_jwt(httpx_mock) -> None:
         {
             "base_url": "https://api.moabits.test",
             "x_api_key": "app-key",
-            "company_codes": ["ACME"],
+            "company_code": "ACME",
         },
     )
 
@@ -410,7 +410,7 @@ async def test_get_usage_rejects_legacy_moabits_api_key_alias(httpx_mock) -> Non
             {
                 "base_url": "https://api.moabits.test",
                 "api_key": "legacy-alias",
-                "company_codes": ["ACME"],
+                "company_code": "ACME",
             },
         )
 
@@ -449,7 +449,6 @@ async def test_fetch_child_companies_uses_v1_jwt_company_childs_endpoint(
         {
             "base_url": "https://api.moabits.test",
             "x_api_key": "app-key",
-            "company_codes": [],
         },
     )
 
@@ -475,7 +474,7 @@ async def test_get_usage_reuses_cached_jwt_until_refresh_window(httpx_mock) -> N
     creds = {
         "base_url": "https://api.moabits.test",
         "x_api_key": "app-key",
-        "company_codes": ["ACME"],
+        "company_code": "ACME",
     }
 
     await MoabitsAdapter().get_usage(iccid, creds)
@@ -510,7 +509,7 @@ async def test_get_usage_refreshes_jwt_when_exp_is_near(httpx_mock) -> None:
     creds = {
         "base_url": "https://api.moabits.test",
         "x_api_key": "app-key",
-        "company_codes": ["ACME"],
+        "company_code": "ACME",
     }
 
     await MoabitsAdapter().get_usage(iccid, creds)
@@ -543,7 +542,7 @@ async def test_get_usage_uses_cached_jwt_when_proactive_refresh_fails(
         {
             "base_url": "https://api.moabits.test",
             "x_api_key": "app-key",
-            "company_codes": ["ACME"],
+            "company_code": "ACME",
         },
     )
 
@@ -574,7 +573,7 @@ async def test_get_usage_refreshes_and_retries_once_on_business_401(httpx_mock) 
         {
             "base_url": "https://api.moabits.test",
             "x_api_key": "app-key",
-            "company_codes": ["ACME"],
+            "company_code": "ACME",
         },
     )
 
@@ -613,7 +612,7 @@ async def test_get_usage_retries_token_expired_detail_with_fresh_jwt(httpx_mock)
         {
             "base_url": "https://api.moabits.test",
             "x_api_key": "orion-application-key",
-            "company_codes": ["ACME"],
+            "company_code": "ACME",
         },
     )
 
@@ -640,7 +639,7 @@ async def test_get_usage_token_endpoint_403_is_credential_error(httpx_mock) -> N
             {
                 "base_url": "https://api.moabits.test",
                 "x_api_key": "app-key",
-                "company_codes": ["ACME"],
+                "company_code": "ACME",
             },
         )
 
@@ -925,38 +924,6 @@ async def test_list_subscriptions_uses_status_rows_without_detail_call(
     assert next_cursor is None
 
 
-@pytest.mark.asyncio
-async def test_list_subscriptions_stops_fetching_company_codes_after_page_is_full(
-    httpx_mock, moabits_creds: dict, disable_moabits_v2
-) -> None:
-    creds = {**moabits_creds, "company_codes": ["ACME", "NEXT"]}
-    rows = [
-        {
-            "iccid": f"8910300000003501{i:03d}",
-            "simStatus": "Ready",
-            "dataService": "Enabled",
-            "smsService": "Enabled",
-        }
-        for i in range(60)
-    ]
-    httpx_mock.add_response(
-        url="https://api.moabits.test/api/company/simList/ACME",
-        json={"status": "Ok", "info": {"iccidList": rows}},
-    )
-
-    subs, next_cursor = await MoabitsAdapter().list_subscriptions(
-        creds,
-        cursor=None,
-        limit=50,
-        filters=SubscriptionSearchFilters(),
-    )
-
-    requests = httpx_mock.get_requests()
-    assert len(requests) == 1
-    assert requests[0].url.path == "/api/company/simList/ACME"
-    assert len(subs) == 50
-    assert next_cursor == "50"
-
 
 @pytest.mark.asyncio
 async def test_list_subscriptions_reuses_cached_company_sim_list_for_local_pages(
@@ -1016,13 +983,55 @@ async def test_list_subscriptions_fails_when_status_rows_unavailable(
 
 
 @pytest.mark.asyncio
-async def test_list_subscriptions_rejects_non_date_filters(moabits_creds: dict) -> None:
+async def test_list_subscriptions_applies_local_iccid_filter(
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
+) -> None:
+    target_iccid = "8934070100000000001"
+    other_iccid = "8934070100000000002"
+    httpx_mock.add_response(
+        url="https://api.moabits.test/api/company/simList/ACME",
+        json={
+            "status": "Ok",
+            "info": {
+                "iccidList": [
+                    {
+                        "iccid": other_iccid,
+                        "simStatus": "Ready",
+                        "dataService": "Enabled",
+                        "smsService": "Enabled",
+                    },
+                    {
+                        "iccid": target_iccid,
+                        "simStatus": "Active",
+                        "dataService": "Enabled",
+                        "smsService": "Enabled",
+                    },
+                ]
+            },
+        },
+    )
+
+    subs, next_cursor = await MoabitsAdapter().list_subscriptions(
+        moabits_creds,
+        cursor=None,
+        limit=50,
+        filters=SubscriptionSearchFilters(iccid=target_iccid),
+    )
+
+    assert [sub.iccid for sub in subs] == [target_iccid]
+    assert next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_list_subscriptions_rejects_unsupported_filters(
+    moabits_creds: dict,
+) -> None:
     with pytest.raises(UnsupportedOperation):
         await MoabitsAdapter().list_subscriptions(
             moabits_creds,
             cursor=None,
             limit=50,
-            filters=SubscriptionSearchFilters(iccid="8934070100000000001"),
+            filters=SubscriptionSearchFilters(imsi="214030000000001"),
         )
 
 

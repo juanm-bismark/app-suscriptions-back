@@ -7,14 +7,14 @@
 
 ## Contexto
 
-Moabits (Orion) requiere acotar las consultas de SIMs por una lista de
-`company_codes` (subcompañías hijas asociadas al `x-api-key`). Esa lista
-se persiste como configuración no secreta en `provider_source_configs`
-para el provider `moabits`. Las credenciales sensibles (`base_url`,
-`x_api_key`, `parent_company_code`) siguen viviendo cifradas en
+Moabits (Orion) requiere acotar las consultas de SIMs a la subcompañía
+hija asociada al `x-api-key`. El code operativo se persiste en
+`CompanyProviderMapping` (una fila activa por tenant). Las credenciales
+sensibles (`base_url`, `x_api_key`) viven cifradas en
 `company_provider_credentials.credentials_enc`. El router combina ambas
-fuentes antes de llamar al adapter, que usa `company_codes` en
-`list_subscriptions` para iterar por code.
+fuentes antes de llamar al adapter: inyecta `company_code` (singular)
+desde el mapping, y el adapter usa ese valor directamente en
+`list_subscriptions` sin iterar sobre una lista.
 
 Hasta esta versión, `app/subscriptions/routers/sims.py` exponía una
 función `_auto_scope_moabits_credentials` que se ejecutaba **en cada
@@ -60,8 +60,9 @@ explícitamente** en `provider_source_configs.settings.company_codes`
 antes de poder listar. El flujo de onboarding queda:
 
 1. **Crear/rotar credencial**: `PATCH /v1/companies/me/credentials/moabits`
-   con `base_url`, `x_api_key` y `parent_company_code`. No se guardan
-   `company_codes` dentro del blob cifrado de credenciales.
+   con `base_url` y `x_api_key`. No se guarda ningún company code dentro
+   del blob cifrado de credenciales — el parent code (`48123`) es una
+   constante del adapter (`MOABITS_PARENT_COMPANY_CODE`).
 2. **Descubrir subcompañías** (read-only):
    `GET /v1/companies/me/credentials/moabits/companies/discover`
    devuelve la lista de subcompañías visibles para el `x-api-key`,

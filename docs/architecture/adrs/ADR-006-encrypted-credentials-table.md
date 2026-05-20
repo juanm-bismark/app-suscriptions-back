@@ -9,7 +9,7 @@
 
 Cada `Company` (tenant) puede operar con uno o más proveedores. Para cada (`Company`, `Provider`) hace falta guardar:
 - Credenciales (token, user/pass, certificado).
-- Scope de cuenta del proveedor (Kite `endCustomerId`, Tele2 `accountId`; Moabits usa `parent_company_code` en la credencial y `provider_source_configs.settings.company_codes` para la selección operativa).
+- Scope de cuenta del proveedor (Kite `endCustomerId`, Tele2 `accountId`; Moabits usa solo `x_api_key` cifrada — el código de compañía operativo vive en `CompanyProviderMapping`, no en las credenciales).
 - Estado (activa/inactiva).
 - Auditoría de rotación.
 
@@ -131,4 +131,4 @@ Pendiente: escribir una fila genérica en `audit_log` para rotación/desactivaci
 
 - Adopción corporativa de Vault/KMS → migrar implementación de cifrado, mantener tabla.
 - Los certificados PFX de Kite deben guardarse como base64 dentro de `credentials_enc` mientras el tamaño siga siendo razonable para Postgres. No van en `.env` ni en `account_scope`. Si aparecen credenciales de varios MB o rotación/firma compleja, mover el blob a object storage cifrado y guardar sólo la referencia.
-- Para Kite, `account_scope` sólo debe contener metadata no secreta como `end_customer_id`, `environment` y `cert_expires_at`; `client_cert_pfx_b64`, `client_cert_password`, `username` y `password` viven cifrados en `credentials_enc`.
+- Para Kite, `account_scope` contiene la metadata no secreta: `end_customer_id`, `environment` y `cert_expires_at`. Estos campos no se copian a `credentials_enc`; el adapter de Kite no los usa en llamadas SOAP. `client_cert_pfx_b64`, `client_cert_password`, `username` y `password` viven cifrados en `credentials_enc`.
