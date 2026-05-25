@@ -122,6 +122,11 @@ def _kite_exception_id(exc_el: ET.Element) -> str:
     return exception_id
 
 
+def _is_rate_limit_fault(exception_id: str, exception_text: str) -> bool:
+    text = exception_text.lower()
+    return "request rate per period" in text or "rate limit" in text
+
+
 def _envelope(creds: KiteCredentials, body_xml: str) -> bytes:
     transaction_id = str(uuid.uuid4())
     consumer_transaction_id = str(uuid.uuid4())
@@ -174,6 +179,33 @@ def _settings_timeout_seconds() -> float:
 
 def _settings_max_concurrent_requests() -> int:
     return max(int(get_settings().kite_max_concurrent_requests), 1)
+
+
+def _retry_max_attempts() -> int:
+    return max(int(get_settings().kite_retry_max_attempts), 1)
+
+
+def _retry_delay_seconds(attempt_index: int) -> float:
+    settings = get_settings()
+    base = max(float(settings.kite_retry_base_delay_seconds), 0.0)
+    maximum = max(float(settings.kite_retry_max_delay_seconds), 0.0)
+    if maximum == 0.0:
+        return 0.0
+    delay: float = min(base * (2**attempt_index), maximum)
+    return delay
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    if isinstance(exc, ProviderRateLimited):
+        return True
+    if isinstance(exc, ProviderUnavailable):
+        if exc.extra.get("retryable") is True:
+            return True
+        if exc.extra.get("provider_error_code") == "SVR.1006":
+            return True
+        detail = (exc.detail or "").lower()
+        return "system overloaded" in detail
+    return False
 
 
 def _fingerprint(value: str | None) -> str:
@@ -311,7 +343,9 @@ async def _parse_xml(text: str) -> ET.Element | None:
         return None
 
 
-async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Element:
+async def _call_once(
+    creds: KiteCredentials, operation: str, body_xml: str
+) -> ET.Element:
     async with httpx.AsyncClient(
         timeout=_settings_timeout_seconds(), verify=_ssl_context(creds)
     ) as client:
@@ -350,6 +384,17 @@ async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Ele
                 soa_tx = _findtext_any(
                     exc_el, "SOATransactionID", "SOAConsumerTransactionID"
                 )
+                fault_extra = {
+                    "provider_request_id": soa_tx,
+                    "provider_error_code": exception_id or None,
+                    "provider_error_message": exception_text,
+                }
+
+                if _is_rate_limit_fault(exception_id, exception_text):
+                    raise ProviderRateLimited(
+                        detail=exception_text,
+                        extra=fault_extra,
+                    )
 
                 # Map known exception IDs/categories to domain exceptions
                 # SVC.* → service errors (resource/validation)
@@ -445,6 +490,27 @@ async def _call(creds: KiteCredentials, operation: str, body_xml: str) -> ET.Ele
     return root
 
 
+async def _call(
+    creds: KiteCredentials,
+    operation: str,
+    body_xml: str,
+    *,
+    retryable: bool = False,
+) -> ET.Element:
+    attempts = _retry_max_attempts() if retryable else 1
+    for attempt_index in range(attempts):
+        try:
+            return await _call_once(creds, operation, body_xml)
+        except Exception as exc:
+            if attempt_index >= attempts - 1 or not _is_retryable_error(exc):
+                raise
+            delay = _retry_delay_seconds(attempt_index)
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+    raise ProviderUnavailable(detail=f"Kite retry loop exhausted on {operation}")
+
+
 class KiteClient:
     """SOAP client for the Kite inventory API."""
 
@@ -457,7 +523,9 @@ class KiteClient:
             f"{_qualified('icc')}{escape(iccid)}</gm2minve_s3t:icc>"
             f"</gm2minve_s3t:getSubscriptionDetail>"
         )
-        return await _call(self._credentials, "getSubscriptionDetail", body)
+        return await _call(
+            self._credentials, "getSubscriptionDetail", body, retryable=True
+        )
 
     async def get_presence_detail(self, iccid: str) -> ET.Element:
         body = (
@@ -465,7 +533,7 @@ class KiteClient:
             f"{_qualified('icc')}{escape(iccid)}</gm2minve_s3t:icc>"
             f"</gm2minve_s3t:getPresenceDetail>"
         )
-        return await _call(self._credentials, "getPresenceDetail", body)
+        return await _call(self._credentials, "getPresenceDetail", body, retryable=True)
 
     async def get_subscriptions(
         self,
@@ -503,7 +571,7 @@ class KiteClient:
 
         parts.append("</gm2minve_s3t:getSubscriptions>")
         body = "".join(parts)
-        return await _call(self._credentials, "getSubscriptions", body)
+        return await _call(self._credentials, "getSubscriptions", body, retryable=True)
 
     async def network_reset(self, iccid: str) -> ET.Element:
         body = (
@@ -538,7 +606,7 @@ class KiteClient:
             f"{_qualified('icc')}{escape(iccid)}</gm2minve_s3t:icc>"
             f"</gm2minve_s3t:getStatusDetail>"
         )
-        return await _call(self._credentials, "getStatusDetail", body)
+        return await _call(self._credentials, "getStatusDetail", body, retryable=True)
 
     async def get_status_history(
         self, iccid: str, start_date: str | None = None, end_date: str | None = None
@@ -558,4 +626,4 @@ class KiteClient:
             )
         body_parts.append("</gm2minve_s3t:getStatusHistory>")
         body = "".join(body_parts)
-        return await _call(self._credentials, "getStatusHistory", body)
+        return await _call(self._credentials, "getStatusHistory", body, retryable=True)

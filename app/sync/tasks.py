@@ -7,7 +7,7 @@ import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -63,6 +63,7 @@ async def routing_sync_for_provider(
     """
     from app.config import get_settings
     from app.database import _session_factory
+    from app.providers.base import SearchableProvider
     from app.providers.registry import ProviderRegistry
     from app.shared.crypto import decrypt_credentials
     from app.shared.errors import CredentialsMissing
@@ -76,6 +77,9 @@ async def routing_sync_for_provider(
     settings = get_settings()
     registry: ProviderRegistry = ctx["registry"]
     adapter = registry.get(provider)
+    if not callable(getattr(adapter, "list_subscriptions", None)):
+        raise RuntimeError(f"Provider '{provider}' does not support subscription sync")
+    searchable_adapter = cast(SearchableProvider, adapter)
     company_uuid = uuid.UUID(company_id)
 
     total_done = 0
@@ -124,7 +128,7 @@ async def routing_sync_for_provider(
 
         # ── Phase 2: paginate + upsert ─────────────────────────────────────────
         while True:
-            subs, next_cursor = await adapter.list_subscriptions(
+            subs, next_cursor = await searchable_adapter.list_subscriptions(
                 credentials,
                 cursor=cursor,
                 limit=_SYNC_BATCH_SIZE,

@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated
+from typing import Annotated, cast as typing_cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi_pagination import Page, Params
@@ -32,28 +32,40 @@ PaginationParams = Annotated[Params, Depends()]
 SearchQuery = Annotated[str | None, Query()]
 
 
-async def _attach_profile_email(profile: Profile, db: AsyncSession) -> Profile:
+def _profile_out_from_email(profile: Profile, email: str | None) -> ProfileOut:
+    return ProfileOut.model_construct(
+        id=profile.id,
+        company_id=profile.company_id,
+        email=email,
+        role=profile.role,
+        full_name=profile.full_name,
+        created_at=profile.created_at,
+    )
+
+
+async def _profile_out(profile: Profile, db: AsyncSession) -> ProfileOut:
     result = await db.execute(select(User.email).where(User.id == profile.id))
-    email = result.scalar_one_or_none()
-    profile.email = email
-    return profile
+    return _profile_out_from_email(profile, result.scalar_one_or_none())
 
 
 async def _attach_profile_emails(
     profiles: list[Profile],
     db: AsyncSession,
-) -> list[Profile]:
+) -> list[ProfileOut]:
     if not profiles:
-        return profiles
+        return []
     result = await db.execute(
         select(User.id, User.email).where(
             User.id.in_([profile.id for profile in profiles])
         )
     )
     emails = {row.id: row.email for row in result.all()}
+    out: list[ProfileOut] = []
     for profile in profiles:
-        profile.email = emails.get(profile.id)
-    return profiles
+        email = emails.get(profile.id)
+        object.__setattr__(profile, "email", email)
+        out.append(_profile_out_from_email(profile, email))
+    return out
 
 
 async def _get_company_or_404(
@@ -102,8 +114,8 @@ async def list_users(
     q: SearchQuery = None,
 ) -> Page[ProfileOut]:
     page = await apaginate(db, _list_users_query(current, q), params)
-    await _attach_profile_emails(list(page.items), db)
-    return page
+    items = await _attach_profile_emails(list(page.items), db)
+    return Page.create(items, params, total=typing_cast(int, page.total))
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ProfileOut)
@@ -111,7 +123,7 @@ async def create_user(
     body: UserCreate,
     current: CurrentProfile,
     db: DbSession,
-) -> Profile:
+) -> ProfileOut:
     if current.role in (AppRole.public, AppRole.member):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -138,6 +150,11 @@ async def create_user(
             )
         company_id = body.company_id
     else:
+        if current.company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Profile is not scoped to a company",
+            )
         company_id = current.company_id
 
     new_id = uuid.uuid4()
@@ -160,8 +177,7 @@ async def create_user(
         ) from None
 
     await db.refresh(profile)
-    profile.email = email
-    return profile
+    return _profile_out_from_email(profile, email)
 
 
 @router.get("/{user_id}", response_model=ProfileOut)
@@ -169,7 +185,7 @@ async def get_user(
     user_id: uuid.UUID,
     current: CurrentProfile,
     db: DbSession,
-) -> Profile:
+) -> ProfileOut:
     if current.role == AppRole.member and current.id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -185,7 +201,7 @@ async def get_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
-    return await _attach_profile_email(profile, db)
+    return await _profile_out(profile, db)
 
 
 @router.patch("/{user_id}", response_model=ProfileOut)
@@ -195,7 +211,7 @@ async def update_user(
     body: UserUpdate,
     current: AdminOrManagerProfile,
     db: DbSession,
-) -> Profile:
+) -> ProfileOut:
     if current.role not in (AppRole.admin, AppRole.manager):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -230,8 +246,8 @@ async def update_user(
         )
     user: User | None = None
     if email is not None or password:
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -267,7 +283,7 @@ async def update_user(
         ) from None
 
     await db.refresh(target)
-    return await _attach_profile_email(target, db)
+    return await _profile_out(target, db)
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

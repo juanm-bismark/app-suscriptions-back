@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi_pagination import Page, Params
@@ -160,7 +160,7 @@ async def _cache_moabits_source_companies(
             MoabitsSourceCompany.source_company_id == source_company_id,
         )
     )
-    existing_by_code = {
+    existing_by_code: dict[str, MoabitsSourceCompany] = {
         row.company_code: row
         for row in existing_result.scalars().all()
         if isinstance(row, MoabitsSourceCompany)
@@ -172,9 +172,9 @@ async def _cache_moabits_source_companies(
             source_company.updated_at = now
 
     for row in rows_by_code.values():
-        source_company = existing_by_code.get(row["company_code"])
-        if source_company is None:
-            source_company = MoabitsSourceCompany(
+        existing_source_company = existing_by_code.get(row["company_code"])
+        if existing_source_company is None:
+            new_source_company = MoabitsSourceCompany(
                 source_company_id=source_company_id,
                 company_code=row["company_code"],
                 company_name=row["company_name"],
@@ -185,15 +185,15 @@ async def _cache_moabits_source_companies(
                 created_at=now,
                 updated_at=now,
             )
-            db.add(source_company)
+            db.add(new_source_company)
             continue
 
-        source_company.company_name = row["company_name"]
-        source_company.clie_id = row["clie_id"]
-        source_company.raw_payload = row.get("raw_payload") or {}
-        source_company.last_seen_at = now
-        source_company.active = True
-        source_company.updated_at = now
+        existing_source_company.company_name = row["company_name"]
+        existing_source_company.clie_id = row["clie_id"]
+        existing_source_company.raw_payload = row.get("raw_payload") or {}
+        existing_source_company.last_seen_at = now
+        existing_source_company.active = True
+        existing_source_company.updated_at = now
     await db.commit()
 
 
@@ -283,7 +283,9 @@ async def list_companies(
     q: SearchQuery = None,
 ) -> Page[CompanyOut]:
     """List all companies with optional name search. Admin only."""
-    return await apaginate(db, _list_companies_query(q), params)
+    page = await apaginate(db, _list_companies_query(q), params)
+    items = [CompanyOut.model_validate(company) for company in page.items]
+    return Page.create(items, params, total=cast(int, page.total))
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=CompanyOut)
@@ -438,7 +440,9 @@ async def list_moabits_provider_mappings(
             LocalCompanyProviderMappingOut(
                 company_id=company.id,
                 company_name=company.name,
-                mapping=mapping,
+                mapping=CompanyProviderMappingOut.model_validate(mapping)
+                if mapping is not None
+                else None,
             )
         )
 
@@ -474,7 +478,11 @@ async def list_moabits_source_companies(
     rows = list(result.scalars().all())
     total = len(rows)
     offset = (params.page - 1) * params.size
-    return Page.create(rows[offset : offset + params.size], params, total=total)
+    items = [
+        MoabitsSourceCompanyOut.model_validate(row)
+        for row in rows[offset : offset + params.size]
+    ]
+    return Page.create(items, params, total=total)
 
 
 @router.get(
@@ -559,17 +567,23 @@ async def discover_moabits_provider_mappings(
         )
     )
 
-    return MoabitsProviderMappingDiscoveryOut(
-        cache_message=MOABITS_DISCOVERY_CACHE_MESSAGE,
-        source_company_codes=source_company_codes,
-        local_companies=[
+    local_company_rows: list[LocalCompanyProviderMappingOut] = []
+    for company in local_companies:
+        current_mapping = mappings_by_company_id.get(company.id)
+        local_company_rows.append(
             LocalCompanyProviderMappingOut(
                 company_id=company.id,
                 company_name=company.name,
-                mapping=mappings_by_company_id.get(company.id),
+                mapping=CompanyProviderMappingOut.model_validate(current_mapping)
+                if current_mapping is not None
+                else None,
             )
-            for company in local_companies
-        ],
+        )
+
+    return MoabitsProviderMappingDiscoveryOut(
+        cache_message=MOABITS_DISCOVERY_CACHE_MESSAGE,
+        source_company_codes=source_company_codes,
+        local_companies=local_company_rows,
         moabits_companies=moabits_companies,
     )
 

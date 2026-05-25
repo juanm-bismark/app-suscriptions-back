@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeGuard, cast
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -29,7 +29,7 @@ from app.identity.dependencies import (
     require_roles,
 )
 from app.identity.models.profile import AppRole, Profile
-from app.providers.base import Provider
+from app.providers.base import Provider, SearchableProvider
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials
 from app.shared.errors import (
@@ -355,7 +355,7 @@ async def _discover_iccid_across_providers(
     for (provider_name, _adapter, _creds), result in zip(
         provider_calls, results, strict=True
     ):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             logger.warning(
                 "iccid_discovery_provider_error",
                 provider=provider_name,
@@ -785,8 +785,14 @@ def _bootstrap_filters_for_provider(provider: str) -> SubscriptionSearchFilters:
     return SubscriptionSearchFilters()
 
 
-def _is_searchable_provider(adapter: Any) -> bool:
+def _is_searchable_provider(adapter: Any) -> TypeGuard[SearchableProvider]:
     return callable(getattr(adapter, "list_subscriptions", None))
+
+
+def _as_exception(exc: BaseException) -> Exception:
+    if isinstance(exc, Exception):
+        return exc
+    return RuntimeError(str(exc))
 
 
 def _adapter_bootstrap_filters(
@@ -795,7 +801,7 @@ def _adapter_bootstrap_filters(
 ) -> SubscriptionSearchFilters:
     bootstrap_filters = getattr(adapter, "bootstrap_filters", None)
     if callable(bootstrap_filters):
-        return bootstrap_filters()
+        return cast(SubscriptionSearchFilters, bootstrap_filters())
     return _bootstrap_filters_for_provider(provider_name)
 
 
@@ -1203,9 +1209,10 @@ async def _list_global_iccid_search(
     for (provider_name, _adapter, _creds), result in zip(
         provider_calls, provider_results, strict=True
     ):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            failure = _as_exception(result)
             failed_provider, provider_status = _global_provider_failure(
-                provider_name, result
+                provider_name, failure
             )
             failed_providers_by_name[provider_name] = failed_provider
             provider_statuses_by_name[provider_name] = provider_status
@@ -1213,7 +1220,7 @@ async def _list_global_iccid_search(
                 "global_iccid_search_provider_error",
                 provider=provider_name,
                 iccid=iccid,
-                error=str(result),
+                error=str(failure),
             )
             continue
         subs, _next_cursor = result
@@ -1359,16 +1366,17 @@ async def _list_via_routing_index(
     for (provider_name, _adapter, _creds, _provider_cursor, _call_limit), result in zip(
         active_provider_calls, provider_results, strict=True
     ):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            failure = _as_exception(result)
             failed_provider, provider_status = _global_provider_failure(
-                provider_name, result
+                provider_name, failure
             )
             failed_providers_by_name[provider_name] = failed_provider
             provider_statuses_by_name[provider_name] = provider_status
             logger.warning(
                 "global_listing_provider_error",
                 provider=provider_name,
-                error=str(result),
+                error=str(failure),
             )
             continue
 
@@ -1617,9 +1625,10 @@ async def _search_via_provider_filters(
         status_key,
         _filters,
     ), result in zip(provider_calls, provider_results, strict=True):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            failure = _as_exception(result)
             failed_provider, provider_status = _global_provider_failure(
-                provider_name, result
+                provider_name, failure
             )
             provider_errors_by_name[provider_name] = (
                 failed_provider,
@@ -1628,7 +1637,7 @@ async def _search_via_provider_filters(
             logger.warning(
                 "provider_search_error",
                 provider=provider_name,
-                error=str(result),
+                error=str(failure),
             )
             continue
 
@@ -1933,7 +1942,16 @@ async def get_sim_details_batch(
                 provider=provider, status=status_value, error=error
             )
 
-    fetched = await asyncio.gather(*(_fetch_one(*item) for item in resolved))
+    detail_limit = max(int(settings.max_detail_concurrent_requests), 1)
+    detail_sem = asyncio.Semaphore(detail_limit)
+
+    async def _fetch_one_limited(
+        item: tuple[str, str, str],
+    ) -> tuple[str, SimDetailsItemOut]:
+        async with detail_sem:
+            return await _fetch_one(*item)
+
+    fetched = await asyncio.gather(*(_fetch_one_limited(item) for item in resolved))
     results = {iccid: item for iccid, item in fetched}
 
     summary = SimDetailsSummaryOut(total=len(results))

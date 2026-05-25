@@ -19,18 +19,24 @@ CurrentProfile = Annotated[Profile, Depends(get_current_profile)]
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
-async def _attach_profile_email(profile: Profile, db: AsyncSession) -> Profile:
+async def _profile_out(profile: Profile, db: AsyncSession) -> ProfileOut:
     result = await db.execute(select(User.email).where(User.id == profile.id))
-    profile.email = result.scalar_one_or_none()
-    return profile
+    return ProfileOut.model_construct(
+        id=profile.id,
+        company_id=profile.company_id,
+        email=result.scalar_one_or_none(),
+        role=profile.role,
+        full_name=profile.full_name,
+        created_at=profile.created_at,
+    )
 
 
 @router.get("", response_model=ProfileOut)
 async def get_me(
     current: CurrentProfile,
     db: DbSession,
-) -> Profile:
-    return await _attach_profile_email(current, db)
+) -> ProfileOut:
+    return await _profile_out(current, db)
 
 
 @router.patch("", response_model=ProfileOut)
@@ -39,7 +45,7 @@ async def update_me(
     body: ProfileUpdate,
     current: CurrentProfile,
     db: DbSession,
-) -> Profile:
+) -> ProfileOut:
     password = body.password.strip() if body.password is not None else None
     email = normalize_email(body.email) if body.email is not None else None
     if body.email is not None and not email:
@@ -78,4 +84,4 @@ async def update_me(
         ) from None
 
     await db.refresh(current)
-    return await _attach_profile_email(current, db)
+    return await _profile_out(current, db)

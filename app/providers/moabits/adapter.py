@@ -1051,26 +1051,32 @@ class MoabitsAdapter(BaseAdapter):
         # getSimDetails and getServiceStatus in parallel — both needed for a full view.
         details_coro = _get(creds, f"/api/sim/details/{iccid}")
         status_coro = _get(creds, f"/api/sim/serviceStatus/{iccid}")
-        details_data, status_data = await asyncio.gather(
+        details_result: dict[str, Any] | BaseException
+        status_result: dict[str, Any] | BaseException
+        details_result, status_result = await asyncio.gather(
             details_coro, status_coro, return_exceptions=True
         )
 
-        if isinstance(details_data, Exception) and isinstance(status_data, Exception):
-            raise details_data
-        if isinstance(details_data, Exception):
+        if isinstance(details_result, Exception) and isinstance(status_result, Exception):
+            raise details_result
+        if isinstance(details_result, Exception):
             logger.warning(
                 "moabits_detail_lookup_failed",
                 iccid=iccid,
-                error=str(details_data),
+                error=str(details_result),
             )
             details_data = {}
-        if isinstance(status_data, Exception):
+        else:
+            details_data = cast(dict[str, Any], details_result)
+        if isinstance(status_result, Exception):
             logger.warning(
                 "moabits_status_lookup_failed",
                 iccid=iccid,
-                error=str(status_data),
+                error=str(status_result),
             )
             status_data = {}
+        else:
+            status_data = cast(dict[str, Any], status_result)
 
         sim_info: dict[str, Any] = _first_from(details_data, "info", "simInfo") or {}
         sim_status_row: dict[str, Any] | None = _first_from(

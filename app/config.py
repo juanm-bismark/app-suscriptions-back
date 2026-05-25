@@ -60,7 +60,10 @@ class Settings(BaseSettings):
     moabits_max_concurrent_requests: int = 20
     tele2_request_timeout_seconds: float = 30.0
     kite_request_timeout_seconds: float = 30.0
-    kite_max_concurrent_requests: int = 10
+    kite_max_concurrent_requests: int = 4
+    kite_retry_max_attempts: int = 3
+    kite_retry_base_delay_seconds: float = 0.5
+    kite_retry_max_delay_seconds: float = 3.0
 
     # Async task queue + scheduler (ADR-012).
     # Redis is broker only — never used as a cache of SIM state (ADR-002 preserved).
@@ -68,6 +71,7 @@ class Settings(BaseSettings):
     sync_cron_expr: str = "0 2 * * *"               # daily 02:00 UTC
     export_result_ttl_hours: int = 24
     max_batch_details: int = 200
+    max_detail_concurrent_requests: int = 10
 
 
 @lru_cache

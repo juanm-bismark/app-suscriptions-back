@@ -8,7 +8,7 @@ from app.identity.models.profile import AppRole
 
 class ProfileOut(BaseModel):
     id: uuid.UUID
-    company_id: str | None
+    company_id: uuid.UUID | str | None
     email: str | None = None
     role: AppRole
     full_name: str | None
