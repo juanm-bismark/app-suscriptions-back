@@ -46,7 +46,7 @@ CREATE UNIQUE INDEX company_provider_credentials_active_idx
 - Librería: `cryptography.Fernet`.
 - Estructura cifrada (antes de cifrar): `{"username": "...", "password": "...", "token": "..."}` — JSON serializado, sólo los campos que aplican al provider.
 - Kite PFX se guarda en este JSON como `client_cert_pfx_b64` y `client_cert_password`.
-- `account_scope` queda sólo para metadata no secreta: `environment`, `end_customer_id`, `account_id`, `cert_expires_at`. Para Moabits, `company_codes` vive en `provider_source_configs.settings.company_codes`, no en `account_scope`.
+- `account_scope` queda sólo para metadata no secreta: `environment`, `end_customer_id`, `account_id`, `cert_expires_at`. Para Moabits, el company code operativo vive en `company_provider_mappings.provider_company_code`, no en `account_scope`.
 
 ### 3. Resolución de credenciales
 
@@ -67,8 +67,10 @@ credenciales por request; no hay caché TTL de credenciales implementado.
   - `GET /v1/companies/me/credentials/{provider}` — `manager` y `admin`, sólo metadata.
   - `POST /v1/companies/me/credentials/{provider}/test` — `manager` y `admin`, valida conectividad sin persistir secretos nuevos.
   - `PATCH /v1/companies/me/credentials/{provider}` — `manager` y `admin`, crea o rota credenciales propias del tenant.
-  - `GET /v1/companies/me/credentials/moabits/companies/discover` — `manager` y `admin`, descubre subcompañías visibles sin persistir cambios.
-  - `PUT /v1/companies/me/credentials/moabits/company-codes` — `admin` only, persiste el scope efectivo de Moabits en `provider_source_configs`.
+  - `GET /v1/companies/me/provider-mappings/moabits` — `manager` y `admin`, devuelve el mapping Moabits del tenant autenticado.
+  - `GET /v1/companies/provider-mappings/moabits/source-companies` — `admin` only, lista subcompañías Moabits cacheadas.
+  - `GET /v1/companies/provider-mappings/moabits/discover` — `admin` only, descubre subcompañías visibles y refresca `moabits_source_companies`.
+  - `PUT /v1/companies/{company_id}/provider-mappings/moabits` — `admin` only, persiste el scope efectivo de Moabits en `company_provider_mappings`.
   - `DELETE /v1/companies/me/credentials/{provider}` — `admin` only, desactiva la credencial activa.
 - La rotación (`PATCH`) actualmente:
   1. Marca el registro activo como `active = false`.
@@ -79,7 +81,7 @@ credenciales por request; no hay caché TTL de credenciales implementado.
 Pendiente: escribir una fila genérica en `audit_log` para rotación/desactivación de credenciales e invalidar caché cuando exista.
 - Mantener registros viejos `inactive` 30 días para forensics, luego cron de purga.
 - `manager` puede gestionar credenciales **sólo de su propia Company** porque el endpoint usa `companies/me`. No puede elegir otro `company_id`, cambiar roles, ni ejecutar writes destructivos de SIM (`purge`, cambios de estado).
-- Para Moabits, `company_codes` no se considera secreto y no vive en `credentials_enc`: se guarda en `provider_source_configs.settings.company_codes` como configuración no sensible de la fuente. Cambiarlo sí queda restringido a `admin`, porque altera qué subcompañías/SIMs participan en el listado operativo.
+- Para Moabits, el company code no se considera secreto y no vive en `credentials_enc`: se guarda en `company_provider_mappings.provider_company_code` como mapping no sensible hacia la subcompañía nativa. Cambiarlo sí queda restringido a `admin`, porque altera qué subcompañía/SIMs participan en el listado operativo.
 - `PATCH` y `DELETE` no requieren `Idempotency-Key` en el código actual; la idempotencia obligatoria está implementada para writes de SIM (`PUT /v1/sims/{iccid}/status`, `POST /v1/sims/{iccid}/purge`). `POST /test` no persiste secretos.
 
 ### 5. Lo que **NO** se hace

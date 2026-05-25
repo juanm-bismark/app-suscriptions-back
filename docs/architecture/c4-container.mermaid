@@ -14,7 +14,7 @@ C4Container
     Container(iam, "Identity & Tenancy Module", "Python package", "users, profiles, companies, company_provider_credentials, refresh_tokens, JWT, RBAC, credential resolver (Fernet).")
   }
 
-  SystemDb(pg, "PostgreSQL", "asyncpg · SQLAlchemy 2.0 async", "Tenancy + Identity + SIM Routing Map + sync_jobs + provider_source_configs + audit_log + lifecycle_change_audit + idempotency_keys")
+  SystemDb(pg, "PostgreSQL", "asyncpg · SQLAlchemy 2.0 async", "Tenancy + Identity + SIM Routing Map + sync_jobs + company_provider_mappings + moabits_source_companies + audit_log + lifecycle_change_audit + idempotency_keys")
   SystemDb(redis, "Redis", "Redis 7", "Arq broker only. No SIM detail cache.")
 
   System_Ext(kite, "Kite")

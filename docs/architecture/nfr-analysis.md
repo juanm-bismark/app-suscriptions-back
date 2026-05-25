@@ -71,7 +71,7 @@ La tabla anterior conserva NFRs objetivo. Contra el código actual:
 
 - **RBAC por `AppRole`** (`public` / `member` / `manager` / `admin`).
 - **Tenant isolation** implícito por `Profile.company_id`.
-- **Matriz de permisos** definida en ADR-008 §3 — `member` sólo lectura; `manager` puede probar/crear/rotar credenciales de su propia Company y descubrir subcompañías Moabits; `admin` añade `purge`, cambios de estado, desactivación de credenciales y selección de `company_codes` Moabits.
+- **Matriz de permisos** definida en ADR-008 §3 — `member` sólo lectura; `manager` puede probar/crear/rotar credenciales de su propia Company y ver su mapping Moabits; `admin` añade `purge`, cambios de estado, desactivación de credenciales, discovery Moabits y selección del mapping Moabits.
 - **Fail-closed**: `require_roles(*roles)` levanta 403 si el rol no está en la lista explícita. Nunca permitir por default.
 
 ### 2.3 Data protection

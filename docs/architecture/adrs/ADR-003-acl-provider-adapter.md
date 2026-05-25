@@ -3,7 +3,7 @@
 - **Estado**: Accepted
 - **Fecha**: 2026-04-22
 - **Decisores**: equipo backend
-- **Relacionado**: ADR-001 (modular monolith), ADR-004 (modelo de errores), ADR-009 (testing), ADR-010 (bootstrap explícito de `company_codes` Moabits)
+- **Relacionado**: ADR-001 (modular monolith), ADR-004 (modelo de errores), ADR-009 (testing), ADR-010 (bootstrap explícito del company code Moabits)
 
 ## Contexto
 
@@ -75,7 +75,8 @@ class SearchableProvider(Protocol):
 **Scope = credenciales, no parámetro.** Cada credencial almacenada es
 `(company_id, provider)` y se resuelve contra el proveedor con un token
 que ya identifica al tenant en su lado (cuenta Kite, API key Tele2,
-`company_codes` Moabits). Por eso `list_subscriptions` **no recibe
+company code Moabits inyectado desde `company_provider_mappings`). Por
+eso `list_subscriptions` **no recibe
 `company_id`**: pasarlo sería redundante (el token ya lo restringe) y en
 algunos casos engañoso (p. ej. filtrar Kite por `customField_1` además
 de su token sólo serviría para sub-tenancy compartida — no es el caso del
@@ -151,15 +152,15 @@ global. Ver `migrations/001_sim_routing_map.sql` y
 `migrations/002_company_provider_credentials.sql` para cómo se resuelve el
 routing y se guardan las credenciales por tenant.
 
-Bootstrap note (Moabits `company_codes`): el listado provider-scoped de
-Moabits requiere `company_codes` persistidos en
-`provider_source_configs.settings.company_codes` antes del primer listado.
-Si el campo está vacío, el router responde
+Bootstrap note (Moabits company code): el listado provider-scoped de
+Moabits requiere un mapping activo persistido en
+`company_provider_mappings.provider_company_code` antes del primer listado.
+Si el mapping falta, el router responde
 `412 ListingPreconditionFailed` apuntando al flujo
-`GET /v1/companies/me/credentials/moabits/companies/discover` +
-`PUT /v1/companies/me/credentials/moabits/company-codes`. El `GET` puede
-usarlo `manager`/`admin`; el `PUT` es `admin` only porque cambia el scope
-operativo de la fuente Moabits. No hay auto-scope por nombre. Ver ADR-010.
+`GET /v1/companies/provider-mappings/moabits/discover` +
+`PUT /v1/companies/{company_id}/provider-mappings/moabits`. El mapping
+lo cambia sólo `admin` porque modifica el scope operativo de la fuente
+Moabits. No hay auto-scope por nombre. Ver ADR-010.
 
 ### 2. **Provider Adapters** — implementación por proveedor
 

@@ -57,7 +57,8 @@ PROVIDER_CREDENTIAL_EXAMPLES = {
             "Web Client application key. The adapter sends it as the x-api-key "
             "header to GET /integrity/authorization-token, caches the returned "
             "JWT, and refreshes/retries once when a provider business endpoint "
-            "returns 401. Company codes are configured separately via the company-codes endpoint."
+            "returns 401. Moabits company scope is configured separately via "
+            "the provider-mappings endpoints."
         ),
         "value": {
             "credentials": {

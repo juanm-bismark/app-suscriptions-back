@@ -12,10 +12,12 @@ C4Context
   System_Ext(tele2, "Tele2 IoT", "API REST v1. Vocabulario: iccid, status, ratePlan, Get Device Usage.")
   System_Ext(moabits, "Moabits Orion", "API v1 + Gateway API v2. Vocabulario: iccid, simStatus, simUsage.")
 
-  SystemDb(pgdb, "PostgreSQL", "Tenancy, identity, SIM Routing Map, provider_source_configs, audit_log, lifecycle_change_audit, idempotency_keys. NO persiste estado de SIM.")
+  SystemDb(pgdb, "PostgreSQL", "Tenancy, identity, SIM Routing Map, sync_jobs, company_provider_mappings, moabits_source_companies, audit_log, lifecycle_change_audit, idempotency_keys. NO persiste estado de SIM.")
+  SystemDb(redis, "Redis", "Arq broker para routing sync/export jobs. NO caché de detalle SIM.")
 
   Rel(user, api, "HTTPS + JWT", "HTTPS")
   Rel(api, pgdb, "SQL (asyncpg)", "TCP")
+  Rel(api, redis, "enqueue jobs", "Arq")
   Rel(api, kite, "HTTPS + auth propio de Kite", "HTTPS")
   Rel(api, tele2, "HTTPS + auth propio de Tele2", "HTTPS")
   Rel(api, moabits, "HTTPS + v1 Bearer/JWT + v2 X-API-KEY", "HTTPS")

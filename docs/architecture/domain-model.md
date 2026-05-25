@@ -11,7 +11,7 @@
 | Bounded Context | Responsabilidad | Owner | Persistencia |
 |---|---|---|---|
 | **Identity & Access** | Autenticación, sesiones, roles. *(existente)* | Backend | Postgres (`users`, `profiles`, `refresh_tokens`) |
-| **Tenancy** | Compañías cliente, settings, credenciales cifradas por tenant y configuración no secreta de fuente. | Backend | Postgres (`companies`, `company_settings`, `company_provider_credentials`, `provider_source_configs`) |
+| **Tenancy** | Compañías cliente, settings, credenciales cifradas por tenant y mappings no secretos hacia cuentas/subcompañías proveedoras. | Backend | Postgres (`companies`, `company_settings`, `company_provider_credentials`, `company_provider_mappings`, `moabits_source_companies`) |
 | **Subscription Aggregation** | Modelo canónico de suscripción/SIM, agregación read-only en tiempo real desde proveedores, operaciones de control (`status`, `purge`). | Backend | Postgres sólo para ruteo y auditoría operativa (`sim_routing_map`, `idempotency_keys`, `lifecycle_change_audit`) — **NO** persiste estado del SIM |
 | **Provider Integration** | Adapters HTTP/SOAP por proveedor (Kite, Tele2, Moabits). Anti-corruption layer. | Backend | sin estado de dominio propio; conserva estado técnico in-memory como circuit breaker, token Moabits v1 y limiter Tele2 |
 
@@ -104,7 +104,7 @@ CompanyProviderCredentials {
 ```
 
 > Tabla nueva. **NO** reutiliza `company_settings.settings` JSONB (ver Phase 1 AP-7).
-> Para Moabits, `company_codes` ya no vive en `credentials_enc` ni en `account_scope`; se persiste como configuración no secreta en `provider_source_configs.settings.company_codes` (ADR-010).
+> Para Moabits, el company code operativo ya no vive en `credentials_enc` ni en `account_scope`; se persiste como mapping no secreto en `company_provider_mappings.provider_company_code`. Las opciones descubiertas desde Moabits se cachean en `moabits_source_companies` para la UI (ADR-010).
 
 ### SimRoutingMap (Subscription Aggregation context)
 

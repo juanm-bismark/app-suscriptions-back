@@ -20,7 +20,7 @@ status note.
 | Capabilities endpoint | `GET /v1/providers/{provider}/capabilities` is implemented. |
 | Routing map | `sim_routing_map` is persisted and used for single-SIM/global listing routing. ADR-012 adds worker-driven routing sync. |
 | Credentials | `company_provider_credentials.credentials_enc` stores encrypted provider secrets with Fernet. |
-| Moabits source scope | `provider_source_configs.settings.company_codes`, not `credentials_enc`, is the source of truth for selected Moabits company codes. |
+| Moabits source scope | `company_provider_mappings.provider_company_code`, not `credentials_enc`, is the source of truth for the selected Moabits company code; `moabits_source_companies` caches discovered choices for UI/admin workflows. |
 | Moabits v2 enrichment | Implemented for provider-scoped listing behind `MOABITS_V2_ENRICHMENT_ENABLED`. |
 | Lifecycle writes | `PUT /v1/sims/{iccid}/status` and `POST /v1/sims/{iccid}/purge` are implemented, admin-only, idempotency-key required, and gated in adapters by `LIFECYCLE_WRITES_ENABLED`. |
 | Lifecycle audit | Writes/replays/failures are recorded in `lifecycle_change_audit`. |
@@ -39,7 +39,7 @@ status note.
 | Document | Status | Notes / gaps |
 |---|---|---|
 | `docs/architecture/ARCHITECTURE.md` | Partially current | Updated with ADR-011. Still mixes target architecture with implementation roadmap; remaining Phase/Ola sections should be treated as roadmap, not current state. |
-| `docs/architecture/domain-model.md` | Updated | Corrected current status for contexts, `provider_source_configs`, actual enum values, `ConnectivityPresence`, and HTTP-derived `detail_level` / `normalized`. |
+| `docs/architecture/domain-model.md` | Updated | Corrected current status for contexts, provider mappings, actual enum values, `ConnectivityPresence`, and HTTP-derived `detail_level` / `normalized`. |
 | `docs/architecture/nfr-analysis.md` | Needs follow-up | Many NFR rows remain target-state. Actual implemented: CORS, refresh-token hashing, request-id middleware, structlog setup, circuit breaker, lifecycle audit. Missing: metrics, OTel, tenant rate limit, generic audit middleware, generic cache/bulkhead. |
 | `docs/architecture/patterns-decisions.md` | Historical design phase | Added explicit historical note. Keep as design rationale; do not use alone to infer current implementation completeness. |
 | `docs/architecture/arch-analysis.md` | Historical snapshot | Added note that it describes the pre-provider state. Many AP items are now paid down. |
@@ -50,17 +50,17 @@ status note.
 | `docs/architecture/c4-context.mermaid` | Updated | Postgres and Moabits labels now mention current tables/v1+v2 auth. |
 | `docs/architecture/c4-container.mermaid` | Updated | Shows API, Arq worker, Redis broker, Postgres and providers. |
 | `docs/architecture/c4-component.mermaid` | Updated | Shows conceptual router-level services plus `sync_jobs` and worker interactions. |
-| `docs/architecture/context-map.mermaid` | Updated | Tenancy/Provider labels include provider source config and Moabits v1+v2. |
+| `docs/architecture/context-map.mermaid` | Updated | Tenancy/Provider labels include provider mappings/source companies, sync jobs and Moabits v1+v2. |
 | `docs/architecture/adrs/ADR-001-*` | Mostly current | Modular monolith is implemented. Generic semaphore mitigation remains target, not implemented. |
 | `docs/architecture/adrs/ADR-002-*` | Current | Proxy/routing-map decision matches code. |
 | `docs/architecture/adrs/ADR-003-*` | Updated | Removed inaccurate `with_credentials` wrapper example; credentials are passed per call. |
 | `docs/architecture/adrs/ADR-004-*` | Current enough | DomainError → problem+json is implemented. |
 | `docs/architecture/adrs/ADR-005-*` | Updated | Implementation table reflects breaker done, retry/cache/generic bulkhead/metrics not done. |
-| `docs/architecture/adrs/ADR-006-*` | Updated | Corrected Moabits `company_codes`, credential cache, credential audit/idempotency claims. |
+| `docs/architecture/adrs/ADR-006-*` | Updated | Corrected Moabits provider mapping, credential cache, credential audit/idempotency claims. |
 | `docs/architecture/adrs/ADR-007-*` | Mostly current | `/v1`, cursor/list response, and idempotency for SIM writes match code. |
 | `docs/architecture/adrs/ADR-008-*` | Mostly current | RBAC and lifecycle audit align. Generic audit table exists but generic audit middleware remains incomplete. |
 | `docs/architecture/adrs/ADR-009-*` | Mostly current | Tests exist and are extensive; coverage gates/import-linter are still process goals. |
-| `docs/architecture/adrs/ADR-010-*` | Current | Matches provider source config implementation. |
+| `docs/architecture/adrs/ADR-010-*` | Current | Matches `company_provider_mappings` + `moabits_source_companies` implementation. |
 | `docs/architecture/adrs/ADR-011-*` | Current | Captures Moabits v2 enrichment and known gaps. |
 | `docs/architecture/adrs/ADR-012-*` | Current | Accepted; Redis/Arq, routing sync, jobs endpoints and batch details are implemented. Export remains pending. |
 | `docs/CIRCUIT_BREAKER_IMPLEMENTATION.md` | Updated | Fixed date and status framing. Still intentionally a focused implementation note. |
@@ -77,7 +77,7 @@ status note.
    roadmap" sections so future readers do not confuse planned NFRs with
    shipped features.
 2. Add an operations doc for Moabits onboarding:
-   credential PATCH → discover child companies → admin PUT company-codes
+   credential PATCH → discover child companies → admin PUT provider mapping
    → provider-scoped listing → optional v2 flag smoke test.
 3. Add an observability status doc: request IDs and structlog are live;
    metrics/tracing/rate limiting are pending.

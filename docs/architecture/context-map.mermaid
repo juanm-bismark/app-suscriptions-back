@@ -5,8 +5,8 @@
 flowchart LR
     subgraph SYSTEM ["Subscriptions API (modular monolith)"]
         IAM["Identity & Access<br/><i>existing</i><br/>users, profiles, refresh_tokens"]
-        TEN["Tenancy<br/><i>extended</i><br/>companies, company_provider_credentials, provider_source_configs"]
-        SUB["Subscription Aggregation<br/><i>new</i><br/>Subscription, SIM Routing Map"]
+        TEN["Tenancy<br/><i>extended</i><br/>companies, company_provider_credentials, company_provider_mappings, moabits_source_companies"]
+        SUB["Subscription Aggregation<br/><i>new</i><br/>Subscription, SIM Routing Map, sync_jobs"]
         PRV["Provider Integration<br/><i>new — technical context</i><br/>SubscriptionProvider Protocol + Adapters"]
     end
 

@@ -1,4 +1,4 @@
-# ADR-010 — Moabits: bootstrap explícito de `company_codes`, sin auto-scope por nombre
+# ADR-010 — Moabits: bootstrap explícito del company code, sin auto-scope por nombre
 
 - **Estado**: Accepted
 - **Fecha**: 2026-05-07
@@ -18,7 +18,7 @@ desde el mapping, y el adapter usa ese valor directamente en
 
 Hasta esta versión, `app/subscriptions/routers/sims.py` exponía una
 función `_auto_scope_moabits_credentials` que se ejecutaba **en cada
-`GET /v1/sims?provider=moabits`** cuando `company_codes` estaba vacío:
+`GET /v1/sims?provider=moabits`** cuando no había company code configurado:
 
 1. Hacía una request extra a `/api/company/childs/{parent}` para obtener
    las subcompañías visibles para el `x-api-key`.
@@ -55,41 +55,43 @@ coincidiría con el `companyName` que devuelve Moabits.
 
 ## Decisión
 
-Eliminar el auto-scope. `company_codes` Moabits debe estar **persistido
-explícitamente** en `provider_source_configs.settings.company_codes`
-antes de poder listar. El flujo de onboarding queda:
+Eliminar el auto-scope. El company code Moabits debe estar **persistido
+explícitamente** en `company_provider_mappings.provider_company_code`
+antes de poder listar. `moabits_source_companies` queda como cache de
+discovery para la UI, no como fuente de autorización operativa. El flujo
+de onboarding queda:
 
 1. **Crear/rotar credencial**: `PATCH /v1/companies/me/credentials/moabits`
    con `base_url` y `x_api_key`. No se guarda ningún company code dentro
    del blob cifrado de credenciales — el parent code (`48123`) es una
    constante del adapter (`MOABITS_PARENT_COMPANY_CODE`).
-2. **Descubrir subcompañías** (read-only):
-   `GET /v1/companies/me/credentials/moabits/companies/discover`
-   devuelve la lista de subcompañías visibles para el `x-api-key`,
-   marcando cuáles ya están seleccionadas. **No escribe en BD.**
+2. **Descubrir subcompañías**:
+   `GET /v1/companies/provider-mappings/moabits/discover`
+   consulta Moabits, refresca `moabits_source_companies` y devuelve las
+   subcompañías visibles para que el admin escoja.
 3. **Persistir selección**:
-   `PUT /v1/companies/me/credentials/moabits/company-codes` con la lista
-   final. Valida contra Moabits que todos los codes existan y los guarda
-   en `provider_source_configs.settings.company_codes`.
+   `PUT /v1/companies/{company_id}/provider-mappings/moabits` con el
+   `provider_company_code` final. Valida contra Moabits/cache que el code
+   exista y lo guarda en `company_provider_mappings`.
 4. **Listar SIMs**: `GET /v1/sims?provider=moabits` lee directamente
-   `provider_source_configs.settings.company_codes`, lo inyecta en las
+   `company_provider_mappings.provider_company_code`, lo inyecta en las
    credenciales resueltas para esa llamada y delega al adapter. Sin
    llamadas extra de discovery.
 
-El `PUT /v1/companies/me/credentials/moabits/company-codes` es
+El `PUT /v1/companies/{company_id}/provider-mappings/moabits` es
 **admin-only**. Aunque no persiste secretos, cambia el scope efectivo del
 origen Moabits y por tanto qué SIMs entran al listado operativo. Esa
 decisión se trata como configuración de fuente, no como rotación ordinaria
 de credenciales delegable a `manager`.
 
-Si `company_codes` está vacío al listar, el router responde
+Si el mapping falta al listar, el router responde
 `412 ListingPreconditionFailed` con un mensaje accionable que apunta a
 los pasos 2 y 3:
 
 ```
-"Moabits credentials have no company_codes configured.
- Call GET /v1/companies/me/credentials/moabits/companies/discover to list
- available companies, then PUT /v1/companies/me/credentials/moabits/company-codes
+"Moabits credentials have no company mapping configured.
+ Call GET /v1/companies/provider-mappings/moabits/discover to list
+ available companies, then PUT /v1/companies/{company_id}/provider-mappings/moabits
  to persist the selection."
 ```
 
@@ -97,9 +99,9 @@ los pasos 2 y 3:
 
 **Positivas**
 - Listado de SIMs Moabits hace **una** request a Moabits en lugar de dos.
-- Comportamiento determinístico y auditable: la lista efectiva de codes
+- Comportamiento determinístico y auditable: el code efectivo
   es exactamente lo que la BD dice — `SELECT ... FROM
-  provider_source_configs WHERE provider = 'moabits'` es la fuente de
+  company_provider_mappings WHERE provider = 'moabits'` es la fuente de
   verdad.
 - Desaparece el acoplamiento implícito `Company.name` ↔ `companyName`
   Moabits. Renombrar el tenant local no rompe el listado.
@@ -113,12 +115,12 @@ los pasos 2 y 3:
 
 **Negativas / mitigaciones**
 - **Onboarding requiere un paso explícito**: el primer listado no
-  funciona sin antes haber persistido `company_codes`.
+  funciona sin antes haber persistido el mapping.
   - **Mitigación**: el endpoint `/companies/discover` ya existe para que
     el frontend muestre la lista al usuario y haga el `PUT` con la
     selección. Es 1 click adicional al setup, una sola vez por fuente.
-- **Sólo admin puede persistir la selección**: un `manager` puede descubrir
-  subcompañías, pero no cambiar el scope efectivo.
+- **Sólo admin puede persistir la selección**: sólo un `admin` puede
+  cambiar el scope efectivo.
   - **Mitigación**: esto evita ampliar o reducir el universo operativo de
     SIMs sin una persona con permiso administrativo. La credencial se
     puede crear/rotar por `manager`, pero el alcance final de Moabits
@@ -150,7 +152,7 @@ los pasos 2 y 3:
      `Company.name ↔ companyName` sigue ahí, solo más enterrado.
 
 3. **Hacer la selección parte obligatoria del PATCH inicial de
-   credenciales**: rechazar el PATCH si `credentials.company_codes` está
+   credenciales**: rechazar el PATCH si `credentials.company_code` está
    vacío.
    - Pros: imposible quedar en estado intermedio.
    - Contras: el operador puede no conocer los codes al momento de
@@ -165,7 +167,7 @@ los pasos 2 y 3:
 |---|---|---|
 | Llamadas upstream por listado | 1 (solo el listado) | 2 (discover + listado) |
 | Determinismo | Alto (BD = verdad) | Bajo (depende de runtime) |
-| Auditabilidad | `SELECT provider_source_configs` muestra todo | Hay que reproducir el match |
+| Auditabilidad | `SELECT company_provider_mappings` muestra todo | Hay que reproducir el match |
 | Robustez ante renombres | Inmune | Frágil |
 | Pasos de onboarding | discover + PUT (1 click) | Cero, si los nombres matchean |
 | Diagnóstico de fallos | Mensaje accionable directo | "no match" críptico |
@@ -188,25 +190,25 @@ Cambios en este ADR:
 - `app/subscriptions/routers/sims.py`: eliminados `_normalize_match_text`,
   `_company_name_matches`, `_company_name`, `_auto_scope_moabits_credentials`
   e imports `unicodedata`, `fetch_child_companies`, `Company`. Nueva
-  función `_require_moabits_company_codes` que lanza
-  `ListingPreconditionFailed` si `company_codes` está vacío.
+  función `_require_moabits_company_mapping` que lanza
+  `ListingPreconditionFailed` si el mapping está vacío.
 - `tests/test_sims_router_controls.py`: reemplazado el test
   `test_moabits_listing_auto_scopes_company_code_from_name_match` por
   dos tests:
-  - `test_moabits_listing_requires_persisted_company_codes` (412 cuando
-    falta `company_codes`).
-  - `test_moabits_listing_uses_persisted_company_codes` (listado normal
-    cuando ya están guardados; el adapter no recibe llamadas de
+  - `test_moabits_listing_requires_persisted_company_mapping` (412 cuando
+    falta el mapping).
+  - `test_moabits_listing_uses_persisted_company_mapping` (listado normal
+    cuando ya está guardado; el adapter no recibe llamadas de
     discovery extra).
-- `app/tenancy/routers/credentials.py`: `PUT
-  /v1/companies/me/credentials/moabits/company-codes` usa `AdminProfile`,
-  valida los codes contra Moabits y persiste la selección en
-  `provider_source_configs`.
+- `app/tenancy/routers/companies.py`: `PUT
+  /v1/companies/{company_id}/provider-mappings/moabits` usa `AdminProfile`,
+  valida el code contra Moabits/cache y persiste la selección en
+  `company_provider_mappings`.
 - `tests/test_credentials_router.py`: agregado
-  `test_only_admin_can_select_moabits_company_codes` para asegurar `403`
+  `test_only_admin_can_select_moabits_mapping` para asegurar `403`
   a `manager` y cero commits.
 
 Migraciones de BD: `006_moabits_source_companies.sql` y
-`007_company_provider_mappings.sql`. `company_codes` deja
-de formar parte del JSON cifrado de credenciales y pasa a ser
-configuración no secreta, provider-wide, de la fuente Moabits.
+`007_company_provider_mappings.sql`. El company code deja de formar parte
+del JSON cifrado de credenciales y pasa a ser un mapping no secreto por
+Company local.

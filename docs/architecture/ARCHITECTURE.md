@@ -13,7 +13,7 @@ Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaci
 | **Estado** | Accepted — arquitectura vigente alineada con ADR-012 fases A/B/C |
 | **Autores** | Equipo backend + solution architect |
 | **Depth del ejercicio** | comprehensive (Phases 1–8) |
-| **Últimas actualizaciones** | 2026-05-25: ADR-012 aceptado parcialmente implementado: Redis + Arq worker, `sync_jobs`, cron nocturno, `/v1/sync/trigger`, `/v1/sync/status`, `/v1/jobs/{job_id}` y `POST /v1/sims/details`. Pendiente: `POST /v1/sims/export`. 2026-05-07: Moabits v2 enrichment para `GET /v1/sims?provider=moabits` se intenta por defecto (`MOABITS_V2_ENRICHMENT_ENABLED=true`) después de descubrir ICCIDs con v1 `simList`; `false` conserva salida legacy v1-only (ADR-011). Bootstrap explícito de `company_codes` Moabits (ADR-010). 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 listing enriquece hasta 5 SIMs por página con `Get Device Details`. |
+| **Últimas actualizaciones** | 2026-05-25: ADR-012 aceptado parcialmente implementado: Redis + Arq worker, `sync_jobs`, cron nocturno, `/v1/sync/trigger`, `/v1/sync/status`, `/v1/jobs/{job_id}` y `POST /v1/sims/details`. Pendiente: `POST /v1/sims/export`. Moabits usa `company_provider_mappings` para el company code operativo y `moabits_source_companies` como cache de discovery (ADR-010). 2026-05-07: Moabits v2 enrichment para `GET /v1/sims?provider=moabits` se intenta por defecto (`MOABITS_V2_ENRICHMENT_ENABLED=true`) después de descubrir ICCIDs con v1 `simList`; `false` conserva salida legacy v1-only (ADR-011). 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 listing enriquece hasta 5 SIMs por página con `Get Device Details`. |
 
 ---
 
@@ -68,7 +68,7 @@ Detalle completo en [adrs/](adrs/).
 | ADR-007 | Versionado URL `/v1/` + cursor pagination + `Idempotency-Key` obligatoria en mutaciones | [ADR-007](adrs/ADR-007-api-versioning-and-pagination.md) | Accepted |
 | ADR-008 | JWT existente reutilizado + RBAC + scope por `Company` + `audit_log` | [ADR-008](adrs/ADR-008-auth-rbac-audit.md) | Accepted |
 | ADR-009 | Pirámide de tests + golden files de mappers + contract tests + FakeProvider | [ADR-009](adrs/ADR-009-testing-strategy.md) | Accepted |
-| ADR-010 | Moabits: bootstrap explícito de `company_codes` (sin auto-scope por nombre) | [ADR-010](adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md) | Accepted |
+| ADR-010 | Moabits: bootstrap explícito del company code (sin auto-scope por nombre) | [ADR-010](adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md) | Accepted |
 | ADR-011 | Moabits: enrichment v2 por defecto para listado provider-scoped | [ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md) | Accepted |
 | ADR-012 | Routing sync con Arq + Redis, batch details y jobs async | [ADR-012](adrs/ADR-012-routing-sync-and-async-jobs.md) | Accepted — fases A/B/C implementadas |
 
@@ -177,7 +177,7 @@ Detalle en [nfr-analysis.md §2](nfr-analysis.md) y [ADR-008](adrs/ADR-008-auth-
 | Lecturas sobre SIMs | ✓ | ✓ | ✓ |
 | Ver/probar/rotar credenciales propias del tenant | ✗ | ✓ | ✓ |
 | Descubrir subcompañías Moabits | ✗ | ✓ | ✓ |
-| Seleccionar `company_codes` Moabits | ✗ | ✗ | ✓ |
+| Seleccionar mapping Moabits | ✗ | ✗ | ✓ |
 | Desactivar credenciales del tenant | ✗ | ✗ | ✓ |
 | Control operation `purge` | ✗ | ✗ | ✓ |
 
@@ -192,7 +192,8 @@ Detalle en [nfr-analysis.md §2](nfr-analysis.md) y [ADR-008](adrs/ADR-008-auth-
 | `users`, `profiles`, `refresh_tokens` | Identity & Access | existente |
 | `companies`, `company_settings` | Tenancy | existente |
 | `company_provider_credentials` | Credenciales cifradas por (Company × Provider) | **nueva** — ADR-006 |
-| `provider_source_configs` | Configuración no secreta por fuente proveedor, p.ej. `moabits.company_codes` | **nueva** — ADR-010 |
+| `moabits_source_companies` | Cache de subcompañías Moabits descubiertas para mostrar opciones de selección | **nueva** — ADR-010 |
+| `company_provider_mappings` | Mapping explícito Company local ↔ cuenta/subcompañía nativa del proveedor; en Moabits contiene el `provider_company_code` operativo | **nueva** — ADR-010 |
 | `sim_routing_map` | `iccid → provider, company_id, last_seen_at` | **nueva** — ADR-002 |
 | `audit_log` | Bitácora de mutaciones y denegaciones | **nueva** — ADR-008 |
 | `idempotency_keys` | `(company_id, key)` → respuesta cacheada 24 h | **nueva** — ADR-007 |
@@ -227,8 +228,11 @@ GET    /v1/companies/me/credentials                     # manager/admin — meta
 GET    /v1/companies/me/credentials/{provider}          # manager/admin — metadata only
 POST   /v1/companies/me/credentials/{provider}/test     # manager/admin — no secret persistence
 PATCH  /v1/companies/me/credentials/{provider}          # manager/admin — rotate/create
-GET    /v1/companies/me/credentials/moabits/companies/discover  # manager/admin — read-only discovery
-PUT    /v1/companies/me/credentials/moabits/company-codes       # admin — configure Moabits source scope
+GET    /v1/companies/me/provider-mappings/moabits               # manager/admin — own Moabits mapping
+GET    /v1/companies/provider-mappings/moabits                  # admin — all local Moabits mappings
+GET    /v1/companies/provider-mappings/moabits/source-companies # admin — cached Moabits choices
+GET    /v1/companies/provider-mappings/moabits/discover         # admin — live Moabits discovery, refreshes cache
+PUT    /v1/companies/{company_id}/provider-mappings/moabits     # admin — configure Moabits mapping
 DELETE /v1/companies/me/credentials/{provider}          # admin — deactivate
 POST   /v1/admin/companies/{company_id}/credentials/{provider}/probe  # admin — stored credential smoke test
 GET    /v1/providers/{provider}/capabilities             # supported / not_supported / feature-flag / confirmation
@@ -374,7 +378,7 @@ Capturadas durante el proceso; ninguna bloquea el diseño, algunas bloquean impl
 | # | Pregunta | Bloquea |
 |---|---|---|
 | OQ-1 | `SIM Routing Map`: ¿bootstrap por CSV de los proveedores o descubrimiento lazy? | Ola 2 |
-| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / `companyCodes` (Moabits). ¿Estructura exacta en `account_scope`? | Ola 1 — *Moabits resuelto en ADR-010: `company_codes` se persiste explícitamente en `provider_source_configs.settings` vía `PUT /v1/companies/me/credentials/moabits/company-codes` admin-only; sin auto-scope por nombre.* |
+| OQ-2 | Mapeo `Company` local ↔ `endCustomerId` (Kite) / `accountId` (Tele2) / company code Moabits. ¿Estructura exacta en `account_scope` para Kite/Tele2? | Ola 1 — *Moabits resuelto en ADR-010: el mapping operativo se persiste explícitamente en `company_provider_mappings.provider_company_code` vía `PUT /v1/companies/{company_id}/provider-mappings/moabits` admin-only; sin auto-scope por nombre.* |
 | OQ-3 | ¿Alguno de los proveedores ofrece sandbox para E2E? | Capa 5 de testing (opcional) |
 | OQ-4 | Stack de observabilidad: ¿Prometheus/Grafana propio, Datadog, New Relic? | Ola 3 |
 | OQ-5 | Retención legal de `audit_log` | Ola 3 |
