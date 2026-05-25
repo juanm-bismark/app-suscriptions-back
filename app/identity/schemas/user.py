@@ -1,3 +1,5 @@
+import uuid
+
 from pydantic import BaseModel
 
 from app.identity.models.profile import AppRole
@@ -8,6 +10,7 @@ class UserCreate(BaseModel):
     password: str
     full_name: str | None = None
     role: AppRole = AppRole.member
+    company_id: uuid.UUID | None = None
 
 
 class UserUpdate(BaseModel):
@@ -15,3 +18,4 @@ class UserUpdate(BaseModel):
     password: str | None = None
     full_name: str | None = None
     role: AppRole | None = None
+    company_id: str | None = None

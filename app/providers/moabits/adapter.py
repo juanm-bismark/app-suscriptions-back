@@ -66,7 +66,6 @@ from app.shared.errors import (
     UnsupportedOperation,
 )
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityPresence,
     ConnectivityState,
     Subscription,
@@ -75,7 +74,6 @@ from app.subscriptions.domain import (
     UsageSnapshot,
 )
 
-from .status_map import map_status
 
 _TOKEN_REFRESH_MARGIN_SECONDS = 300
 _TOKEN_FALLBACK_TTL_SECONDS = 5 * 60 * 60 + 50 * 60
@@ -875,19 +873,18 @@ def _build_listing_subscription(
       kept under provider_fields for inspection.
 
     `v2_attempted=False` means the v2 enrichment flag is off; in that case the
-    output is identical to the v1-only legacy listing (no `enrichment_status`
+    output is identical to the v1-only listing (no `enrichment_status`
     key, no v2-derived fields). This preserves the pre-flag contract exactly.
     """
     iccid = str(v1_row.get("iccid") or "")
 
     if not v2_attempted:
-        native_status = v1_row.get("simStatus", "Unknown")
+        provider_status = v1_row.get("simStatus", "Unknown")
         return Subscription(
             iccid=iccid,
             msisdn=None,
             imsi=None,
-            status=map_status(native_status),
-            native_status=native_status,
+            status=provider_status,
             provider=Provider.MOABITS.value,
             company_id=company_id,
             activated_at=None,
@@ -928,7 +925,7 @@ def _build_subscription(
     iccid: str,
     company_id: str,
 ) -> Subscription:
-    native_status = (sim_status_row or {}).get("simStatus", "Unknown")
+    provider_status = (sim_status_row or {}).get("simStatus", "Unknown")
 
     provider_fields: dict[str, Any] = {}
 
@@ -1005,8 +1002,7 @@ def _build_subscription(
         iccid=sim_info.get("iccid") or iccid,
         msisdn=sim_info.get("msisdn"),
         imsi=sim_info.get("imsiNumber") or sim_info.get("imsi"),
-        status=map_status(native_status),
-        native_status=native_status,
+        status=provider_status,
         provider=Provider.MOABITS.value,
         company_id=company_id,
         activated_at=_parse_dt(sim_info.get("planStartDate")),
@@ -1210,7 +1206,7 @@ class MoabitsAdapter(BaseAdapter):
         iccid: str,
         credentials: dict[str, Any],
         *,
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
         data_service: bool | None = None,
         sms_service: bool | None = None,
@@ -1224,7 +1220,7 @@ class MoabitsAdapter(BaseAdapter):
         self,
         iccid: str,
         credentials: dict[str, Any],
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
         data_service: bool | None = None,
         sms_service: bool | None = None,
@@ -1233,7 +1229,8 @@ class MoabitsAdapter(BaseAdapter):
             raise UnsupportedOperation(
                 detail="Lifecycle write operations are disabled by feature flag"
             )
-        if target not in {AdministrativeStatus.ACTIVE, AdministrativeStatus.SUSPENDED}:
+        target_lower = target.lower()
+        if target_lower not in {"active", "suspended"}:
             raise UnsupportedOperation(
                 detail=f"Moabits only supports active/suspended service writes, got '{target}'"
             )
@@ -1241,14 +1238,9 @@ class MoabitsAdapter(BaseAdapter):
         data_enabled = bool(data_service)
         sms_enabled = bool(sms_service)
         if not data_enabled and not sms_enabled:
-            action = "active" if target == AdministrativeStatus.ACTIVE else "suspend"
-            raise ProviderValidationError(detail=f"No service to {action}")
+            raise ProviderValidationError(detail=f"No service to {target_lower}")
 
-        path = (
-            "/api/sim/active/"
-            if target == AdministrativeStatus.ACTIVE
-            else "/api/sim/suspend/"
-        )
+        path = "/api/sim/active/" if target_lower == "active" else "/api/sim/suspend/"
         creds = _creds(credentials)
         await _put(
             creds,

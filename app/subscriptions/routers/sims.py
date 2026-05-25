@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -33,26 +33,36 @@ from app.providers.base import Provider
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials
 from app.shared.errors import (
+    BatchTooLarge,
     CredentialsMissing,
     DomainError,
     IdempotencyKeyRequired,
     ListingPreconditionFailed,
+    ProviderRateLimited,
+    ProviderResourceNotFound,
+    ProviderUnavailable,
     SubscriptionNotFound,
     UnsupportedOperation,
 )
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     Subscription,
     SubscriptionSearchFilters,
 )
 from app.subscriptions.models.lifecycle_audit import LifecycleChangeAudit
-from app.subscriptions.models.routing import SimRoutingMap
+from app.subscriptions.models.routing import SimRoutingMap, SimRoutingPrefixMap
 from app.subscriptions.schemas.sim import (
     PresenceOut,
     ProviderStatusOut,
+    SimDetailsErrorOut,
+    SimDetailsIn,
+    SimDetailsItemOut,
+    SimDetailsOut,
+    SimDetailsSummaryOut,
     SimImportIn,
     SimImportOut,
     SimListOut,
+    SimSearchIn,
+    SimSearchProviderFilters,
     StatusChangeIn,
     SubscriptionOut,
     UsageOut,
@@ -70,7 +80,10 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/sims", tags=["sims"])
 _REQUEST_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_ICCID_DIGITS_RE = re.compile(r"\D+")
+_ICCID_ROUTING_PREFIX_LENGTH = 6
 _GLOBAL_CURSOR_PREFIX = "global:"
+_STATUS_CURSOR_PREFIX = "statuses:"
 
 
 # ── Dependencies ────────────────────────────────────────────────────────────────
@@ -175,18 +188,63 @@ async def _resolve_routing(
     return routing
 
 
+def _normalize_iccid_for_routing(iccid: str) -> str:
+    return _ICCID_DIGITS_RE.sub("", iccid)
+
+
+def _routing_iccid(routing: Any, requested_iccid: str) -> str:
+    routed = getattr(routing, "iccid", None)
+    if routed:
+        return str(routed)
+    return _normalize_iccid_for_routing(requested_iccid) or requested_iccid.strip()
+
+
 async def _find_routing(
     iccid: str,
     company_id: uuid.UUID,
     db: AsyncSession,
 ) -> SimRoutingMap | None:
+    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
     result = await db.execute(
         select(SimRoutingMap).where(
-            SimRoutingMap.iccid == iccid,
+            SimRoutingMap.iccid == route_iccid,
             SimRoutingMap.company_id == company_id,
         )
     )
     return result.scalar_one_or_none()
+
+
+def _iccid_routing_prefix(iccid: str) -> str | None:
+    digits = _normalize_iccid_for_routing(iccid)
+    if len(digits) < _ICCID_ROUTING_PREFIX_LENGTH:
+        return None
+    return digits[:_ICCID_ROUTING_PREFIX_LENGTH]
+
+
+async def _find_prefix_routing(
+    iccid: str,
+    company_id: uuid.UUID,
+    db: AsyncSession,
+) -> SimRoutingMap | None:
+    iccid_prefix = _iccid_routing_prefix(iccid)
+    if iccid_prefix is None:
+        return None
+
+    result = await db.execute(
+        select(SimRoutingPrefixMap).where(
+            SimRoutingPrefixMap.iccid_prefix == iccid_prefix,
+        )
+    )
+    prefix = result.scalar_one_or_none()
+    if prefix is None:
+        return None
+
+    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
+    return SimRoutingMap(
+        iccid=route_iccid,
+        provider=prefix.provider,
+        company_id=company_id,
+    )
 
 
 # ── Lazy ICCID resolution (routing map → cross-provider fan-out) ────────────────
@@ -323,29 +381,34 @@ async def _resolve_routing_or_discover(
     settings: Settings,
     registry: ProviderRegistry,
 ) -> tuple[SimRoutingMap, Subscription | None]:
-    """Resolve ICCID → routing entry, discovering via fan-out on cache miss.
+    """Resolve normalized ICCID → exact route → prefix route → discovery.
 
     Returns (routing_entry, prefetched_subscription_or_None). The prefetched
     Subscription is populated only when discovery hit a provider, letting the
     caller skip a second provider round-trip. Raises SubscriptionNotFound when
     neither the routing map nor any provider claims the ICCID.
     """
-    routing = await _find_routing(iccid, company_id, db)
+    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
+    routing = await _find_routing(route_iccid, company_id, db)
     if routing is not None:
         return routing, None
 
-    if _negative_cache_hit(company_id, iccid):
-        raise _unresolved_iccid_error(iccid)
+    routing = await _find_prefix_routing(route_iccid, company_id, db)
+    if routing is not None:
+        return routing, None
+
+    if _negative_cache_hit(company_id, route_iccid):
+        raise _unresolved_iccid_error(route_iccid)
 
     discovered = await _discover_iccid_across_providers(
-        iccid, company_id, db, settings, registry
+        route_iccid, company_id, db, settings, registry
     )
     if discovered is None:
-        _negative_cache_record(company_id, iccid)
-        raise _unresolved_iccid_error(iccid)
+        _negative_cache_record(company_id, route_iccid)
+        raise _unresolved_iccid_error(route_iccid)
 
-    _negative_cache_forget(company_id, iccid)
-    routing = await _find_routing(iccid, company_id, db)
+    _negative_cache_forget(company_id, route_iccid)
+    routing = await _find_routing(route_iccid, company_id, db)
     if routing is None:
         raise SubscriptionNotFound(
             detail=(
@@ -428,6 +491,55 @@ def _detail_level(data: dict[str, Any]) -> str:
     return "detail"
 
 
+_STATUS_GROUP_BY_VALUE = {
+    "ACTIVE": "active_like",
+    "ACTIVATED": "active_like",
+    "TEST": "test_like",
+    "READY": "test_like",
+    "TEST_READY": "test_like",
+    "SUSPENDED": "suspended_like",
+    "INACTIVE_NEW": "inactive_like",
+    "ACTIVATION_READY": "activation_ready_like",
+    "ACTIVATION_PENDANT": "activation_pending_like",
+    "PENDING": "activation_pending_like",
+    "DEACTIVATED": "terminal_like",
+    "PURGED": "purged_like",
+    "INVENTORY": "inventory_like",
+    "REPLACED": "replaced_like",
+    "RETIRED": "terminal_like",
+    "RESTORE": "restore_like",
+    "UNKNOWN": "unknown",
+}
+
+
+def _status_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    return cleaned.replace("_", " ").title()
+
+
+def _status_group(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    normalized = str(value).strip().replace(" ", "_").replace("-", "_").upper()
+    if not normalized:
+        return "unknown"
+    return _STATUS_GROUP_BY_VALUE.get(normalized, "other")
+
+
+def _status_group_label(group: str) -> str:
+    if group == "unknown":
+        return "Unknown"
+    if group == "other":
+        return "Other"
+    if group.endswith("_like"):
+        return f"{group[:-5].replace('_', ' ').title()}-like"
+    return group.replace("_", " ").title()
+
+
 def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
     provider_fields: dict[str, Any] = data.get("provider_fields") or {}
     services = provider_fields.get("services")
@@ -437,12 +549,10 @@ def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
             for item in str(provider_fields["services_raw"]).split("/")
             if item.strip()
         ]
+    status_group = _status_group(data.get("status"))
 
     return {
         "identity": {
-            "iccid": data.get("iccid"),
-            "msisdn": data.get("msisdn"),
-            "imsi": data.get("imsi"),
             "imei": _first_present(provider_fields, "imei"),
             "alias": _first_present(provider_fields, "alias"),
             "eid": _first_present(provider_fields, "eid"),
@@ -450,8 +560,10 @@ def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
             "sim_profile_id": _first_present(provider_fields, "sim_profile_id"),
         },
         "status": {
-            "value": str(data.get("status")) if data.get("status") else None,
-            "native": data.get("native_status"),
+            "label": _status_label(data.get("status")),
+            "group": status_group,
+            "group_label": _status_group_label(status_group),
+            "source": "provider",
             "last_changed_at": _iso_datetime(
                 _first_present(
                     provider_fields, "last_state_change_date", "date_updated"
@@ -498,12 +610,15 @@ def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
             "country": _first_present(provider_fields, "country"),
             "rat_type": _first_present(provider_fields, "rat_type"),
             "last_network": _first_present(provider_fields, "last_network"),
-            "ip_address": _first_present(
-                provider_fields,
-                "ip_address",
-                "fixed_ip_address",
-                "fixed_ipv6_address",
-                "ipv6_address",
+            "ip_address": _first_present(provider_fields, "ip_address"),
+            "ipv6_address": _first_present(provider_fields, "ipv6_address"),
+            "fixed_ip_address": _first_present(
+                provider_fields, "fixed_ip_address", "static_ip"
+            ),
+            "fixed_ipv6_address": _first_present(provider_fields, "fixed_ipv6_address"),
+            "static_ips": _first_present(provider_fields, "static_ips"),
+            "additional_static_ips": _first_present(
+                provider_fields, "additional_static_ips"
             ),
             "sgsn_ip": _first_present(provider_fields, "sgsn_ip"),
             "ggsn_ip": _first_present(provider_fields, "ggsn_ip"),
@@ -514,8 +629,8 @@ def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
             "last_lu_at": _iso_datetime(_first_present(provider_fields, "last_lu")),
             "first_cdr_at": _iso_datetime(_first_present(provider_fields, "first_cdr")),
             "last_cdr_at": _iso_datetime(_first_present(provider_fields, "last_cdr")),
-            "gprs": _first_present(provider_fields, "gprs_status"),
-            "ip": _first_present(provider_fields, "ip_status"),
+            "gprs_status": _first_present(provider_fields, "gprs_status"),
+            "ip_status": _first_present(provider_fields, "ip_status"),
             "location": _first_present(
                 provider_fields, "automatic_location", "manual_location"
             ),
@@ -556,8 +671,6 @@ def _normalized_subscription(data: dict[str, Any]) -> dict[str, Any]:
             ),
         },
         "dates": {
-            "activated_at": _iso_datetime(data.get("activated_at")),
-            "updated_at": _iso_datetime(data.get("updated_at")),
             "added_at": _iso_datetime(_first_present(provider_fields, "date_added")),
             "provisioned_at": _iso_datetime(
                 _first_present(provider_fields, "provision_date")
@@ -653,20 +766,8 @@ def _build_filters(
     msisdn: str | None,
     custom: list[str] | None,
 ) -> SubscriptionSearchFilters:
-    canonical_status = None
-    if status_filter:
-        try:
-            canonical_status = AdministrativeStatus(status_filter)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unknown status '{status_filter}'. "
-                    f"Valid values: {[s.value for s in AdministrativeStatus]}"
-                ),
-            )
     return SubscriptionSearchFilters(
-        status=canonical_status,
+        status=status_filter or None,
         modified_since=_parse_query_dt(modified_since, "modified_since"),
         modified_till=_parse_query_dt(modified_till, "modified_till"),
         iccid=iccid,
@@ -725,9 +826,10 @@ async def _upsert_routing(
     company_id: uuid.UUID,
 ) -> None:
     """Insert or update the routing index entry for this SIM."""
+    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
     stmt = (
         pg_insert(SimRoutingMap)
-        .values(iccid=iccid, provider=provider, company_id=company_id)
+        .values(iccid=route_iccid, provider=provider, company_id=company_id)
         .on_conflict_do_update(
             index_elements=["iccid"],
             set_={
@@ -922,7 +1024,7 @@ def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
     try:
         payload = base64.urlsafe_b64decode(padded.encode())
         decoded = json.loads(payload.decode())
-    except ValueError, json.JSONDecodeError:
+    except (ValueError, json.JSONDecodeError):
         return {}
     if not isinstance(decoded, dict):
         return {}
@@ -930,6 +1032,43 @@ def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
         str(provider): str(provider_cursor) if provider_cursor is not None else None
         for provider, provider_cursor in decoded.items()
         if provider in {p.value for p in Provider}
+    }
+
+
+def _status_cursor_key(status_value: str | None) -> str:
+    return status_value or ""
+
+
+def _encode_status_cursor(status_cursors: dict[str, str | None]) -> str | None:
+    active_cursors = {
+        status: cursor for status, cursor in status_cursors.items() if cursor is not None
+    }
+    if not active_cursors:
+        return None
+    payload = json.dumps(
+        active_cursors,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    return f"{_STATUS_CURSOR_PREFIX}{token}"
+
+
+def _decode_status_cursor(cursor: str | None) -> dict[str, str | None] | None:
+    if cursor is None or not cursor.startswith(_STATUS_CURSOR_PREFIX):
+        return None
+    token = cursor[len(_STATUS_CURSOR_PREFIX) :]
+    padded = token + ("=" * (-len(token) % 4))
+    try:
+        payload = base64.urlsafe_b64decode(padded.encode())
+        decoded = json.loads(payload.decode())
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    return {
+        str(status): str(status_cursor) if status_cursor is not None else None
+        for status, status_cursor in decoded.items()
     }
 
 
@@ -981,12 +1120,16 @@ async def _list_global_iccid_search(
     settings: Settings,
     registry: ProviderRegistry,
 ) -> SimListOut:
-    iccid = filters.iccid or ""
+    requested_iccid = filters.iccid or ""
+    iccid = _normalize_iccid_for_routing(requested_iccid) or requested_iccid.strip()
     routing = await _find_routing(iccid, company_id, db)
+    if routing is None:
+        routing = await _find_prefix_routing(iccid, company_id, db)
     if routing is not None:
         creds = await _load_credentials(company_id, routing.provider, db, settings)
         adapter = registry.get(routing.provider)
-        sub = await adapter.get_subscription(iccid, creds)
+        routed_iccid = _routing_iccid(routing, iccid)
+        sub = await adapter.get_subscription(routed_iccid, creds)
         return SimListOut(
             items=[_to_out(sub)],
             next_cursor=None,
@@ -1290,6 +1433,272 @@ async def _list_via_routing_index(
     )
 
 
+def _merge_search_filters(
+    body: SimSearchIn,
+    provider_filters: SimSearchProviderFilters,
+    status: str | None,
+) -> SubscriptionSearchFilters:
+    common = body.common
+    return SubscriptionSearchFilters(
+        status=status,
+        modified_since=provider_filters.modified_since or common.modified_since,
+        modified_till=provider_filters.modified_till or common.modified_till,
+        iccid=provider_filters.iccid or common.iccid,
+        imsi=provider_filters.imsi or common.imsi,
+        msisdn=provider_filters.msisdn or common.msisdn,
+        custom={**common.custom, **provider_filters.custom},
+    )
+
+
+def _search_status_values(
+    provider_filters: SimSearchProviderFilters,
+) -> list[str | None]:
+    statuses: list[str | None] = []
+    if provider_filters.status:
+        statuses.append(provider_filters.status)
+    statuses.extend(status for status in provider_filters.statuses if status)
+    deduped = list(dict.fromkeys(statuses))
+    return deduped or [None]
+
+
+async def _search_via_provider_filters(
+    body: SimSearchIn,
+    company_id: uuid.UUID,
+    db: AsyncSession,
+    settings: Settings,
+    registry: ProviderRegistry,
+) -> SimListOut:
+    """Fan out with provider-specific filters and merge the results."""
+    selected_providers = body.providers or {
+        provider: SimSearchProviderFilters() for provider in Provider
+    }
+    cursor_by_provider = _decode_global_cursor(body.cursor)
+    provider_statuses_by_name: dict[str, ProviderStatusOut] = {
+        provider.value: ProviderStatusOut(
+            provider=provider.value,
+            status="not_queried",
+        )
+        for provider in Provider
+        if provider not in selected_providers
+    }
+    failed_providers_by_name: dict[str, dict[str, str]] = {}
+    next_provider_cursors: dict[str, str | None] = {}
+    provider_calls: list[
+        tuple[
+            str,
+            Any,
+            dict[str, Any],
+            str | None,
+            int,
+            bool,
+            str,
+            SubscriptionSearchFilters,
+        ]
+    ] = []
+    next_status_cursors_by_provider: dict[str, dict[str, str | None]] = {}
+
+    selected_items = list(selected_providers.items())
+    default_limits = _global_provider_call_limits(
+        body.limit,
+        sum(1 for _provider, filters in selected_items if filters.limit is None),
+    )
+    default_limit_iter = iter(default_limits)
+
+    for provider, provider_filters in selected_items:
+        provider_name = provider.value
+        if cursor_by_provider is not None and provider_name not in cursor_by_provider:
+            provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                provider=provider_name, status="not_queried"
+            )
+            continue
+        provider_cursor = provider_filters.cursor
+        if provider_cursor is None and cursor_by_provider is not None:
+            provider_cursor = cursor_by_provider.get(provider_name)
+        call_limit = (
+            provider_filters.limit
+            if provider_filters.limit is not None
+            else next(default_limit_iter, body.limit)
+        )
+        try:
+            creds = await _load_credentials(company_id, provider_name, db, settings)
+            adapter = registry.get(provider_name)
+            if not _is_searchable_provider(adapter):
+                provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                    provider=provider_name,
+                    status="not_queried",
+                    title="Provider does not expose native listing",
+                )
+                continue
+            requested_status_values = _search_status_values(provider_filters)
+            multi_status_request = len(requested_status_values) > 1
+            status_values = requested_status_values
+            status_cursor_by_value = _decode_status_cursor(provider_cursor)
+            if status_cursor_by_value is not None:
+                status_values = [
+                    status_value
+                    for status_value in status_values
+                    if _status_cursor_key(status_value) in status_cursor_by_value
+                ]
+                if not status_values:
+                    provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                        provider=provider_name,
+                        status="not_queried",
+                    )
+                    continue
+            status_limits = _global_provider_call_limits(call_limit, len(status_values))
+            for status_value, status_limit in zip(
+                status_values,
+                status_limits,
+                strict=True,
+            ):
+                status_key = _status_cursor_key(status_value)
+                status_cursor = (
+                    status_cursor_by_value.get(status_key)
+                    if status_cursor_by_value is not None
+                    else provider_cursor
+                )
+                provider_calls.append(
+                    (
+                        provider_name,
+                        adapter,
+                        creds,
+                        status_cursor,
+                        status_limit,
+                        not multi_status_request,
+                        status_key,
+                        _merge_search_filters(body, provider_filters, status_value),
+                    )
+                )
+        except Exception as exc:
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, exc
+            )
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = provider_status
+            logger.warning(
+                "provider_search_setup_error",
+                provider=provider_name,
+                error=str(exc),
+            )
+
+    provider_results = await asyncio.gather(
+        *(
+            adapter.list_subscriptions(
+                creds,
+                cursor=provider_cursor,
+                limit=call_limit,
+                filters=filters,
+            )
+            for (
+                _provider_name,
+                adapter,
+                creds,
+                provider_cursor,
+                call_limit,
+                _use_next_cursor,
+                _status_key,
+                filters,
+            ) in provider_calls
+        ),
+        return_exceptions=True,
+    )
+
+    items: list[SubscriptionOut] = []
+    seen_items: set[tuple[str, str]] = set()
+    provider_success_counts: dict[str, int] = {}
+    provider_errors_by_name: dict[str, tuple[dict[str, str], ProviderStatusOut]] = {}
+    for (
+        provider_name,
+        _adapter,
+        _creds,
+        _provider_cursor,
+        _call_limit,
+        use_next_cursor,
+        status_key,
+        _filters,
+    ), result in zip(provider_calls, provider_results, strict=True):
+        if isinstance(result, Exception):
+            failed_provider, provider_status = _global_provider_failure(
+                provider_name, result
+            )
+            provider_errors_by_name[provider_name] = (
+                failed_provider,
+                provider_status,
+            )
+            logger.warning(
+                "provider_search_error",
+                provider=provider_name,
+                error=str(result),
+            )
+            continue
+
+        subs, next_cursor = result
+        for sub in subs:
+            await _upsert_routing(db, sub.iccid, provider_name, company_id)
+            item_key = (provider_name, sub.iccid)
+            if item_key in seen_items:
+                continue
+            seen_items.add(item_key)
+            items.append(_to_out(sub))
+            provider_success_counts[provider_name] = (
+                provider_success_counts.get(provider_name, 0) + 1
+            )
+        if use_next_cursor and next_cursor is not None:
+            next_provider_cursors[provider_name] = next_cursor
+        elif not use_next_cursor and next_cursor is not None:
+            next_status_cursors_by_provider.setdefault(provider_name, {})[
+                status_key
+            ] = next_cursor
+
+    for provider_name, status_cursors in next_status_cursors_by_provider.items():
+        encoded_status_cursor = _encode_status_cursor(status_cursors)
+        if encoded_status_cursor is not None:
+            next_provider_cursors[provider_name] = encoded_status_cursor
+
+    for provider, _provider_filters in selected_items:
+        provider_name = provider.value
+        if provider_name in provider_statuses_by_name:
+            continue
+        success_count = provider_success_counts.get(provider_name, 0)
+        if provider_name in provider_errors_by_name:
+            failed_provider, provider_status = provider_errors_by_name[provider_name]
+            failed_providers_by_name[provider_name] = failed_provider
+            provider_statuses_by_name[provider_name] = ProviderStatusOut(
+                provider=provider_name,
+                status="partial" if success_count else "error",
+                count=success_count,
+                code=provider_status.code,
+                title=provider_status.title,
+            )
+            continue
+        provider_statuses_by_name[provider_name] = ProviderStatusOut(
+            provider=provider_name,
+            status="ok",
+            count=success_count,
+        )
+
+    if items:
+        await db.commit()
+    failed_providers = [
+        failed_providers_by_name[provider.value]
+        for provider in Provider
+        if provider.value in failed_providers_by_name
+    ]
+    provider_statuses = [
+        provider_statuses_by_name[provider.value]
+        for provider in Provider
+        if provider.value in provider_statuses_by_name
+    ]
+    return SimListOut(
+        items=items,
+        next_cursor=_encode_global_cursor(next_provider_cursors),
+        total=None,
+        partial=bool(failed_providers),
+        failed_providers=failed_providers,
+        provider_statuses=provider_statuses,
+    )
+
+
 @router.get("", response_model=SimListOut)
 async def list_sims(
     cursor: str | None = None,
@@ -1375,6 +1784,170 @@ async def list_sims(
     )
 
 
+@router.post("/search", response_model=SimListOut)
+async def search_sims(
+    body: SimSearchIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    registry: ProviderRegistry = Depends(get_registry),
+) -> SimListOut:
+    """Search SIMs with provider-specific filters and a merged table response."""
+    return await _search_via_provider_filters(
+        body,
+        company_id,
+        db,
+        settings,
+        registry,
+    )
+
+
+def _details_error_from_exception(exc: Exception) -> tuple[
+    Literal["not_found", "timeout", "error", "rate_limited"],
+    SimDetailsErrorOut,
+]:
+    if isinstance(exc, (SubscriptionNotFound, ProviderResourceNotFound)):
+        return (
+            "not_found",
+            SimDetailsErrorOut(
+                code=exc.code if isinstance(exc, DomainError) else "subscription.not_found",
+                detail=exc.detail or str(exc),
+            ),
+        )
+    if isinstance(exc, ProviderRateLimited):
+        return (
+            "rate_limited",
+            SimDetailsErrorOut(
+                code=exc.code,
+                detail=exc.detail,
+                retry_after=exc.extra.get("retry_after"),
+            ),
+        )
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return (
+            "timeout",
+            SimDetailsErrorOut(
+                code="provider.unavailable",
+                detail="Provider request timed out",
+            ),
+        )
+    if isinstance(exc, ProviderUnavailable) and "timeout" in (
+        (exc.detail or exc.title).lower()
+    ):
+        return (
+            "timeout",
+            SimDetailsErrorOut(code=exc.code, detail=exc.detail),
+        )
+    if isinstance(exc, DomainError):
+        return (
+            "error",
+            SimDetailsErrorOut(
+                code=exc.code,
+                detail=exc.detail,
+                retry_after=exc.extra.get("retry_after"),
+            ),
+        )
+    return (
+        "error",
+        SimDetailsErrorOut(code="provider.unavailable", detail=str(exc)),
+    )
+
+
+@router.post("/details", response_model=SimDetailsOut)
+async def get_sim_details_batch(
+    body: SimDetailsIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    registry: ProviderRegistry = Depends(get_registry),
+) -> SimDetailsOut:
+    """Resolve mixed-provider ICCIDs and fetch live details per SIM."""
+    max_batch = settings.max_batch_details
+    if not body.iccids:
+        raise HTTPException(status_code=400, detail="iccids must contain at least one item")
+    if len(body.iccids) > max_batch:
+        raise BatchTooLarge(
+            detail=f"Batch contains {len(body.iccids)} ICCIDs; max is {max_batch}",
+            extra={"max_batch_details": max_batch},
+        )
+
+    requested_iccids = list(dict.fromkeys(body.iccids))
+    allowed_providers = {provider.value for provider in body.providers or []}
+    unresolved: list[str] = []
+    filtered_out: list[str] = []
+    resolved: list[tuple[str, str, str]] = []
+
+    for requested_iccid in requested_iccids:
+        try:
+            routing, prefetched = await _resolve_routing_or_discover(
+                requested_iccid, company_id, db, settings, registry
+            )
+        except SubscriptionNotFound:
+            unresolved.append(requested_iccid)
+            continue
+
+        if allowed_providers and routing.provider not in allowed_providers:
+            filtered_out.append(requested_iccid)
+            continue
+
+        if prefetched is not None:
+            resolved.append((requested_iccid, prefetched.provider, prefetched.iccid))
+            continue
+        resolved.append(
+            (requested_iccid, routing.provider, _routing_iccid(routing, requested_iccid))
+        )
+
+    credentials_by_provider: dict[str, dict[str, Any]] = {}
+    adapter_by_provider: dict[str, Any] = {}
+    provider_setup_errors: dict[str, Exception] = {}
+    for _requested_iccid, provider, _routed_iccid in resolved:
+        if provider in credentials_by_provider or provider in provider_setup_errors:
+            continue
+        try:
+            credentials_by_provider[provider] = await _load_credentials(
+                company_id, provider, db, settings
+            )
+            adapter_by_provider[provider] = registry.get(provider)
+        except Exception as exc:
+            provider_setup_errors[provider] = exc
+
+    async def _fetch_one(
+        requested_iccid: str, provider: str, routed_iccid: str
+    ) -> tuple[str, SimDetailsItemOut]:
+        setup_error = provider_setup_errors.get(provider)
+        if setup_error is not None:
+            status_value, error = _details_error_from_exception(setup_error)
+            return requested_iccid, SimDetailsItemOut(
+                provider=provider, status=status_value, error=error
+            )
+        try:
+            sub = await adapter_by_provider[provider].get_subscription(
+                routed_iccid, credentials_by_provider[provider]
+            )
+            return requested_iccid, SimDetailsItemOut(
+                provider=provider, status="ok", data=_to_out(sub)
+            )
+        except Exception as exc:
+            status_value, error = _details_error_from_exception(exc)
+            return requested_iccid, SimDetailsItemOut(
+                provider=provider, status=status_value, error=error
+            )
+
+    fetched = await asyncio.gather(*(_fetch_one(*item) for item in resolved))
+    results = {iccid: item for iccid, item in fetched}
+
+    summary = SimDetailsSummaryOut(total=len(results))
+    for item in results.values():
+        setattr(summary, item.status, getattr(summary, item.status) + 1)
+
+    return SimDetailsOut(
+        results=results,
+        summary=summary,
+        unresolved=unresolved,
+        filtered_out=filtered_out,
+    )
+
+
 @router.get("/{iccid}", response_model=SubscriptionOut)
 async def get_sim(
     iccid: str,
@@ -1390,7 +1963,8 @@ async def get_sim(
         return _to_out(prefetched)
     creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
-    sub = await adapter.get_subscription(iccid, creds)
+    routed_iccid = _routing_iccid(routing, iccid)
+    sub = await adapter.get_subscription(routed_iccid, creds)
     return _to_out(sub)
 
 
@@ -1410,8 +1984,9 @@ async def get_usage(
     )
     creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
+    routed_iccid = _routing_iccid(routing, iccid)
     snap = await adapter.get_usage(
-        iccid,
+        routed_iccid,
         creds,
         start_date=start_date,
         end_date=end_date,
@@ -1433,7 +2008,8 @@ async def get_presence(
     )
     creds = await _load_credentials(company_id, routing.provider, db, settings)
     adapter = registry.get(routing.provider)
-    presence = await adapter.get_presence(iccid, creds)
+    routed_iccid = _routing_iccid(routing, iccid)
+    presence = await adapter.get_presence(routed_iccid, creds)
     return PresenceOut(**dataclasses.asdict(presence))
 
 
@@ -1452,22 +2028,15 @@ async def set_status(
     settings: Settings = Depends(get_settings),
     registry: ProviderRegistry = Depends(get_registry),
 ) -> None:
-    try:
-        target = AdministrativeStatus(body.target)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown status '{body.target}'. Valid values: {[s.value for s in AdministrativeStatus]}",
-        )
-
     routing = await _resolve_routing(iccid, company_id, db)
+    routed_iccid = _routing_iccid(routing, iccid)
     if not await _claim_idempotency_key(idempotency_key, company_id, db):
         await _write_lifecycle_audit(
             db,
             company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
-            iccid=iccid,
+            iccid=routed_iccid,
             provider=routing.provider,
             action="set_status",
             target=body.target,
@@ -1490,9 +2059,9 @@ async def set_status(
     started = time.perf_counter()
     try:
         await adapter.set_administrative_status(
-            iccid,
+            routed_iccid,
             creds,
-            target=target,
+            target=body.target,
             idempotency_key=idempotency_key,
             data_service=body.data_service,
             sms_service=body.sms_service,
@@ -1509,7 +2078,7 @@ async def set_status(
             company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
-            iccid=iccid,
+            iccid=routed_iccid,
             provider=routing.provider,
             action="set_status",
             target=body.target,
@@ -1536,13 +2105,14 @@ async def purge_sim(
     registry: ProviderRegistry = Depends(get_registry),
 ) -> None:
     routing = await _resolve_routing(iccid, company_id, db)
+    routed_iccid = _routing_iccid(routing, iccid)
     if not await _claim_idempotency_key(idempotency_key, company_id, db):
         await _write_lifecycle_audit(
             db,
             company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
-            iccid=iccid,
+            iccid=routed_iccid,
             provider=routing.provider,
             action="purge",
             target=None,
@@ -1564,7 +2134,7 @@ async def purge_sim(
     provider_error_code = None
     started = time.perf_counter()
     try:
-        await adapter.purge(iccid, creds, idempotency_key=idempotency_key)
+        await adapter.purge(routed_iccid, creds, idempotency_key=idempotency_key)
     except Exception as exc:
         error = str(exc)
         outcome = "error"
@@ -1577,7 +2147,7 @@ async def purge_sim(
             company_id=company_id,
             actor_id=current.id,
             request_id=request.headers.get("X-Request-ID"),
-            iccid=iccid,
+            iccid=routed_iccid,
             provider=routing.provider,
             action="purge",
             target=None,

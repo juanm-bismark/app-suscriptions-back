@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlalchemy import apaginate
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
@@ -17,6 +17,7 @@ from app.identity.models.profile import AppRole, Profile
 from app.identity.models.user import User
 from app.identity.schemas.profile import ProfileOut
 from app.identity.schemas.user import UserCreate, UserUpdate
+from app.tenancy.models.company import Company
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -53,6 +54,29 @@ async def _attach_profile_emails(
     for profile in profiles:
         profile.email = emails.get(profile.id)
     return profiles
+
+
+async def _get_company_or_404(
+    db: AsyncSession,
+    company_id: str,
+) -> Company:
+    company_id_text = company_id.strip()
+    if not company_id_text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="company_id cannot be empty",
+        )
+
+    result = await db.execute(
+        select(Company).where(cast(Company.id, String) == company_id_text)
+    )
+    company = result.scalar_one_or_none()
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company '{company_id_text}' not found",
+        )
+    return company
 
 
 def _list_users_query(current: Profile, q: str | None = None) -> Select[tuple[Profile]]:
@@ -106,11 +130,21 @@ async def create_user(
         )
     await ensure_email_is_available(db, email)
 
+    if current.role == AppRole.admin:
+        if body.company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="company_id is required when creating a user as admin",
+            )
+        company_id = body.company_id
+    else:
+        company_id = current.company_id
+
     new_id = uuid.uuid4()
     db.add(User(id=new_id, email=email, hashed_password=hash_password(body.password)))
     profile = Profile(
         id=new_id,
-        company_id=current.company_id,
+        company_id=company_id,
         role=body.role,
         full_name=body.full_name or "",
     )
@@ -159,27 +193,24 @@ async def get_user(
 async def update_user(
     user_id: uuid.UUID,
     body: UserUpdate,
-    current: CurrentProfile,
+    current: AdminOrManagerProfile,
     db: DbSession,
 ) -> Profile:
-    result = await db.execute(
-        select(Profile).where(Profile.id == user_id, Profile.company_id == current.company_id)
-    )
+    if current.role not in (AppRole.admin, AppRole.manager):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions",
+        )
+
+    query = select(Profile).where(Profile.id == user_id)
+    if current.role != AppRole.admin:
+        query = query.where(Profile.company_id == current.company_id)
+    result = await db.execute(query)
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    if current.role == AppRole.member:
-        if current.id != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions",
-            )
-        if body.role is not None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Members cannot change roles"
-            )
-    elif current.role == AppRole.manager:
+    if current.role == AppRole.manager:
         if target.role != AppRole.member:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Managers can only edit members"
@@ -209,10 +240,16 @@ async def update_user(
         if email is not None and email != normalize_email(user.email):
             await ensure_email_is_available(db, email, exclude_user_id=user_id)
 
+    company: Company | None = None
+    if body.company_id is not None and current.role == AppRole.admin:
+        company = await _get_company_or_404(db, body.company_id)
+
     if body.full_name is not None:
         target.full_name = body.full_name
     if body.role is not None:
         target.role = body.role
+    if company is not None:
+        target.company_id = company.id
 
     if user is not None:
         if email is not None:

@@ -16,23 +16,6 @@ def _provider_metrics_default() -> dict[str, Any]:
     return {}
 
 
-class AdministrativeStatus(StrEnum):
-    ACTIVE = "active"
-    IN_TEST = "in_test"       # Kite: TEST | Tele2: Ready | Moabits: Ready
-    SUSPENDED = "suspended"
-    INACTIVE_NEW = "inactive_new"
-    ACTIVATION_PENDANT = "activation_pendant"
-    ACTIVATION_READY = "activation_ready"
-    TERMINATED = "terminated"
-    PURGED = "purged"         # Tele2: PURGED | Moabits: PURGED
-    INVENTORY = "inventory"
-    REPLACED = "replaced"
-    RETIRED = "retired"
-    RESTORE = "restore"
-    PENDING = "pending"
-    UNKNOWN = "unknown"
-
-
 class ConnectivityState(StrEnum):
     ONLINE = "online"
     OFFLINE = "offline"
@@ -44,8 +27,7 @@ class Subscription:
     iccid: str
     msisdn: str | None
     imsi: str | None
-    status: AdministrativeStatus
-    native_status: str          # raw provider value — shown as tooltip/subtitle in UI
+    status: str                 # raw provider value (e.g. "ACTIVE", "ACTIVATED", "Active")
     provider: str
     company_id: str
     activated_at: datetime | None
@@ -121,7 +103,7 @@ class StatusHistoryRecord:
 
 @dataclass(frozen=True)
 class SubscriptionSearchFilters:
-    status: AdministrativeStatus | None = None
+    status: str | None = None
     modified_since: datetime | None = None
     modified_till: datetime | None = None
     iccid: str | None = None

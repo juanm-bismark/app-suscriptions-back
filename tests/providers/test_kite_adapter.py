@@ -13,54 +13,10 @@ from app.providers.kite import client as kite_client_mod
 from app.providers.kite.adapter import KiteAdapter
 from app.shared.errors import UnsupportedOperation
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityState,
     StatusDetail,
     StatusHistoryRecord,
 )
-
-
-class TestKiteStatusMapping:
-    def test_kite_to_canonical_all_states(self):
-        from app.providers.kite.status_map import map_status
-
-        assert map_status("ACTIVE") == AdministrativeStatus.ACTIVE
-        assert map_status("TEST") == AdministrativeStatus.IN_TEST
-        assert map_status("INACTIVE_NEW") == AdministrativeStatus.INACTIVE_NEW
-        assert map_status("ACTIVATION_READY") == AdministrativeStatus.ACTIVATION_READY
-        assert (
-            map_status("ACTIVATION_PENDANT") == AdministrativeStatus.ACTIVATION_PENDANT
-        )
-        assert map_status("DEACTIVATED") == AdministrativeStatus.TERMINATED
-        assert map_status("SUSPENDED") == AdministrativeStatus.SUSPENDED
-        assert map_status("RETIRED") == AdministrativeStatus.RETIRED
-        assert map_status("RESTORE") == AdministrativeStatus.RESTORE
-        assert map_status("PENDING") == AdministrativeStatus.PENDING
-
-    def test_kite_unknown_status_falls_back(self):
-        from app.providers.kite.status_map import map_status
-
-        assert map_status("UNKNOWN_STATE") == AdministrativeStatus.UNKNOWN
-        assert map_status("") == AdministrativeStatus.UNKNOWN
-
-    def test_canonical_to_kite_all_states(self):
-        from app.providers.kite.status_map import to_native
-
-        assert to_native(AdministrativeStatus.ACTIVE) == "ACTIVE"
-        assert to_native(AdministrativeStatus.IN_TEST) == "TEST"
-        assert to_native(AdministrativeStatus.INACTIVE_NEW) == "INACTIVE_NEW"
-        assert to_native(AdministrativeStatus.ACTIVATION_READY) == "ACTIVATION_READY"
-        assert (
-            to_native(AdministrativeStatus.ACTIVATION_PENDANT) == "ACTIVATION_PENDANT"
-        )
-
-    def test_kite_reverse_mapping_unsupported_states(self):
-        from app.providers.kite.status_map import to_native
-
-        assert to_native(AdministrativeStatus.PENDING) is None
-        assert to_native(AdministrativeStatus.PURGED) is None
-        assert to_native(AdministrativeStatus.TERMINATED) is None
-        assert to_native(AdministrativeStatus.SUSPENDED) is None
 
 
 @pytest.fixture(autouse=True)
@@ -345,7 +301,7 @@ class TestKiteAdapterBehavior:
         sub = await KiteAdapter().get_subscription("8934070100000000001", kite_creds)
 
         assert sub.iccid == "8934070100000000001"
-        assert sub.status == AdministrativeStatus.ACTIVE
+        assert sub.status == "ACTIVE"
         assert sub.provider_fields["sgsn_ip"] == "192.0.2.10"
         assert sub.provider_fields["ggsn_ip"] == "192.0.2.11"
         assert sub.provider_fields["manual_location"] == {
@@ -524,7 +480,7 @@ class TestKiteAdapterBehavior:
             await KiteAdapter().set_administrative_status(
                 "8934070100000000001",
                 {"company_id": "company-1"},
-                target=AdministrativeStatus.ACTIVE,
+                target="ACTIVE",
                 idempotency_key="idem-1",
             )
 

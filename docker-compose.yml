@@ -11,10 +11,32 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/000_init.sql:/docker-entrypoint-initdb.d/000_init.sql
+      - ./migrations/001_sim_routing_map.sql:/docker-entrypoint-initdb.d/001_sim_routing_map.sql
+      - ./migrations/002_company_provider_credentials.sql:/docker-entrypoint-initdb.d/002_company_provider_credentials.sql
+      - ./migrations/003_audit_log.sql:/docker-entrypoint-initdb.d/003_audit_log.sql
+      - ./migrations/004_idempotency_keys.sql:/docker-entrypoint-initdb.d/004_idempotency_keys.sql
+      - ./migrations/005_lifecycle_change_audit.sql:/docker-entrypoint-initdb.d/005_lifecycle_change_audit.sql
+      - ./migrations/006_moabits_source_companies.sql:/docker-entrypoint-initdb.d/006_moabits_source_companies.sql
+      - ./migrations/007_company_provider_mappings.sql:/docker-entrypoint-initdb.d/007_company_provider_mappings.sql
+      - ./migrations/008_sync_jobs.sql:/docker-entrypoint-initdb.d/008_sync_jobs.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 5
 
   api:
@@ -26,10 +48,35 @@ services:
       DATABASE_URL: ${DATABASE_URL_DOCKER}
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      FERNET_KEY: ${FERNET_KEY}
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      LIFECYCLE_WRITES_ENABLED: ${LIFECYCLE_WRITES_ENABLED:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "arq", "app.sync.worker.WorkerSettings"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER}
+      JWT_SECRET: ${JWT_SECRET}
+      FERNET_KEY: ${FERNET_KEY}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      LIFECYCLE_WRITES_ENABLED: ${LIFECYCLE_WRITES_ENABLED:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SYNC_CRON_EXPR: ${SYNC_CRON_EXPR:-0 2 * * *}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  redis_data:

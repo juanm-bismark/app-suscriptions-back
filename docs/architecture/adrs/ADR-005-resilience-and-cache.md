@@ -114,3 +114,24 @@ Este mecanismo protege un solo proceso. Si se ejecutan varios workers o réplica
 
 - Si se llega a >1 worker o se escala horizontalmente, mover circuit breaker y caché a Redis.
 - Si los proveedores garantizan idempotencia explícita en mutaciones, habilitar retry de mutaciones también.
+
+## Revisión 2026-05-25 — coordinación con sync worker (ver ADR-012)
+
+ADR-012 introduce un **worker async separado** (Arq + Redis) que ejecuta sync periódico del routing y exports masivos. El worker:
+
+- Reutiliza los mismos `Adapter` que la API → comparte el mismo `RateLimiter` per-proc por provider.
+- Como worker y API son **procesos distintos**, sus limiters viven en memorias separadas y **no coordinan automáticamente**.
+
+**Implicación**: si el cron de sync (02:00 UTC default) ocurre durante tráfico real significativo, ambos procesos pueden agotar el budget TPS del provider al mismo tiempo y superar el contrato.
+
+**Mitigaciones aplicadas en ADR-012**:
+1. Cron en hora valle.
+2. Trigger manual sólo desde admin role.
+3. Métricas `sync_concurrent_with_traffic` para detectar overlaps.
+
+**Migración requerida** si se cumple cualquiera:
+- Se sostiene tráfico real durante la ventana de sync.
+- Se necesita correr múltiples workers (de API o de sync) en paralelo.
+- Se escala a >1 réplica del API container.
+
+→ Mover el rate limiter de in-proc (`asyncio.Lock` + contador local) a **Redis** (lua script atómico o `slowapi` con backend Redis). Esto convierte el budget TPS en autoridad compartida entre todos los procesos del sistema.

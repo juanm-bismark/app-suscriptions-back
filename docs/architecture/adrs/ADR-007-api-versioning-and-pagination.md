@@ -63,8 +63,7 @@ GET /v1/sims?limit=50&cursor=eyJwIjoiVEVMRTIiLCJpIjoiODk..."
       "iccid": "89462038075065380465",
       "msisdn": null,
       "imsi": null,
-      "status": "active",
-      "native_status": "ACTIVATED",
+      "status": "ACTIVATED",
       "provider": "tele2",
       "detail_level": "summary",
       "normalized": {

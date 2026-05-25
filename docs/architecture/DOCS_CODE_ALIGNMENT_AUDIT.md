@@ -1,7 +1,7 @@
 # Docs ↔ Code Alignment Audit
 
-**Date:** 2026-05-07  
-**Scope:** documentation under `docs/`, top-level planning/reference docs, and current backend code.
+**Date:** 2026-05-25  
+**Scope:** documentation under `docs/`, archived planning/reference docs, frontend contract, and current backend code.
 
 This audit separates current implementation facts from older architecture
 phase notes. Some documents are intentionally historical; those should not
@@ -18,7 +18,7 @@ status note.
 | Required provider interface | `get_subscription`, `get_usage`, `get_presence`, `set_administrative_status`, `purge`. |
 | Optional listing capability | `SearchableProvider.list_subscriptions(credentials, cursor, limit, filters)` implemented by Kite, Tele2, and Moabits. |
 | Capabilities endpoint | `GET /v1/providers/{provider}/capabilities` is implemented. |
-| Routing map | `sim_routing_map` is persisted and used for single-SIM/global listing routing. |
+| Routing map | `sim_routing_map` is persisted and used for single-SIM/global listing routing. ADR-012 adds worker-driven routing sync. |
 | Credentials | `company_provider_credentials.credentials_enc` stores encrypted provider secrets with Fernet. |
 | Moabits source scope | `provider_source_configs.settings.company_codes`, not `credentials_enc`, is the source of truth for selected Moabits company codes. |
 | Moabits v2 enrichment | Implemented for provider-scoped listing behind `MOABITS_V2_ENRICHMENT_ENABLED`. |
@@ -32,6 +32,7 @@ status note.
 | Metrics / tracing / rate limiting | No `/metrics`, Prometheus instrumentation, OpenTelemetry tracing, or tenant token bucket is implemented yet. |
 | Refresh tokens | Stored as sha256 hex digest, not raw token. |
 | CORS | Uses explicit `settings.cors_origins`, defaulting to local dev origins. |
+| Async jobs | Redis + Arq worker, `sync_jobs`, `/v1/sync/trigger`, `/v1/sync/status`, `/v1/jobs/{job_id}` and `POST /v1/sims/details` are implemented. `POST /v1/sims/export` remains pending. |
 
 ## Document-by-Document Review
 
@@ -45,10 +46,10 @@ status note.
 | `docs/architecture/PROVIDER_SPEC_GAPS.md` | Updated | Moabits section now reflects implemented v2 listing enrichment and the remaining mapper gaps. |
 | `docs/architecture/MOABITS_ORION_GATEWAY_API_V2.md` | Updated | Documents v2 contract plus backend mapping gaps. |
 | `docs/architecture/_phase7_consistency_check.md` | Historical | Added explicit historical note. Useful as an architecture consistency artifact, but predates later implementation details such as ADR-010/011. |
-| `docs/architecture/_context_state.json` | Historical generator state | Contains phase-era assumptions and should not be treated as live source of truth. |
+| `docs/architecture/_context_state.json` | Current summary state | Updated after ADR-012 A/B/C; use alongside `ARCHITECTURE.md` and ADRs. |
 | `docs/architecture/c4-context.mermaid` | Updated | Postgres and Moabits labels now mention current tables/v1+v2 auth. |
-| `docs/architecture/c4-container.mermaid` | Updated | Removed claims of generic cache/retry as implemented behavior; added provider source config/lifecycle audit. |
-| `docs/architecture/c4-component.mermaid` | Updated | Reframed domain services as conceptual/router-level because there are no concrete service classes yet; Moabits label mentions v2 enrichment. |
+| `docs/architecture/c4-container.mermaid` | Updated | Shows API, Arq worker, Redis broker, Postgres and providers. |
+| `docs/architecture/c4-component.mermaid` | Updated | Shows conceptual router-level services plus `sync_jobs` and worker interactions. |
 | `docs/architecture/context-map.mermaid` | Updated | Tenancy/Provider labels include provider source config and Moabits v1+v2. |
 | `docs/architecture/adrs/ADR-001-*` | Mostly current | Modular monolith is implemented. Generic semaphore mitigation remains target, not implemented. |
 | `docs/architecture/adrs/ADR-002-*` | Current | Proxy/routing-map decision matches code. |
@@ -61,26 +62,25 @@ status note.
 | `docs/architecture/adrs/ADR-009-*` | Mostly current | Tests exist and are extensive; coverage gates/import-linter are still process goals. |
 | `docs/architecture/adrs/ADR-010-*` | Current | Matches provider source config implementation. |
 | `docs/architecture/adrs/ADR-011-*` | Current | Captures Moabits v2 enrichment and known gaps. |
+| `docs/architecture/adrs/ADR-012-*` | Current | Accepted; Redis/Arq, routing sync, jobs endpoints and batch details are implemented. Export remains pending. |
 | `docs/CIRCUIT_BREAKER_IMPLEMENTATION.md` | Updated | Fixed date and status framing. Still intentionally a focused implementation note. |
 | `docs/LIFECYCLE_FLAG.md` | Current | Matches `LIFECYCLE_WRITES_ENABLED` behavior. |
-| `IMPLEMENTATION_PLAN.md` | Updated | PR-16 added as implemented; still a living roadmap with remaining PRs. |
-| `migrations/README.md` | Current | Lists migrations through `006_provider_source_configs.sql`. |
+| `docs/archive/2026-05-provider-remediation/IMPLEMENTATION_PLAN.md` | Archived | Historical roadmap/provider remediation notes. Not a current source of truth. |
+| `migrations/README.md` | Current | Lists migrations through `008_sync_jobs.sql`. |
 | `tests/README.md` | Updated | Rewritten to match the current test tree and `pytest-httpx` / `pytest-asyncio` setup. |
-| `VALIDATION_REPORT.md` | Updated | Replaced stale 2026-04-29 review text with a concise current validation snapshot and remaining gaps. |
-| `INTEGRATION_REVIEW.md`, `moabits.md` | Reference / historical | Added explicit reference notes. Useful provider research; should not be read as live implementation status. |
+| `docs/archive/2026-05-provider-remediation/VALIDATION_REPORT.md` | Archived | Historical validation snapshot. Current status lives in `ARCHITECTURE.md`, `_context_state.json`, and ADRs. |
+| `docs/archive/2026-05-provider-remediation/INTEGRATION_REVIEW.md`, `docs/architecture/MOABITS_ORION_V1_NOTES.md` | Reference / provider notes | Useful provider research; should not be read as live implementation status. |
 
 ## Highest-Signal Missing Documentation Work
 
-1. Add a maintained endpoint matrix with exact path, role,
-   idempotency requirement, feature flag, and backing adapter behavior.
-2. Split `ARCHITECTURE.md` into "current implementation" and "target
+1. Split `ARCHITECTURE.md` into "current implementation" and "target
    roadmap" sections so future readers do not confuse planned NFRs with
    shipped features.
-3. Add an operations doc for Moabits onboarding:
+2. Add an operations doc for Moabits onboarding:
    credential PATCH → discover child companies → admin PUT company-codes
    → provider-scoped listing → optional v2 flag smoke test.
-4. Add an observability status doc: request IDs and structlog are live;
+3. Add an observability status doc: request IDs and structlog are live;
    metrics/tracing/rate limiting are pending.
-5. Decide whether v2 enrichment failures should be reflected in
+4. Decide whether v2 enrichment failures should be reflected in
    `SimListOut.partial` / `failed_providers` or remain per-SIM
    `provider_fields.enrichment_status`.

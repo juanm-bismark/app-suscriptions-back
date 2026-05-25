@@ -9,13 +9,13 @@ longer reliable as a current readiness report: several findings were fixed,
 some planned items were implemented, and later architecture decisions changed
 the source of truth for Moabits listing/enrichment.
 
-Use these documents for detailed decisions:
+This report is archived. Use these documents for current decisions:
 
-- `docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md`
-- `IMPLEMENTATION_PLAN.md`
 - `docs/architecture/ARCHITECTURE.md`
+- `docs/architecture/_context_state.json`
 - `docs/architecture/adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md`
 - `docs/architecture/adrs/ADR-011-moabits-v2-list-enrichment.md`
+- `docs/architecture/adrs/ADR-012-routing-sync-and-async-jobs.md`
 
 ## Current Implementation Snapshot
 
@@ -61,7 +61,7 @@ These are the main remaining production-hardening or confirmation items:
 ## Documents Cleaned Up
 
 The older 2026-04-29 findings about missing tests, missing DTO docs, Moabits
-`to_native()` behavior and no circuit breaker are no longer valid as current
+status conversion behavior and no circuit breaker are no longer valid as current
 statements. They have been removed from this report to avoid contradictory
 guidance.
 

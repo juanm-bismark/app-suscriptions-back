@@ -220,3 +220,24 @@ class IdempotencyKeyRequired(DomainError):
     code = "request.idempotency_key_required"
     http_status = 400
     title = "Idempotency-Key header is required for this operation"
+
+
+class BatchTooLarge(DomainError):
+    code = "request.batch_too_large"
+    http_status = 413
+    title = "Batch size exceeds the limit"
+
+
+# ── Sync / async jobs ──────────────────────────────────────────────────────────
+
+
+class SyncAlreadyRunning(DomainError):
+    code = "sync.already_running"
+    http_status = 409
+    title = "A sync job for this provider is already pending or running"
+
+
+class JobNotFound(DomainError):
+    code = "job.not_found"
+    http_status = 404
+    title = "Job not found"

@@ -41,7 +41,6 @@ from app.shared.errors import (
     UnsupportedOperation,
 )
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityPresence,
     ConnectivityState,
     Subscription,
@@ -50,7 +49,11 @@ from app.subscriptions.domain import (
     UsageSnapshot,
 )
 
-from .status_map import map_status, to_native
+
+# Native values accepted by Tele2's PUT /devices/{iccid} status field
+_TELE2_WRITABLE: frozenset[str] = frozenset(
+    {"ACTIVATED", "TEST_READY", "PURGED", "DEACTIVATED", "INVENTORY", "REPLACED", "RETIRED", "ACTIVATION_READY"}
+)
 
 _DEFAULT_COBRAND_HOST = "restapi3.jasper.com"
 _API_VERSION = "1"
@@ -173,7 +176,7 @@ def _max_tps(credentials: dict[str, Any]) -> float:
         return _DEFAULT_MAX_TPS
     try:
         value = float(raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return _DEFAULT_MAX_TPS
     return min(max(value, _DEFAULT_MAX_TPS), _MAX_CONFIGURABLE_TPS)
 
@@ -341,7 +344,7 @@ async def _response_json(resp: httpx.Response, label: str) -> Any:
 
 
 def _parse_subscription(data: dict[str, Any], company_id: str) -> Subscription:
-    native_status = cast(str, data.get("status", "UNKNOWN"))  # type: ignore[arg-type]
+    provider_status = cast(str, data.get("status", "UNKNOWN"))  # type: ignore[arg-type]
 
     # Extract Tele2-specific fields into provider_fields
     provider_fields: dict[str, Any] = {}
@@ -403,8 +406,7 @@ def _parse_subscription(data: dict[str, Any], company_id: str) -> Subscription:
         iccid=cast(str, data["iccid"]),  # type: ignore[arg-type]
         msisdn=cast(str | None, data.get("msisdn")),  # type: ignore[arg-type]
         imsi=cast(str | None, data.get("imsi")),  # type: ignore[arg-type]
-        status=map_status(native_status),
-        native_status=native_status,
+        status=provider_status,
         provider=Provider.TELE2.value,
         company_id=company_id,
         activated_at=_parse_dt(cast(str | None, data.get("dateActivated"))),  # type: ignore[arg-type]
@@ -692,7 +694,7 @@ class Tele2Adapter(BaseAdapter):
         iccid: str,
         credentials: dict[str, Any],
         *,
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
         **_: Any,
     ) -> None:
@@ -708,17 +710,15 @@ class Tele2Adapter(BaseAdapter):
         self,
         iccid: str,
         credentials: dict[str, Any],
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
     ) -> None:
-        # Feature flag: guard write-paths
         if not get_settings().lifecycle_writes_enabled:
             raise UnsupportedOperation(
                 detail="Lifecycle write operations are disabled by feature flag"
             )
 
-        native = to_native(target)
-        if native is None:
+        if target not in _TELE2_WRITABLE:
             raise UnsupportedOperation(
                 detail=f"Tele2 does not support transitioning to status '{target}'"
             )
@@ -727,19 +727,13 @@ class Tele2Adapter(BaseAdapter):
             credentials,
             creds,
             f"/devices/{iccid}",
-            {"status": native},
+            {"status": target},
             idempotency_key=idempotency_key,
         )
 
     async def purge(
         self, iccid: str, credentials: dict[str, Any], *, idempotency_key: str
     ) -> None:
-        """Purge a device by transitioning it to PURGED status.
-
-        This is an alias for set_administrative_status(..., target=AdministrativeStatus.PURGED).
-        Both routes reach the same provider state — this method is included to match the
-        SubscriptionProvider protocol interface.
-        """
         return await self._call_with_breaker(
             self._purge_impl, iccid, credentials, idempotency_key
         )
@@ -750,7 +744,7 @@ class Tele2Adapter(BaseAdapter):
         await self._set_administrative_status_impl(
             iccid,
             credentials,
-            target=AdministrativeStatus.PURGED,
+            target="PURGED",
             idempotency_key=idempotency_key,
         )
 
@@ -863,12 +857,7 @@ class Tele2Adapter(BaseAdapter):
             params["accountId"] = creds.account_id
         if filters:
             if filters.status is not None:
-                native_status = to_native(filters.status)
-                if native_status is None:
-                    raise UnsupportedOperation(
-                        detail=f"Tele2 Search Devices does not support status filter '{filters.status}'"
-                    )
-                params["status"] = native_status
+                params["status"] = filters.status
             if filters.iccid:
                 params["iccid"] = filters.iccid
             if filters.imsi:

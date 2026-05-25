@@ -3,7 +3,8 @@
 > the current Moabits Gateway API v2 enrichment decision record. For v2 listing
 > enrichment use `docs/architecture/MOABITS_ORION_GATEWAY_API_V2.md` and
 > `docs/architecture/adrs/ADR-011-moabits-v2-list-enrichment.md`. For current
-> implementation alignment use `docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md`.
+> implementation alignment use `docs/architecture/ARCHITECTURE.md` and
+> `docs/architecture/_context_state.json`.
 
 Actualización basada en Swagger Orion API 2.0.0 (`https://www.api.myorion.co/api-doc`).
 

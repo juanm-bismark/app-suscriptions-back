@@ -1,6 +1,6 @@
 # Testing Strategy — Subscriptions API
 
-**Status date:** 2026-05-07
+**Status date:** 2026-05-25
 **ADR:** `docs/architecture/adrs/ADR-009-testing-strategy.md`
 
 The suite follows a fast test pyramid: domain/schema unit tests, provider
@@ -26,7 +26,6 @@ tests/
     ├── test_kite_mappers.py
     ├── test_kite_writes.py
     ├── test_tele2_adapter.py
-    ├── test_tele2_status_map.py
     ├── test_moabits_adapter.py
     └── test_moabits_writes.py
 ```
@@ -35,7 +34,7 @@ tests/
 
 Current tests cover:
 
-- Domain enums and value objects.
+- Domain value objects.
 - Pydantic API schemas.
 - Provider capability reporting.
 - Credential router behavior, including Moabits company-code controls.

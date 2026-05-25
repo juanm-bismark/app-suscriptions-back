@@ -13,7 +13,6 @@ from app.providers.kite import adapter as kite_adapter_mod, client as kite_clien
 from app.providers.kite.adapter import KiteAdapter
 from app.providers.kite.client import KiteClient
 from app.shared.errors import ProviderAuthFailed, UnsupportedOperation
-from app.subscriptions.domain import AdministrativeStatus
 
 
 def test_kite_cert_only_credentials_omit_wsse_username_token():
@@ -171,7 +170,7 @@ async def test_kite_adapter_set_administrative_status_respects_flag(monkeypatch)
         await adapter.set_administrative_status(
             "8934070100000000001",
             {},
-            target=AdministrativeStatus.ACTIVE,
+            target="ACTIVE",
             idempotency_key="k",
         )
 
@@ -201,7 +200,7 @@ async def test_kite_adapter_set_administrative_status_calls_client_when_enabled(
     await adapter.set_administrative_status(
         "8934070100000000001",
         creds,
-        target=AdministrativeStatus.ACTIVE,
+        target="ACTIVE",
         idempotency_key="k",
     )
 

@@ -206,6 +206,7 @@ Cambios en este ADR:
   `test_only_admin_can_select_moabits_company_codes` para asegurar `403`
   a `manager` y cero commits.
 
-Migración de BD: `006_provider_source_configs.sql`. `company_codes` deja
+Migraciones de BD: `006_moabits_source_companies.sql` y
+`007_company_provider_mappings.sql`. `company_codes` deja
 de formar parte del JSON cifrado de credenciales y pasa a ser
 configuración no secreta, provider-wide, de la fuente Moabits.

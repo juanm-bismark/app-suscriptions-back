@@ -7,7 +7,7 @@
 
 ## Contexto
 
-La Subscriptions API debe centralizar lectura y operaciones sobre ~134 612 SIMs distribuidas entre tres proveedores (Kite, Tele2, Moabits). Carga esperada: 15–20 usuarios concurrentes, sin batch jobs, modo proxy en tiempo real. Equipo `< 5` ingenieros [ASSUMPTION].
+La Subscriptions API debe centralizar lectura y operaciones sobre ~134 612 SIMs distribuidas entre tres proveedores (Kite, Tele2, Moabits). Carga esperada: 15–20 usuarios concurrentes, modo proxy en tiempo real para detalle de SIM y jobs async acotados para poblar routing/exportar (ADR-012). Equipo `< 5` ingenieros [ASSUMPTION].
 
 Existe ya un repositorio FastAPI funcional (Identity & Access + Tenancy básico). Hay que decidir cómo organizar el código nuevo (Subscription Aggregation + Provider Integration) y la unidad de despliegue.
 

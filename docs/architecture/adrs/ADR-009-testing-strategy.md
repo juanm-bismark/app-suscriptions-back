@@ -99,7 +99,7 @@ Para los mappers críticos (`map_subscription`, `map_usage`):
 def test_map_subscription_never_raises(payload):
     result = map_subscription(payload)  # no debe levantar excepción
     assert result.iccid                 # invariante mínimo
-    assert result.status in AdministrativeStatus
+    assert isinstance(result.status, str)
 ```
 
 Cubre payloads que el equipo nunca pensó pero el proveedor puede emitir.

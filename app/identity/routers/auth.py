@@ -42,6 +42,7 @@ class SignupRequest(BaseModel):
     full_name: str | None = None
     company_name: str | None = None
     role: str | None = None
+    company_id: _uuid.UUID | None = None
 
 
 class LoginRequest(BaseModel):
@@ -129,12 +130,6 @@ async def signup(
         company_id = _uuid.uuid4()
         role = AppRole.public
     else:
-        if current.company_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot invite users without a company scope",
-            )
-        company_id = current.company_id
         requested_role_str = body.role or "member"
         try:
             requested_role = AppRole(requested_role_str)
@@ -145,13 +140,25 @@ async def signup(
             ) from None
 
         if current.role == AppRole.admin:
+            if body.company_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="company_id is required when creating a user as admin",
+                )
+            company_id = body.company_id
             role = requested_role
         elif current.role == AppRole.manager:
+            if current.company_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Cannot invite users without a company scope",
+                )
             if requested_role not in (AppRole.member, AppRole.public):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Managers can only create members or public users",
                 )
+            company_id = current.company_id
             role = requested_role
         else:
             raise HTTPException(

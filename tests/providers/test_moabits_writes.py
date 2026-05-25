@@ -9,7 +9,6 @@ import pytest
 from app.providers.moabits.adapter import MoabitsAdapter
 from app.providers import moabits as moabits_mod
 from app.shared.errors import ProviderValidationError, UnsupportedOperation
-from app.subscriptions.domain import AdministrativeStatus
 
 
 @pytest.mark.asyncio
@@ -20,7 +19,7 @@ async def test_moabits_set_administrative_status_respects_flag(monkeypatch):
         await adapter.set_administrative_status(
             '8934070100000000001',
             {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
-            target=AdministrativeStatus.ACTIVE,
+            target="active",
             idempotency_key='idem',
             data_service=True,
         )
@@ -44,7 +43,7 @@ async def test_moabits_active_calls_documented_put_when_enabled(monkeypatch):
     await adapter.set_administrative_status(
         '8934070100000000001',
         {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
-        target=AdministrativeStatus.ACTIVE,
+        target="active",
         idempotency_key='idem',
         data_service=True,
         sms_service=False,
@@ -75,7 +74,7 @@ async def test_moabits_suspend_calls_documented_put_when_enabled(monkeypatch):
     await MoabitsAdapter().set_administrative_status(
         '8934070100000000001',
         {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
-        target=AdministrativeStatus.SUSPENDED,
+        target="suspended",
         idempotency_key='idem',
         data_service=False,
         sms_service=True,
@@ -97,7 +96,7 @@ async def test_moabits_active_suspend_require_at_least_one_service(monkeypatch):
         await MoabitsAdapter().set_administrative_status(
             '8934070100000000001',
             {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
-            target=AdministrativeStatus.ACTIVE,
+            target="active",
             idempotency_key='idem',
             data_service=False,
             sms_service=False,
@@ -114,7 +113,7 @@ async def test_moabits_rejects_other_status_writes(monkeypatch):
         await MoabitsAdapter().set_administrative_status(
             '8934070100000000001',
             {'base_url': 'https://moabits.test', 'x_api_key': 'k'},
-            target=AdministrativeStatus.PURGED,
+            target="PURGED",
             idempotency_key='idem',
             data_service=True,
         )

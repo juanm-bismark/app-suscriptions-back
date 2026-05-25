@@ -30,7 +30,6 @@ Aplicar **Anti-Corruption Layer** (DDD) con tres componentes:
 from typing import Protocol, runtime_checkable
 from app.subscriptions.domain import (
     Subscription, UsageSnapshot, ConnectivityPresence,
-    AdministrativeStatus,
 )
 
 @runtime_checkable

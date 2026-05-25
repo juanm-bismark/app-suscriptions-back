@@ -2,7 +2,7 @@
 
 > **Principio**: el modelo expresa el **negocio** (gestión de SIMs/suscripciones M2M/IoT), no la suma de los APIs de Kite, Tele2 y Moabits. Cada proveedor expone vocabulario propio; este modelo lo absorbe en uno solo.
 >
-> **Estado de implementación (2026-05-07)**: el dominio canónico existe en `app/subscriptions/domain.py` y la vista HTTP se deriva en `app/subscriptions/routers/sims.py`. Este documento mezcla modelo conceptual y notas de implementación; cuando haya diferencia, las notas de estado actual tienen prioridad sobre las secciones históricas de fase.
+> **Estado de implementación (2026-05-25)**: el dominio canónico existe en `app/subscriptions/domain.py` y la vista HTTP se deriva en `app/subscriptions/routers/sims.py`. ADR-012 agrega `sync_jobs` y worker async como infraestructura operativa, no como estado canónico de SIM. Este documento mezcla modelo conceptual y notas de implementación; cuando haya diferencia, `ARCHITECTURE.md`, `_context_state.json` y los ADRs vigentes tienen prioridad sobre las secciones históricas de fase.
 
 ---
 
@@ -28,7 +28,7 @@ Esta sección es **normativa**: cuando aparezca uno de estos términos en códig
 | **Subscription** | Una línea M2M/IoT identificada por su `iccid`. Aggregate root del contexto Subscription Aggregation. | Kite `subscriptionData` / Tele2 `device` / Moabits `simInfo` |
 | **iccid** | Identificador físico único de la SIM. **Es la clave canónica del sistema.** | Kite `icc` / Tele2 `iccid` / Moabits `iccid` |
 | **imsi**, **msisdn**, **imei** | Identificadores secundarios. Se exponen pero no se usan como clave primaria. | iguales en los tres |
-| **AdministrativeStatus** | Estado de ciclo de vida administrativo canónico. Valores actuales: `active`, `in_test`, `suspended`, `inactive_new`, `activation_pendant`, `activation_ready`, `terminated`, `purged`, `inventory`, `replaced`, `retired`, `restore`, `pending`, `unknown`. | Kite `lifeCycleStatus` · Tele2 `status` · Moabits `simStatus` |
+| **status** | Estado administrativo tal como lo entrega el proveedor. No existe enum canónico compartido; las reglas de escritura se validan por adapter. | Kite `lifeCycleStatus` · Tele2 `status` · Moabits `simStatus` |
 | **ConnectivityPresence** | Presencia técnica puntual: `state` (`online`/`offline`/`unknown`), `ip_address`, `country_code`, `rat_type`, `network_name`, `last_seen_at`. | Kite `presenceDetailData` · Tele2 `sessionDetails` · Moabits `connectivityStatus` |
 | **UsageSnapshot** | Consumo agregado en una ventana de tiempo: totales conveniencia `voice_seconds`, `sms_count`, `data_used_bytes`, más `provider_metrics` (bloque crudo del proveedor) y `usage_metrics[]` (lista normalizada de métricas). | Kite `consumptionDaily/Monthly` · Tele2 `Get Device Usage` · Moabits `getSimUsage` |
 | **UsageMetric** | Métrica individual normalizada de consumo. Campos típicos: `name`, `value`, `unit`, `kind` y opcionalmente `period_start`/`period_end`. | Normaliza las métricas específicas de cada provider hacia un formato estable. |
@@ -54,8 +54,7 @@ Subscription {
   company_id: CompanyId                 # tenant owner (vía SIM Routing Map)
   msisdn?: MSISDN
   imsi?: IMSI
-  status: AdministrativeStatus
-  native_status?: string
+  status: string
   provider_fields: Map<string, string>   # campos extensibles del proveedor (mapeados pero no interpretados)
   # detail_level y normalized se calculan en el borde HTTP (SubscriptionOut),
   # no viven en el dataclass de dominio.
@@ -76,8 +75,8 @@ Subscription {
 ```
 StatusChange {
   iccid: ICCID
-  from_state: AdministrativeStatus
-  to_state: AdministrativeStatus
+  from_state: string
+  to_state: string
   at: timestamp
   automatic: bool
   reason: string
@@ -179,18 +178,19 @@ El cliente sabe que está consultando datos en tiempo real a través del proveed
 `GET /v1/sims` tiene dos caminos explícitos:
 
 1. **Provider-scoped listing** (`?provider=kite|tele2|moabits`): delega al listing nativo del adapter, aplica sólo filtros que el proveedor pueda mapear documentalmente y actualiza `sim_routing_map` con las SIMs observadas.
-2. **Global listing** (sin `provider`): pagina sobre `sim_routing_map` y consulta el proveedor ya conocido para cada ICCID de la página. Si el índice está vacío o todavía no tiene todas las fuentes, hace un bootstrap interno de una página por proveedor searchable para calentar el mapa antes de paginar.
+2. **Global listing** (sin `provider`): usa `sim_routing_map` como índice de routing. Si el índice está vacío o incompleto, puede calentar el mapa con una página por proveedor searchable; ADR-012 agrega sync nocturno/manual para que el índice no dependa sólo de lazy discovery.
+3. **Batch details** (`POST /v1/sims/details`): resuelve ICCIDs mixtos contra routing/prefix/lazy discovery y obtiene el detalle live desde el proveedor dueño. La respuesta es per-ICCID y no persiste estado de SIM.
 
 Los filtros explícitos (`status`, fechas, `iccid`, `imsi`, `msisdn`, `custom`) requieren el camino provider-scoped hasta que exista una semántica cross-provider confirmada. Si el proveedor no soporta un filtro, la API devuelve `409 provider.unsupported_operation`.
 
 Si una página global puede devolver datos útiles pero alguna llamada a proveedor falla, la respuesta conserva `200` y agrega `partial: true` con `failed_providers[]`. El cliente no recibe datos silenciosamente incompletos.
 
 ### 6.5 Contrato de respuesta normalizado
-La API pública conserva los campos top-level históricos de `Subscription`
-(`iccid`, `msisdn`, `imsi`, `status`, `native_status`, `provider`,
-`activated_at`, `updated_at`, `provider_fields`) y agrega una vista
-derivada `normalized` para desacoplar al frontend del formato nativo de
-Kite, Tele2 y Moabits.
+La API pública conserva los campos top-level de `Subscription`
+(`iccid`, `msisdn`, `imsi`, `status`, `provider`, `activated_at`,
+`updated_at`, `provider_fields`) y agrega una vista derivada `normalized`
+para desacoplar al frontend de los demás atributos específicos de Kite,
+Tele2 y Moabits.
 
 `normalized` se compone de bloques opcionales y homogéneos:
 
@@ -245,7 +245,7 @@ estructurados.
 Confirmados en `_context_state.json` y vinculantes para todos los documentos siguientes:
 - `Subscriptions API` (servicio raíz)
 - `Subscription` (aggregate root)
-- `UsageSnapshot`, `UsageMetric`, `AdministrativeStatus`, `ConnectivityPresence`, `CommercialPlan`, `ConsumptionLimit`, `StatusChange` (value objects)
+- `UsageSnapshot`, `UsageMetric`, `ConnectivityPresence`, `CommercialPlan`, `ConsumptionLimit`, `StatusChange` (value objects)
 - `Provider Adapter` (anti-corruption layer)
 - `SubscriptionProvider` (Protocol/interface)
 - `Provider Registry`

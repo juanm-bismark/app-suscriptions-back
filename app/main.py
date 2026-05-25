@@ -21,6 +21,8 @@ from app.shared.errors import DomainError
 from app.shared.logging import setup_logging
 from app.shared.middleware import RequestIDMiddleware
 from app.subscriptions.routers import sims
+from app.sync.queue import close_arq_pool, init_arq_pool
+from app.sync.router import jobs_router, sync_router
 from app.tenancy.routers import companies, credentials
 
 logger = structlog.get_logger(__name__)
@@ -38,12 +40,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry.register(Provider.MOABITS, MoabitsAdapter())
     app.state.provider_registry = registry
 
+    if settings.redis_url:
+        app.state.arq_pool = await init_arq_pool(settings.redis_url)
+    else:
+        app.state.arq_pool = None
+        logger.warning("redis_url_not_set", detail="Async queue disabled — /sync/* and /jobs/* will return 503")
+
     logger.info(
         "startup",
         environment=settings.environment,
         providers=registry.registered_providers(),
     )
     yield
+    if app.state.arq_pool is not None:
+        await close_arq_pool(app.state.arq_pool)
     await close_engine()
     logger.info("shutdown")
 
@@ -118,6 +128,8 @@ app.include_router(credentials.admin_credentials_router, prefix="/v1")
 app.include_router(credentials.admin_company_credentials_router, prefix="/v1")
 app.include_router(sims.router, prefix="/v1")
 app.include_router(provider_routers.router, prefix="/v1")
+app.include_router(sync_router, prefix="/v1")
+app.include_router(jobs_router, prefix="/v1")
 add_pagination(app)
 
 

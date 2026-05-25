@@ -60,7 +60,6 @@ from app.providers.kite.mappers import (
 )
 from app.shared.errors import ProviderProtocolError, UnsupportedOperation
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityPresence,
     StatusDetail,
     StatusHistoryRecord,
@@ -69,7 +68,10 @@ from app.subscriptions.domain import (
     UsageSnapshot,
 )
 
-from .status_map import to_native
+# Native values accepted by Kite's modifySubscription operation
+_KITE_WRITABLE: frozenset[str] = frozenset(
+    {"INACTIVE_NEW", "ACTIVE", "TEST", "ACTIVATION_READY", "ACTIVATION_PENDANT"}
+)
 
 
 def _format_search_dt(value: datetime) -> str:
@@ -104,12 +106,7 @@ def _kite_search_parameters(
         return None
     params: dict[str, str] = {}
     if filters.status is not None:
-        native_status = to_native(filters.status)
-        if native_status is None:
-            raise UnsupportedOperation(
-                detail=f"Kite getSubscriptions does not support status filter '{filters.status}'"
-            )
-        params["lifeCycleStatus"] = native_status
+        params["lifeCycleStatus"] = filters.status
     if filters.iccid:
         params["icc"] = filters.iccid
     if filters.imsi:
@@ -237,7 +234,7 @@ class KiteAdapter(BaseAdapter):
         iccid: str,
         credentials: dict[str, Any],
         *,
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
         **_: Any,
     ) -> None:
@@ -253,25 +250,20 @@ class KiteAdapter(BaseAdapter):
         self,
         iccid: str,
         credentials: dict[str, Any],
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
     ) -> None:
-        # Guard write-paths with feature flag
         if not get_settings().lifecycle_writes_enabled:
             raise UnsupportedOperation(
                 detail="Lifecycle write operations are disabled by feature flag"
             )
 
-        native = to_native(target)
-        if native is None:
+        if target not in _KITE_WRITABLE:
             raise UnsupportedOperation(
-                detail=(
-                    f"Kite does not support transitioning to status '{target}' via API"
-                )
+                detail=f"Kite does not support transitioning to status '{target}' via API"
             )
 
-        # Perform the modify operation via the KiteClient.
-        await KiteClient(credentials).modify_subscription(iccid, native)
+        await KiteClient(credentials).modify_subscription(iccid, target)
 
     async def purge(
         self, iccid: str, credentials: dict[str, Any], *, idempotency_key: str

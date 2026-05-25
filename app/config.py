@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     kite_request_timeout_seconds: float = 30.0
     kite_max_concurrent_requests: int = 10
 
+    # Async task queue + scheduler (ADR-012).
+    # Redis is broker only — never used as a cache of SIM state (ADR-002 preserved).
+    redis_url: Optional[str] = None
+    sync_cron_expr: str = "0 2 * * *"               # daily 02:00 UTC
+    export_result_ttl_hours: int = 24
+    max_batch_details: int = 200
+
 
 @lru_cache
 def get_settings() -> Settings:

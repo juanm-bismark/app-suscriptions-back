@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -11,9 +12,12 @@ from app.identity.routers.users import (
     create_user,
     update_user,
 )
+from app.identity.schemas.profile import ProfileOut
 from app.identity.schemas.user import UserCreate, UserUpdate
+from app.tenancy.models.company import Company
 
 COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+OTHER_COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000005")
 USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
 TARGET_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
 DUPLICATE_ID = uuid.UUID("00000000-0000-0000-0000-000000000004")
@@ -55,6 +59,16 @@ def test_listing_ignores_blank_q() -> None:
     assert "JOIN users" not in query_text
 
 
+def test_profile_out_serializes_company_id_as_string() -> None:
+    profile = _target_profile()
+    profile.created_at = datetime(2026, 5, 22, 10, 0, tzinfo=UTC)
+    profile.email = "target@example.com"
+
+    out = ProfileOut.model_validate(profile)
+
+    assert out.company_id == str(COMPANY_ID)
+
+
 class _Result:
     def __init__(self, row):
         self._row = row
@@ -69,10 +83,12 @@ class _UserUpdateDb:
         profile: Profile,
         user: User,
         duplicate_user_id: uuid.UUID | None = None,
+        company: Company | None = None,
     ) -> None:
         self.profile = profile
         self.user = user
         self.duplicate_user_id = duplicate_user_id
+        self.company = company
         self.commits = 0
         self.rollbacks = 0
         self.refreshes = 0
@@ -81,6 +97,8 @@ class _UserUpdateDb:
         statement_text = str(statement)
         if "FROM profiles" in statement_text:
             return _Result(self.profile)
+        if "FROM companies" in statement_text:
+            return _Result(self.company)
         if "FROM users" in statement_text:
             if statement_text.splitlines()[0].strip() == "SELECT users.id":
                 return _Result(self.duplicate_user_id)
@@ -193,11 +211,35 @@ async def test_create_user_rejects_duplicate_email_before_insert() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_user_admin_requires_company_id() -> None:
+    db = _UserCreateDb()
+
+    with pytest.raises(Exception) as excinfo:
+        await create_user(
+            UserCreate(email="new@example.com", password="secret", role=AppRole.member),
+            _profile(AppRole.admin),
+            db,
+        )
+
+    assert getattr(excinfo.value, "status_code", None) == 422
+    assert getattr(excinfo.value, "detail", None) == (
+        "company_id is required when creating a user as admin"
+    )
+    assert db.added == []
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
 async def test_create_user_normalizes_email_after_availability_check() -> None:
     db = _UserCreateDb()
 
     result = await create_user(
-        UserCreate(email="  New@Example.COM  ", password="secret", role=AppRole.member),
+        UserCreate(
+            email="  New@Example.COM  ",
+            password="secret",
+            role=AppRole.member,
+            company_id=COMPANY_ID,
+        ),
         _profile(AppRole.admin),
         db,
     )
@@ -314,4 +356,129 @@ async def test_patch_user_rejects_blank_email_without_overwriting() -> None:
 
     assert getattr(excinfo.value, "status_code", None) == 422
     assert user.email == "old@example.com"
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_user_admin_updates_company_id_from_string() -> None:
+    target = _target_profile()
+    user = User(
+        id=TARGET_ID,
+        email="old@example.com",
+        hashed_password=hash_password("old-secret"),
+    )
+    company = Company(id=OTHER_COMPANY_ID, name="Other Co")
+    db = _UserUpdateDb(target, user, company=company)
+
+    result = await update_user(
+        TARGET_ID,
+        UserUpdate(
+            full_name="Juan Perez",
+            role=AppRole.manager,
+            company_id=str(OTHER_COMPANY_ID),
+        ),
+        _profile(AppRole.admin),
+        db,
+    )
+
+    assert result.company_id == OTHER_COMPANY_ID
+    assert result.role == AppRole.manager
+    assert result.full_name == "Juan Perez"
+    assert result.email == "old@example.com"
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_user_manager_ignores_company_id_and_updates_allowed_fields() -> None:
+    target = _target_profile()
+    user = User(
+        id=TARGET_ID,
+        email="old@example.com",
+        hashed_password=hash_password("old-secret"),
+    )
+    db = _UserUpdateDb(target, user)
+
+    result = await update_user(
+        TARGET_ID,
+        UserUpdate(full_name="Manager Edit", company_id="missing-company"),
+        _profile(AppRole.manager),
+        db,
+    )
+
+    assert result.full_name == "Manager Edit"
+    assert target.company_id == COMPANY_ID
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_roles_outside_admin_or_manager() -> None:
+    target = _target_profile()
+    user = User(
+        id=TARGET_ID,
+        email="old@example.com",
+        hashed_password=hash_password("old-secret"),
+    )
+    db = _UserUpdateDb(target, user)
+
+    with pytest.raises(Exception) as excinfo:
+        await update_user(
+            TARGET_ID,
+            UserUpdate(full_name="Should Not Apply"),
+            _profile(AppRole.member),
+            db,
+        )
+
+    assert getattr(excinfo.value, "status_code", None) == 403
+    assert getattr(excinfo.value, "detail", None) == "Insufficient permissions"
+    assert target.full_name is None
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_unknown_company_without_overwriting() -> None:
+    target = _target_profile()
+    user = User(
+        id=TARGET_ID,
+        email="old@example.com",
+        hashed_password=hash_password("old-secret"),
+    )
+    db = _UserUpdateDb(target, user, company=None)
+
+    with pytest.raises(Exception) as excinfo:
+        await update_user(
+            TARGET_ID,
+            UserUpdate(full_name="Should Not Apply", company_id="missing-company"),
+            _profile(AppRole.admin),
+            db,
+        )
+
+    assert getattr(excinfo.value, "status_code", None) == 404
+    assert getattr(excinfo.value, "detail", None) == "Company 'missing-company' not found"
+    assert target.company_id == COMPANY_ID
+    assert target.full_name is None
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_blank_company_id_without_overwriting() -> None:
+    target = _target_profile()
+    user = User(
+        id=TARGET_ID,
+        email="old@example.com",
+        hashed_password=hash_password("old-secret"),
+    )
+    db = _UserUpdateDb(target, user)
+
+    with pytest.raises(Exception) as excinfo:
+        await update_user(
+            TARGET_ID,
+            UserUpdate(full_name="Should Not Apply", company_id="   "),
+            _profile(AppRole.admin),
+            db,
+        )
+
+    assert getattr(excinfo.value, "status_code", None) == 422
+    assert getattr(excinfo.value, "detail", None) == "company_id cannot be empty"
+    assert target.company_id == COMPANY_ID
+    assert target.full_name is None
     assert db.commits == 0

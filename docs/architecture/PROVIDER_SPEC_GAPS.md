@@ -87,7 +87,7 @@ Example credential metadata for an Advantage account:
 
 ### Consolidation Note
 
-Both `set_administrative_status(target=AdministrativeStatus.PURGED)` and `purge()` reach the same provider state by issuing:
+Both `set_administrative_status(target="PURGED")` and `purge()` reach the same provider state by issuing:
 ```
 PUT /rws/api/v1/devices/{iccid} {"status": "PURGED"}
 ```

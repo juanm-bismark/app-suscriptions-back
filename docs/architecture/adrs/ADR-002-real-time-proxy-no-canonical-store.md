@@ -7,7 +7,7 @@
 
 ## Contexto
 
-Requisito explícito del producto: la API **no** mantiene una copia local del catálogo de SIMs. Cada consulta del cliente se traduce a una o más llamadas a los proveedores y la respuesta se serializa al modelo canónico. Sin batch jobs, sin sincronización nocturna, sin proceso de reconciliación.
+Requisito explícito del producto: la API **no** mantiene una copia local del estado de SIMs. Cada consulta de detalle del cliente se traduce a una o más llamadas a los proveedores y la respuesta se serializa al modelo canónico. ADR-012 agrega jobs asíncronos sólo para poblar el routing map y para futuros exports; no introduce snapshot local de `status`, `msisdn`, uso, presencia ni plan.
 
 Aun así, la API necesita resolver **a qué proveedor pertenece un `iccid`** sin tener que llamar a los tres por cada request — eso multiplicaría latencia y consumo de cuota.
 
@@ -76,3 +76,9 @@ Modos soportados, en orden de preferencia:
 - Se introduce un caso de uso offline (el cliente debe operar cuando el proveedor está caído).
 
 → Cualquiera de estos invalida ADR-002 y obliga a pasar a modo agregador, lo que implica redibujar Phase 2 (aggregates con persistencia propia) y Phase 3 (event-driven sync).
+
+## Revisión 2026-05-25 — sync periódico del routing (ver ADR-012)
+
+El principio de este ADR se preserva: **el detalle de cada SIM (status, consumo, presencia, plan) sigue siendo proxy puro en vivo, sin caché**. Lo que cambia es la **carga del routing map**: deja de ser puramente lazy y se complementa con un sync periódico vía worker async + cola (ver ADR-012). El schema de `sim_routing_map` no se altera — sigue siendo `iccid + provider + company_id + last_seen_at`, **sin estado**.
+
+Las tres modalidades de carga del routing original (CSV bootstrap, provider-scoped discovery, lazy cross-provider) siguen vigentes; ADR-012 agrega una cuarta modalidad activa para soportar listados paginados globales y filtros por lista de ICCIDs sin amplificar TPS contra Tele2.

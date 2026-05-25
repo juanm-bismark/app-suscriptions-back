@@ -8,7 +8,7 @@ These tests use realistic Moabits/Orion API payloads to validate that:
 - get_presence reads from getConnectivityStatus and exposes rat (rat_type).
 - Optional fields (rat/network/country/lastNetwork/clientName/etc.) are tolerated
   when missing or null.
-- The unified status / native_status / provider_fields contract is preserved.
+- The raw provider status / provider_fields contract is preserved.
 """
 
 import asyncio
@@ -31,7 +31,6 @@ from app.providers.moabits.adapter import (
     _normalize_services,
     fetch_child_companies,
 )
-from app.providers.moabits.status_map import map_status
 from app.shared.errors import (
     ProviderAuthFailed,
     ProviderUnavailable,
@@ -39,7 +38,6 @@ from app.shared.errors import (
     UnsupportedOperation,
 )
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityState,
     SubscriptionSearchFilters,
 )
@@ -238,8 +236,7 @@ async def test_get_subscription_extracts_full_provider_fields(
     assert sub.iccid == iccid
     assert sub.msisdn == "346000000001"
     assert sub.imsi == "214070000000001"
-    assert sub.status == AdministrativeStatus.ACTIVE
-    assert sub.native_status == "Active"
+    assert sub.status == "Active"
     assert sub.provider == "moabits"
 
 
@@ -261,8 +258,7 @@ async def test_get_subscription_uses_service_status_when_details_unavailable(
     sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
 
     assert sub.iccid == iccid
-    assert sub.status == AdministrativeStatus.ACTIVE
-    assert sub.native_status == "Active"
+    assert sub.status == "Active"
     assert sub.provider_fields["data_service"] == "Enabled"
     assert sub.provider_fields["sms_service"] == "Enabled"
 
@@ -285,8 +281,7 @@ async def test_get_subscription_uses_details_when_service_status_unavailable(
     sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
 
     assert sub.iccid == iccid
-    assert sub.status == AdministrativeStatus.UNKNOWN
-    assert sub.native_status == "Unknown"
+    assert sub.status == "Unknown"
     assert sub.provider_fields["product_name"] == "IoT Plan 100MB"
     assert sub.msisdn == "346000000001"
 
@@ -343,8 +338,7 @@ async def test_get_subscription_optional_fields_missing_ok(
     ):
         assert absent not in pf
     # Common contract still works
-    assert sub.status == AdministrativeStatus.ACTIVE
-    assert sub.native_status == "Active"
+    assert sub.status == "Active"
 
 
 # ── get_usage ───────────────────────────────────────────────────────────────────
@@ -786,22 +780,11 @@ async def test_get_presence_unknown_status(
     assert presence.state == ConnectivityState.UNKNOWN
 
 
-# ── status / native_status contract ─────────────────────────────────────────────
+# ── raw provider status contract ────────────────────────────────────────────────
 
-
-def test_status_map_accepts_documented_and_observed_values() -> None:
-    assert map_status("ACTIVATED") == AdministrativeStatus.ACTIVE
-    assert map_status("Active") == AdministrativeStatus.ACTIVE
-    assert map_status("TEST_READY") == AdministrativeStatus.IN_TEST
-    assert map_status("Ready") == AdministrativeStatus.IN_TEST
-    assert map_status("SUSPENDED") == AdministrativeStatus.SUSPENDED
-    assert map_status("Suspended") == AdministrativeStatus.SUSPENDED
-    assert map_status("PURGED") == AdministrativeStatus.PURGED
-    assert map_status("INVENTORY") == AdministrativeStatus.INVENTORY
-    assert map_status("DEACTIVATED") == AdministrativeStatus.TERMINATED
 
 @pytest.mark.asyncio
-async def test_native_status_preserved_alongside_unified_status(
+async def test_raw_status_preserved_from_service_status(
     httpx_mock, moabits_creds: dict
 ) -> None:
     iccid = "8934070100000000001"
@@ -818,8 +801,7 @@ async def test_native_status_preserved_alongside_unified_status(
     )
 
     sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
-    assert sub.native_status == "Suspended"
-    assert sub.status == AdministrativeStatus.SUSPENDED
+    assert sub.status == "Suspended"
 
 
 @pytest.fixture
@@ -879,7 +861,7 @@ async def test_list_subscriptions_tolerates_string_status_rows(
 
     assert len(subs) == 1
     assert subs[0].iccid == iccid
-    assert subs[0].native_status == "Unknown"
+    assert subs[0].status == "Unknown"
     assert next_cursor is None
 
 
@@ -914,7 +896,7 @@ async def test_list_subscriptions_uses_status_rows_without_detail_call(
 
     assert len(subs) == 1
     assert subs[0].iccid == iccid
-    assert subs[0].status == AdministrativeStatus.SUSPENDED
+    assert subs[0].status == "Suspended"
     assert subs[0].provider_fields == {
         "data_service": "Disabled",
         "detail_enriched": False,
@@ -1328,8 +1310,7 @@ async def test_list_subscriptions_v2_both_fail_falls_back_to_v1(
 
     sub = subs[0]
     pf = sub.provider_fields
-    assert sub.status == AdministrativeStatus.SUSPENDED
-    assert sub.native_status == "Suspended"
+    assert sub.status == "Suspended"
     assert pf["enrichment_status"] == "v1_only"
     assert pf["detail_enriched"] is False
     assert pf["data_service"] == "Enabled"

@@ -1,7 +1,7 @@
 import uuid as _uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import BigInteger, DateTime, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,29 @@ class SimRoutingMap(Base):
     iccid: Mapped[str] = mapped_column(String, primary_key=True)
     provider: Mapped[str] = mapped_column(String, nullable=False)
     company_id: Mapped[_uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SimRoutingPrefixMap(Base):
+    """Maps the first six ICCID digits to the provider normally responsible."""
+
+    __tablename__ = "sim_routing_prefix_map"
+
+    iccid_prefix: Mapped[str] = mapped_column(String(6), primary_key=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    sample_iccid: Mapped[str | None] = mapped_column(String)
+    observed_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    conflict_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    last_conflicting_provider: Mapped[str | None] = mapped_column(String)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

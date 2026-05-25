@@ -5,6 +5,7 @@ C4Component
   title Component Diagram — Subscription Aggregation & Provider Adapters
 
   Container(api_app, "FastAPI App (routers)", "subscriptions/routers/sims.py, tenancy/routers/credentials.py")
+  Container(worker, "Arq Worker", "sync/worker.py, sync/tasks.py")
 
   Container_Boundary(agg, "Subscription Aggregation Module") {
     Component(fetcher, "SubscriptionFetcher (conceptual)", "Router helper/use case", "iccid → resuelve provider en SIM Routing Map → invoca adapter → devuelve Subscription canónica.")
@@ -12,11 +13,12 @@ C4Component
     Component(ops, "SubscriptionOperationService (conceptual)", "Router helper/use case", "status/purge. RBAC, Idempotency-Key, lifecycle_change_audit.")
     Component(registry, "ProviderRegistry", "Factory", "Resuelve Provider enum → instancia de SubscriptionProvider.")
     ComponentDb(routing, "sim_routing_map", "Postgres table", "iccid PK, provider, company_id, last_seen_at")
+    ComponentDb(jobs, "sync_jobs", "Postgres table", "Tracks routing_sync/export async jobs for polling and resumability.")
   }
 
   Container_Boundary(adapters, "Provider Adapters (ACL)") {
     Component(base, "SubscriptionProvider (Protocol)", "Interface", "Firmas canónicas: get_subscription, get_usage, get_presence, set_administrative_status, purge. Providers may expose networkReset/Edit Device Details/dedicated purge routes under the hood. Listing is performed by provider APIs scoped to the credentials.")
-    Component(kite_a, "KiteAdapter", "Adapter", "client.py + dto.py + mappers.py + adapter.py. Circuit breaker + timeout. Mapea icc→iccid, lifeCycleStatus→AdministrativeStatus, etc.")
+    Component(kite_a, "KiteAdapter", "Adapter", "client.py + dto.py + mappers.py + adapter.py. Circuit breaker + timeout. Mapea icc→iccid y expone lifeCycleStatus como status.")
     Component(tele2_a, "Tele2Adapter", "Adapter", "Idem pero para API v1 de Tele2. Soporta purge (Edit Device {PURGED}); network_reset no soportado.")
     Component(moabits_a, "MoabitsAdapter", "Adapter", "Orion v1 simList + enrichment v2 por defecto para ICCIDs paginados. Mapea purge canónico a PUT /api/sim/purge/ con iccidList; v1 usa Bearer/JWT, v2 usa X-API-KEY.")
   }
@@ -24,6 +26,10 @@ C4Component
   Rel(api_app, fetcher, "GET /v1/sims/{iccid}")
   Rel(api_app, search, "GET /v1/sims")
   Rel(api_app, ops, "PUT /v1/sims/{iccid}/status; POST /v1/sims/{iccid}/purge")
+  Rel(api_app, jobs, "GET /v1/jobs/{job_id}; GET /v1/sync/status")
+  Rel(worker, jobs, "create/update job status")
+  Rel(worker, routing, "upsert ICCID routing rows")
+  Rel(worker, registry, "get(provider)")
 
   Rel(fetcher, routing, "SELECT provider WHERE iccid=…")
   Rel(fetcher, registry, "get(provider)")

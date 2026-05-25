@@ -2,9 +2,8 @@
 
 > **Historical architecture phase artifact.** This file records the pattern
 > selection reasoning that fed the ADRs. Some implementation details have
-> evolved since the phase write-up; the current alignment snapshot is
-> `DOCS_CODE_ALIGNMENT_AUDIT.md`, and binding decisions live in
-> `ARCHITECTURE.md` plus `adrs/`.
+> evolved since the phase write-up; current binding decisions live in
+> `ARCHITECTURE.md`, `_context_state.json`, and `adrs/`.
 
 > Una decisión por dimensión. Cada una con: pattern elegido, alternativas consideradas, trade-offs, condiciones de invalidación. Los items marcados con (→ ADR-NNN) generarán un ADR formal en Phase 4.
 
@@ -26,9 +25,9 @@
 | | |
 |---|---|
 | **Elegido** | `httpx.AsyncClient` por adapter y requests síncronos al proveedor. El backend evita fan-out cross-provider por defecto: usa `sim_routing_map` para single-SIM/global page y listing nativo cuando el cliente pasa `?provider`. `asyncio.gather(return_exceptions=True)` queda reservado para composición interna documentada del adapter. Timeout configurable por adapter, retry con backoff exponencial sólo en errores idempotentes (GET) y 5xx/timeouts. **Circuit breaker** por adapter para no propagar fallas. |
-| **Alternativas** | (a) Cola intermedia (Celery/Arq) — overkill para proxy en tiempo real · (b) Sin retries — degrada UX por flapping del proveedor · (c) Streaming/SSE — los proveedores no lo ofrecen |
-| **Trade-offs** | A favor: la API es proxy puro; cualquier asincronía agrega complejidad sin reducir latencia (el cliente sigue esperando). En contra: la latencia del peor proveedor es el techo. Mitigación: timeout duro (ver NFR §latency) + cierre de circuito que devuelve `503 ProviderUnavailable` rápido en vez de esperar el timeout completo. |
-| **Invalida la decisión si** | El volumen de operaciones de control (purge) crece a punto de necesitar encolar y reintentar offline. |
+| **Alternativas** | (a) Cola intermedia (Celery/Arq) — overkill para el path síncrono de detalle; **adoptada solo para sync de inventario y exports masivos** (ver ADR-012) · (b) Sin retries — degrada UX por flapping del proveedor · (c) Streaming/SSE — los proveedores no lo ofrecen |
+| **Trade-offs** | A favor: la API es proxy puro; cualquier asincronía en el path de detalle agrega complejidad sin reducir latencia (el cliente sigue esperando). En contra: la latencia del peor proveedor es el techo. Mitigación: timeout duro (ver NFR §latency) + cierre de circuito que devuelve `503 ProviderUnavailable` rápido en vez de esperar el timeout completo. |
+| **Invalida la decisión si** | El volumen de operaciones de control (purge) crece a punto de necesitar encolar y reintentar offline (en ese caso, los purges también moverían a la cola de ADR-012). |
 
 ---
 
@@ -36,9 +35,9 @@
 
 | | |
 |---|---|
-| **Elegido** | El estado del SIM vive **sólo** en el proveedor. La API no tiene tabla `subscriptions`, no tiene snapshot, no hay sync nocturno. Lo único persistido sobre SIMs es `sim_routing_map(iccid → provider, company_id, last_seen_at)` para evitar fan-out por defecto. |
+| **Elegido** | El estado del SIM vive **sólo** en el proveedor. La API no tiene tabla `subscriptions` ni snapshot de `status`, `msisdn`, plan, uso o presencia. Lo único persistido sobre SIMs es `sim_routing_map(iccid → provider, company_id, last_seen_at)` para ruteo. Desde ADR-012 sí hay sync nocturno/manual del routing map, pero no sync de estado canónico de SIM. |
 | **Alternativas** | (a) Replicar todo el catálogo en Postgres y sincronizar — modo "agregador" — explícitamente descartado por el usuario · (b) Sin routing map: descubrir provider por fan-out a los 3 — duplica latencia y cuota de proveedor |
-| **Trade-offs** | A favor: cero problemas de consistencia eventual; cero deuda de pipelines; mínima superficie de mantenimiento. La fuente de verdad nunca es ambigua. En contra: cada request al cliente cuesta una request al proveedor (sin caché) — mitigado con TTL ≤ 5 s sólo para de-duplicar concurrentes. No se puede hacer búsquedas globales offline ni reportería sobre el catálogo. |
+| **Trade-offs** | A favor: el detalle nunca queda rancio en Postgres; la fuente de verdad no es ambigua. El sync de routing reduce fan-out sin convertir el backend en almacén canónico. En contra: cada request de detalle cuesta una request al proveedor (sin caché persistente) y el routing puede tener hasta la frescura del último sync/lazy discovery. No se puede hacer reportería histórica sobre estado de SIM sin cambiar de arquitectura. |
 | **Invalida la decisión si** | El producto necesita reportes históricos cross-proveedor, búsquedas full-text sobre 134k SIMs en <100 ms, o trabajar offline cuando el proveedor cae. Si eso pasa, hay que pasar al modo agregador y eso es una **arquitectura distinta** (event-driven sync + Postgres canónico). |
 
 ---
@@ -81,9 +80,9 @@
 | | |
 |---|---|
 | **Elegido** | (i) Cada credencial de proveedor probablemente tiene cuota o costo por request. La política es: **single-SIM y mutaciones sólo llaman al proveedor resuelto; listados usan listing nativo provider-scoped o una página acotada desde `sim_routing_map`**. (ii) Caché L1 in-memory por adapter, TTL ≤ 5 s, sólo para de-duplicar concurrentes (stampede prevention). (iii) Throttling por `company_id` (no global) usando un token bucket en memoria — protege la cuota del tenant frente a clientes mal portados sin penalizar al resto. |
-| **Alternativas** | (a) Caché Redis con TTL largo — tienta a "almacenar" y rompe la promesa de proxy puro · (b) Sin caché — tormentas de stampede triviales · (c) Throttling global — penaliza injustamente a tenants pequeños |
-| **Trade-offs** | A favor: cero infra adicional (Redis no requerido en MVP), comportamiento predecible. En contra: en una caída del proceso se pierde el bucket de throttling (aceptable: 15–20 concurrentes, el daño es contenido). |
-| **Invalida la decisión si** | Aparecen patrones de carga ráfaga > 100 req/s sostenidos, o se escala a múltiples instancias del API que requieran throttling compartido (ahí Redis + `slowapi` o `aiocache` distribuido). |
+| **Alternativas** | (a) Caché Redis de **detalles** con TTL largo — tienta a "almacenar" y rompe la promesa de proxy puro (**sigue rechazada**, incluso después de ADR-012 que sí trae Redis pero solo como broker de cola, no como caché de estado) · (b) Sin caché — tormentas de stampede triviales · (c) Throttling global — penaliza injustamente a tenants pequeños |
+| **Trade-offs** | A favor: caché in-memory por proceso para de-duplicar concurrentes; el detalle nunca se persiste. Redis aparece a partir de ADR-012 solo como queue backend (sync de inventario y exports), no como caché del path de detalle. En contra: en una caída del proceso se pierde el bucket de throttling (aceptable: 15–20 concurrentes, el daño es contenido). |
+| **Invalida la decisión si** | Aparecen patrones de carga ráfaga > 100 req/s sostenidos, o se escala a múltiples instancias del API que requieran throttling compartido (ahí migrar el rate limiter a Redis — ya disponible como infra por ADR-012). |
 
 ---
 

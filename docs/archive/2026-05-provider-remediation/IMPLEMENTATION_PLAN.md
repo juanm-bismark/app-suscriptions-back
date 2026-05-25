@@ -1,6 +1,12 @@
 # Plan de implementación — alineación con docs de proveedor y arquitectura canónica
 
-**Fuente:** `INTEGRATION_REVIEW.md`, NotebookLM Kite/Tele2, `moabits.md` y estado actual del código.
+> **Archivo histórico.** Este plan se conserva como evidencia de la
+> remediación de proveedores de mayo de 2026. No es la fuente de verdad del
+> estado actual; usar `docs/architecture/ARCHITECTURE.md`,
+> `docs/architecture/_context_state.json` y los ADRs. Los paths mencionados en
+> este archivo son relativos a la raíz del repo.
+
+**Fuente:** `INTEGRATION_REVIEW.md`, NotebookLM Kite/Tele2, `docs/architecture/MOABITS_ORION_V1_NOTES.md` y estado del código en ese momento.
 **Equipo:** 1 ingeniero.
 **Fecha:** 2026-05-05.
 **Estado:** roadmap vivo. Mantiene la fachada canónica `/v1/sims/**`; no introduce endpoints por proveedor salvo capacidades opcionales justificadas.
@@ -46,17 +52,16 @@
 
 ---
 
-## 3. PR-8 · Moabits status map tolerante y verificado
+## 3. PR-8 · Moabits status passthrough verificado
 
-**Justificación:** `moabits.md` usa valores tipo Cisco (`ACTIVATED`, `TEST_READY`, `PURGED`, etc.), pero el adapter histórico observó valores tipo `Active`, `Ready`, `Suspended`. Orion API 2.0.0 confirma que las transiciones escribibles son sólo active/suspend/purge; hasta tener payload real de status, el mapper debe aceptar ambos casing.
+**Justificación:** las notas Moabits v1 y los payloads observados pueden usar distintos valores de estado (`ACTIVATED`, `Active`, `Ready`, `Suspended`, etc.). Orion API 2.0.0 confirma que las transiciones escribibles son sólo active/suspend/purge; la API debe exponer el estado que entrega el proveedor sin convertirlo a un enum interno.
 
 **Cambios:**
-- [app/providers/moabits/status_map.py](app/providers/moabits/status_map.py) — normalizar con `native.strip().upper()`.
-- Cubrir: `ACTIVATED`, `ACTIVE`, `READY`, `TEST_READY`, `SUSPENDED`, `PURGED`, `INVENTORY`, `DEACTIVATED`, `REPLACED`, `RETIRED`.
-- Mantener `native_status` crudo para UI/soporte.
+- [app/providers/moabits/adapter.py](app/providers/moabits/adapter.py) — asignar `simStatus` directamente a `Subscription.status`.
+- Cubrir fixtures con `ACTIVATED`, `ACTIVE`, `READY`, `TEST_READY`, `SUSPENDED`, `PURGED`, `INVENTORY`, `DEACTIVATED`, `REPLACED`, `RETIRED`.
 - Agregar fixture real cuando exista payload de producción/sandbox.
 
-**Arquitectura:** el enum canónico absorbe variaciones de proveedor; el frontend no debe comparar `simStatus` nativo.
+**Arquitectura:** el frontend trata `status` como valor de proveedor y aplica reglas por proveedor cuando necesita habilitar acciones.
 
 ---
 
@@ -117,7 +122,7 @@
 
 ## 8. PR-13 · Límites y detalles administrativos como payload, no endpoints prematuros
 
-**Justificación:** Kite y Tele2 documentan límites dentro de detalle/edición; `moabits.md` también dice que límites viajan dentro del detalle del dispositivo/cuenta.
+**Justificación:** Kite y Tele2 documentan límites dentro de detalle/edición; las notas Moabits v1 también dicen que límites viajan dentro del detalle del dispositivo/cuenta.
 
 **Cambios:**
 - Agregar `detail_level` y `normalized` a `SubscriptionOut`, manteniendo compatibilidad con los campos top-level y `provider_fields`.

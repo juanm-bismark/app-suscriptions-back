@@ -1,17 +1,7 @@
 """Pydantic response schemas for the Subscriptions API.
 
-Canonical vocabulary for status values (AdministrativeStatus):
-  active      → SIM is provisioned and billable (Kite: ACTIVE, Tele2: ACTIVE/ACTIVATED, Moabits: Active)
-  in_test     → SIM in trial/test mode before production activation
-                (Kite: TEST, Tele2: Ready, Moabits: Ready)
-  suspended   → SIM service temporarily blocked (Kite: SUSPENDED, Moabits: Suspended)
-  terminated  → SIM deactivated / end-of-life (Kite: DEACTIVATED, Tele2: DEACTIVATED)
-  purged      → SIM removed from network (Tele2: PURGED, Moabits: PURGED)
-  pending     → Provisioned but not yet activated (Kite: PENDING)
-  unknown     → Provider returned an unrecognized value
-
-The `native_status` field always carries the raw value from the provider and is intended
-to be shown as a tooltip or subtitle in the UI alongside the unified `status` label.
+The `status` field carries the raw native value from the provider
+(e.g. "ACTIVE" for Kite, "ACTIVATED" for Tele2, "Active" for Moabits).
 
 The `provider_fields` dict is a dynamic block of provider-specific attributes. Its shape
 varies by provider — see adapter docstrings for field documentation.
@@ -23,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.subscriptions.domain import AdministrativeStatus
+from app.providers.base import Provider
 
 
 class SubscriptionOut(BaseModel):
@@ -42,11 +32,9 @@ class SubscriptionOut(BaseModel):
             "responses may omit this even when the SIM has an IMSI."
         ),
     )
-    status: AdministrativeStatus = Field(
-        description="Unified internal administrative status."
+    status: str = Field(
+        description="Raw provider status value (e.g. 'ACTIVE', 'ACTIVATED', 'Active')."
     )
-    # raw provider value (e.g. "ACTIVE", "Ready", "TEST") — tooltip source
-    native_status: str = Field(description="Raw provider status value.")
     provider: str = Field(description="Provider that owns this SIM route.")
     company_id: str
     activated_at: datetime | None = Field(
@@ -87,8 +75,7 @@ class SubscriptionOut(BaseModel):
                     "iccid": "89462038075065380465",
                     "msisdn": None,
                     "imsi": None,
-                    "status": "active",
-                    "native_status": "ACTIVATED",
+                    "status": "ACTIVATED",
                     "provider": "tele2",
                     "company_id": "00000000-0000-0000-0000-000000000001",
                     "activated_at": None,
@@ -100,14 +87,17 @@ class SubscriptionOut(BaseModel):
                     },
                     "normalized": {
                         "identity": {
-                            "iccid": "89462038075065380465",
-                            "msisdn": None,
-                            "imsi": None,
                             "imei": None,
+                            "alias": None,
+                            "eid": None,
+                            "euiccid": None,
+                            "sim_profile_id": None,
                         },
                         "status": {
-                            "value": "active",
-                            "native": "ACTIVATED",
+                            "label": "Activated",
+                            "group": "active_like",
+                            "group_label": "Active-like",
+                            "source": "provider",
                             "last_changed_at": None,
                         },
                         "plan": {
@@ -115,11 +105,15 @@ class SubscriptionOut(BaseModel):
                             "communication_plan": "Data LTE SMS VoLTE",
                         },
                         "customer": {"account_id": None},
-                        "network": {"ip_address": None},
+                        "network": {
+                            "ip_address": None,
+                            "fixed_ip_address": None,
+                            "ipv6_address": None,
+                        },
                         "hardware": {"device_id": None, "modem_id": None},
                         "services": {"active": None},
                         "limits": {"data": None, "sms": None},
-                        "dates": {"activated_at": None, "updated_at": None},
+                        "dates": {"added_at": None, "provisioned_at": None},
                         "custom_fields": {},
                     },
                 },
@@ -127,8 +121,7 @@ class SubscriptionOut(BaseModel):
                     "iccid": "8988216716970004975",
                     "msisdn": "882351697004975",
                     "imsi": "901161697004975",
-                    "status": "active",
-                    "native_status": "ACTIVATED",
+                    "status": "ACTIVATED",
                     "provider": "tele2",
                     "company_id": "00000000-0000-0000-0000-000000000001",
                     "activated_at": "2016-06-29T00:21:33.339000Z",
@@ -145,14 +138,17 @@ class SubscriptionOut(BaseModel):
                     },
                     "normalized": {
                         "identity": {
-                            "iccid": "8988216716970004975",
-                            "msisdn": "882351697004975",
-                            "imsi": "901161697004975",
                             "imei": "12345",
+                            "alias": None,
+                            "eid": None,
+                            "euiccid": None,
+                            "sim_profile_id": None,
                         },
                         "status": {
-                            "value": "active",
-                            "native": "ACTIVATED",
+                            "label": "Activated",
+                            "group": "active_like",
+                            "group_label": "Active-like",
+                            "source": "provider",
                             "last_changed_at": "2016-07-06T22:04:04.380000Z",
                         },
                         "plan": {
@@ -160,14 +156,15 @@ class SubscriptionOut(BaseModel):
                             "communication_plan": "CP_Basic_ON",
                         },
                         "customer": {"account_id": "100020620"},
-                        "network": {"ip_address": None},
+                        "network": {
+                            "ip_address": None,
+                            "fixed_ip_address": None,
+                            "ipv6_address": None,
+                        },
                         "hardware": {"modem_id": "2221"},
                         "services": {"active": None},
                         "limits": {"data": None, "sms": None},
-                        "dates": {
-                            "activated_at": "2016-06-29T00:21:33.339000Z",
-                            "updated_at": "2016-07-06T22:04:04.380000Z",
-                        },
+                        "dates": {"added_at": None, "provisioned_at": None},
                         "custom_fields": {"account_custom_1": "78"},
                     },
                 },
@@ -231,6 +228,45 @@ class ProviderStatusOut(BaseModel):
     )
 
 
+class SimDetailsIn(BaseModel):
+    iccids: list[str] = Field(
+        description="ICCID list to enrich with live provider details."
+    )
+    providers: list[Provider] | None = Field(
+        default=None,
+        description="Optional provider filter. Resolved SIMs outside it are filtered out.",
+    )
+
+
+class SimDetailsErrorOut(BaseModel):
+    code: str
+    detail: str | None = None
+    retry_after: str | None = None
+
+
+class SimDetailsItemOut(BaseModel):
+    provider: str
+    status: Literal["ok", "not_found", "timeout", "error", "rate_limited"]
+    data: SubscriptionOut | None = None
+    error: SimDetailsErrorOut | None = None
+
+
+class SimDetailsSummaryOut(BaseModel):
+    ok: int = 0
+    not_found: int = 0
+    timeout: int = 0
+    rate_limited: int = 0
+    error: int = 0
+    total: int = 0
+
+
+class SimDetailsOut(BaseModel):
+    results: dict[str, SimDetailsItemOut]
+    summary: SimDetailsSummaryOut
+    unresolved: list[str] = Field(default_factory=list)
+    filtered_out: list[str] = Field(default_factory=list)
+
+
 class SimListOut(BaseModel):
     items: list[SubscriptionOut] = Field(
         description=(
@@ -267,8 +303,46 @@ class SimListOut(BaseModel):
     )
 
 
+class SimSearchCommonFilters(BaseModel):
+    iccid: str | None = None
+    imsi: str | None = None
+    msisdn: str | None = None
+    modified_since: datetime | None = None
+    modified_till: datetime | None = None
+    custom: dict[str, str] = Field(default_factory=dict)
+
+
+class SimSearchProviderFilters(SimSearchCommonFilters):
+    cursor: str | None = None
+    limit: int | None = Field(default=None, ge=1, le=500)
+    status: str | None = Field(
+        default=None,
+        description="Provider-native status value for this provider only. Shorthand for one value.",
+    )
+    statuses: list[str] = Field(
+        default_factory=list,
+        description="Provider-native status values for this provider only.",
+    )
+
+
+class SimSearchIn(BaseModel):
+    cursor: str | None = Field(
+        default=None,
+        description="Optional global/provider cursor returned by a prior search.",
+    )
+    limit: int = Field(default=50, ge=1, le=500)
+    common: SimSearchCommonFilters = Field(default_factory=SimSearchCommonFilters)
+    providers: dict[Provider, SimSearchProviderFilters] = Field(
+        default_factory=dict,
+        description=(
+            "Provider-specific filters. Omit or pass an empty object to query all "
+            "providers with the common filters."
+        ),
+    )
+
+
 class StatusChangeIn(BaseModel):
-    target: str  # canonical AdministrativeStatus value (e.g. "active", "suspended")
+    target: str  # Native provider status value.
     data_service: bool | None = (
         None  # For providers that support selective service control (Moabits)
     )

@@ -1,14 +1,11 @@
 """Unit tests for Pydantic response schemas.
 
 These tests validate that OpenAPI schemas correctly model:
-- SubscriptionOut with proper AdministrativeStatus enum typing
+- SubscriptionOut with raw provider status strings
 - UsageOut and PresenceOut with from_attributes=True
 - StatusChangeIn with optional service control fields
 """
 
-import pytest
-
-from app.subscriptions.domain import AdministrativeStatus
 from app.subscriptions.schemas.sim import (
     PresenceOut,
     ProviderStatusOut,
@@ -22,15 +19,13 @@ from app.subscriptions.schemas.sim import (
 class TestSubscriptionOutSchema:
     """Test SubscriptionOut Pydantic model."""
 
-    def test_status_enum_typing(self):
-        """SubscriptionOut.status should be typed as AdministrativeStatus enum."""
-        # This ensures OpenAPI generates enum values, not plain string
+    def test_status_field_is_string(self):
+        """SubscriptionOut.status should be a plain string (raw provider value)."""
         from pydantic import TypeAdapter
 
         schema = TypeAdapter(SubscriptionOut).json_schema()
-        # Verify that status field has enum constraint in schema
         assert "properties" in schema
-        assert "status" in schema["properties"]
+        assert schema["properties"]["status"]["type"] == "string"
 
     def test_from_attributes_config(self):
         """SubscriptionOut should have from_attributes=True for ORM compatibility."""
@@ -45,7 +40,12 @@ class TestSubscriptionOutSchema:
             "summary",
             "detail",
         }
-        assert examples[0]["normalized"]["identity"]["iccid"]
+        assert examples[0]["iccid"]
+        assert "iccid" not in examples[0]["normalized"]["identity"]
+        assert "value" not in examples[0]["normalized"]["status"]
+        assert examples[0]["normalized"]["status"]["group"] == "active_like"
+        assert examples[0]["normalized"]["status"]["group_label"] == "Active-like"
+        assert examples[0]["normalized"]["status"]["source"] == "provider"
         assert examples[1]["provider_fields"]["detail_enriched"] is True
 
 

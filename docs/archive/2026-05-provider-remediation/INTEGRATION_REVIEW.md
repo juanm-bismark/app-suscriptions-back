@@ -3,10 +3,11 @@
 > **Reference / historical provider research.** This review preserves the
 > provider evidence and reasoning collected during adapter remediation. For the
 > current implementation status and remaining gaps, use
-> `docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md`,
-> `docs/architecture/PROVIDER_SPEC_GAPS.md`, `IMPLEMENTATION_PLAN.md`, and the
-> active ADRs. Moabits source selection and v2 listing enrichment are governed
-> by ADR-010 and ADR-011.
+> `docs/architecture/ARCHITECTURE.md`,
+> `docs/architecture/_context_state.json`,
+> `docs/architecture/PROVIDER_SPEC_GAPS.md`, and the active ADRs. Moabits source
+> selection and v2 listing enrichment are governed by ADR-010 and ADR-011. Paths
+> mentioned in this archive are relative to the repository root.
 
 **Status:** Updated after provider-adapter remediation, with documented evidence from both vendor notebooks.
 **Date:** 2026-05-05
@@ -21,7 +22,7 @@
 |---|---|---|
 | Kite | "Kite Platform UNICA API SOAP Binding Specification" (NotebookLM `becadcf2…`) + local WSDLs in `app/providers/kite/wsdl/` | **Consulted.** WSDL is the contract; the binding spec adds enums, glossary, error table, search params, and request/response examples. |
 | Tele2 | "Tele2 Cisco Control Center REST API Resource Catalog" (NotebookLM `83cdd80c…`, 22 sources, mirrored from `tele2.jasperwireless.com`) | **Consulted.** Authoritative for every Tele2 row below. |
-| Moabits | `moabits.md` (Spanish narrative summary, sections 1–6) + Orion API 2.0.0 Swagger (`https://www.api.myorion.co/api-doc`) | Consulted for auth, server URL, core paths, purge body/response, and writeable transitions. Field payload samples still needed for casing/shape validation. |
+| Moabits | `docs/architecture/MOABITS_ORION_V1_NOTES.md` (Spanish narrative summary, sections 1–6) + Orion API 2.0.0 Swagger (`https://www.api.myorion.co/api-doc`) | Consulted for auth, server URL, core paths, purge body/response, and writeable transitions. Field payload samples still needed for casing/shape validation. |
 
 **Evidence labels:**
 - **(D)** Documented in the vendor source.
@@ -283,7 +284,7 @@ The catalog explicitly lists 8 values: **`ACTIVATED, ACTIVATION_READY, DEACTIVAT
 | `REPLACED` | `replaced` (new internal value) | no | n/a | yes | indicates SIM swap |
 | `DEACTIVATED` | `terminated` | no | yes | no | "SIM cannot be re-activated automatically — manual operation required" (Jasper convention) |
 
-**Current adapter status:** fixed. `tele2/status_map.py` maps the eight official Cisco values and keeps `ACTIVE` / `READY` only as read-path aliases for non-standard deployments. Write-path conversion emits official Cisco values only; `SUSPENDED` is intentionally unsupported for Tele2.
+**Current adapter status:** fixed. Tele2 status values pass through as provider-native strings. Write-path validation accepts the official Cisco values supported by `PUT /devices/{iccid}`; `SUSPENDED` is intentionally unsupported for Tele2.
 
 ### 2.8 Allowed transitions (D, partial, from error catalog)
 
@@ -317,9 +318,9 @@ The error catalog reveals state-machine constraints:
 
 ## 3. Per-endpoint review — Moabits (Orion API 2.0)
 
-> Source: `moabits.md` (Spanish narrative summary, sections 1–6), Orion API 2.0.0 Swagger (`https://www.api.myorion.co/api-doc`), and `app/providers/moabits/adapter.py`. Swagger confirms Bearer/JWT auth, server `https://www.api.myorion.co/`, core URIs, purge body/response, and the public write transitions (`active`, `suspend`, `purge`, `setLimits`, `update name`). Field-level payload examples are still needed for status casing and optional fields.
+> Source: `docs/architecture/MOABITS_ORION_V1_NOTES.md` (Spanish narrative summary, sections 1–6), Orion API 2.0.0 Swagger (`https://www.api.myorion.co/api-doc`), and `app/providers/moabits/adapter.py`. Swagger confirms Bearer/JWT auth, server `https://www.api.myorion.co/`, core URIs, purge body/response, and the public write transitions (`active`, `suspend`, `purge`, `setLimits`, `update name`). Field-level payload examples are still needed for status casing and optional fields.
 >
-> **Strong inference:** moabits.md mirrors Cisco/Jasper terminology exactly (`ACTIVATED, DEACTIVATED, PURGED, INVENTORY, TEST_READY` — identical to Tele2 §2.7). This is consistent with Moabits being a reseller layer over a Cisco-flavored backend, but the **actual `simStatus` casing emitted by the Moabits API is unverified** — the adapter assumes lowercase, which will silently bucket valid values into `unknown` if the API uses ALL_CAPS.
+> **Strong inference:** the Moabits v1 notes mirror Cisco/Jasper terminology exactly (`ACTIVATED, DEACTIVATED, PURGED, INVENTORY, TEST_READY` — identical to Tele2 §2.7). This is consistent with Moabits being a reseller layer over a Cisco-flavored backend, but the **actual `simStatus` casing emitted by the Moabits API is unverified** — the adapter assumes lowercase, which will silently bucket valid values into `unknown` if the API uses ALL_CAPS.
 
 ### 3.1 `GET /api/sim/details/{iccidList}` (single) and `GET /api/company/simListDetail/{companyCodes}` (list) — (D)
 
@@ -332,7 +333,7 @@ The error catalog reveals state-machine constraints:
 
 - **Capability:** `get_status` (single) / list status (multi)
 - **Output:** `info.iccidList[]` rows with `iccid, simStatus, dataService, smsService`.
-- **simStatus values observed in adapter:** `Active, Ready, Suspended` (lowercase compare). **moabits.md SECCIÓN 1 line 7** says the values **on Moabits** are `ACTIVATED, DEACTIVATED, PURGED, INVENTORY, TEST_READY`. **One source must be wrong.** Without a real payload from production, [REQUIRES INPUT].
+- **simStatus values observed in adapter:** `Active, Ready, Suspended` (lowercase compare). The Moabits v1 notes say the values **on Moabits** are `ACTIVATED, DEACTIVATED, PURGED, INVENTORY, TEST_READY`. **One source must be wrong.** Without a real payload from production, [REQUIRES INPUT].
 - **Confidence:** HIGH for path; MEDIUM/LOW for status casing until a real payload is captured.
 
 ### 3.3 `GET /api/usage/simUsage` (D)
@@ -362,15 +363,15 @@ The error catalog reveals state-machine constraints:
 - **Writable status transitions:** only active, suspend, and purge. No public endpoint for TEST_READY, DEACTIVATED, or INVENTORY.
 - **Confidence:** HIGH for route/body/response.
 
-### 3.6 What moabits.md names but the adapter does NOT implement
+### 3.6 What the Moabits v1 notes name but the adapter does NOT implement
 
-| moabits.md operation | Adapter |
+| Moabits v1 note operation | Adapter |
 |---|---|
 | `Get Aggregated Usage Details` | URI confirmed as `GET /api/usage/companyUsage`; not exposed by backend v1 |
 | Set limits | URI confirmed as `PUT /api/sim/setLimits/`; not exposed by backend v1 |
 | Update SIM name | URI confirmed as `PUT /api/sim/details/{iccid}/name/`; not exposed by backend v1 |
 | `Get Service Specification` | not confirmed in supplied Swagger extract |
-| Status history per SIM | not in moabits.md → not implemented |
+| Status history per SIM | not in Moabits v1 notes → not implemented |
 
 ---
 
@@ -406,7 +407,7 @@ The error catalog reveals state-machine constraints:
 - **Kite:** `getSubscriptions(startIndex=cursor, maxBatchSize=min(limit,1000))`. Pass through any `searchParameters` from the caller (whitelisted set).
 - **Tele2:** `GET /rws/api/v1/devices?modifiedSince=<persisted-watermark>&modifiedTill=<window-end>&pageNumber=cursor&pageSize=min(limit,50)`. **`modifiedSince` is required**, and `modifiedTill` must keep each query window at one year or less. For "first sync" use a low default (e.g. 2010-01-01) and advance the cursor through one-year windows.
 - **Moabits:** fan-out over `company_codes` and slice locally, capped at `limit ≤ 500`.
-- **Required normalization:** ICCID (canonical), IMSI/MSISDN where available, `status` (normalized), `native_status`, `provider`, plan summary, `updated_at`.
+- **Required normalization:** ICCID (canonical), IMSI/MSISDN where available, `status` (provider value), `provider`, plan summary, `updated_at`.
 
 ### `GET /v1/sims/{iccid}`
 
@@ -501,7 +502,7 @@ Add a normalized status enum value: **`activation_ready`** and **`activation_pen
 | Moabits | `Inventory`/`INVENTORY` | (D-MD §1 line 7) | `inventory` | no | yes | no |
 | Moabits | `Deactivated`/`DEACTIVATED` | (D-MD §1 line 7) | `terminated` | no | NC | NC |
 
-**Action:** rewrite all three `status_map.py` files to handle the full enum; default `unknown` only for truly unknown values. **Remove the bogus `READY` and `SUSPENDED` entries from the Tele2 map.**
+**Action:** expose provider status values directly in `Subscription.status`; validate only write targets that each provider supports.
 
 ---
 
@@ -678,9 +679,9 @@ These were the mechanical fixes justified by the documented evidence above. They
 - ✅ `modifiedSince` plus one-year `modifiedTill` windows in `list_subscriptions`.
 - ⚠️ Voice unit still needs vendor confirmation before a canonical rename from minutes to seconds.
 
-**File: `app/providers/tele2/status_map.py`**
+**File: `app/providers/tele2/adapter.py`**
 
-- ✅ `_TO_CANONICAL` and `_TO_NATIVE` follow the official Cisco enum. `SUSPENDED` is unsupported on write.
+- ✅ Status values pass through directly. `SUSPENDED` is unsupported on write.
 
 **File: `app/providers/tele2/dto.py`**
 
@@ -708,9 +709,9 @@ These were the mechanical fixes justified by the documented evidence above. They
 
 ### Moabits
 
-**File: `app/providers/moabits/status_map.py`**
+**File: `app/providers/moabits/adapter.py`**
 
-- Add SCREAMING_SNAKE entries (`ACTIVATED, TEST_READY, SUSPENDED, PURGED, INVENTORY, DEACTIVATED`) alongside the current CamelCase ones, and lowercase-compare in `map_status`. This is a low-risk additive change that protects against either casing convention. Real verification still pending a sample payload.
+- Status values pass through directly from `simStatus`. Real verification still pending a sample payload.
 
 ---
 

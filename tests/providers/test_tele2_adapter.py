@@ -18,7 +18,7 @@ from app.shared.errors import (
     ProviderUnavailable,
     ProviderValidationError,
 )
-from app.subscriptions.domain import AdministrativeStatus, SubscriptionSearchFilters
+from app.subscriptions.domain import SubscriptionSearchFilters
 
 
 @respx.mock
@@ -227,7 +227,7 @@ async def test_list_subscriptions_is_wrapped_by_circuit_breaker(monkeypatch) -> 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_list_subscriptions_maps_canonical_filters() -> None:
+async def test_list_subscriptions_maps_native_filters() -> None:
     base = "https://api.tele2.test"
     creds = {
         "base_url": base,
@@ -242,7 +242,7 @@ async def test_list_subscriptions_maps_canonical_filters() -> None:
     )
 
     filters = SubscriptionSearchFilters(
-        status=AdministrativeStatus.ACTIVE,
+        status="ACTIVATED",
         modified_since=datetime(2026, 4, 18, 17, 31, 34, tzinfo=UTC),
         modified_till=datetime(2026, 4, 30, tzinfo=UTC),
         iccid="893",
@@ -366,40 +366,6 @@ async def test_get_usage_maps_date_range_and_metrics() -> None:
         "seconds",
         "count",
     }
-
-
-class TestTele2StatusMapping:
-    """Test bidirectional status mapping between Tele2 / Cisco Control Center and canonical."""
-
-    def test_tele2_to_canonical_all_states(self):
-        """Verify Cisco Control Center enum values map to canonical AdministrativeStatus."""
-        from app.providers.tele2.status_map import map_status
-
-        # Official Cisco enum
-        assert map_status("ACTIVATED") == AdministrativeStatus.ACTIVE
-        assert map_status("TEST_READY") == AdministrativeStatus.IN_TEST
-        assert map_status("PURGED") == AdministrativeStatus.PURGED
-        assert map_status("DEACTIVATED") == AdministrativeStatus.TERMINATED
-        assert map_status("INVENTORY") == AdministrativeStatus.INVENTORY
-        assert map_status("REPLACED") == AdministrativeStatus.REPLACED
-        assert map_status("RETIRED") == AdministrativeStatus.RETIRED
-        assert map_status("ACTIVATION_READY") == AdministrativeStatus.ACTIVATION_READY
-
-        # Legacy aliases kept for read-path compat
-        assert map_status("ACTIVE") == AdministrativeStatus.ACTIVE
-        assert map_status("READY") == AdministrativeStatus.IN_TEST
-
-    def test_canonical_to_tele2_all_states(self):
-        """Write path uses official Cisco enum values."""
-        from app.providers.tele2.status_map import to_native
-
-        assert to_native(AdministrativeStatus.ACTIVE) == "ACTIVATED"
-        assert to_native(AdministrativeStatus.IN_TEST) == "TEST_READY"
-        assert to_native(AdministrativeStatus.PURGED) == "PURGED"
-        assert to_native(AdministrativeStatus.TERMINATED) == "DEACTIVATED"
-        # Cisco has no SUSPENDED — must not be sent to provider
-        assert to_native(AdministrativeStatus.SUSPENDED) is None
-
 
 class TestTele2PurgeConsolidation:
     """Test that purge() delegates to set_administrative_status(PURGED)."""

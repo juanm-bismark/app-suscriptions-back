@@ -1,8 +1,8 @@
 {
   "project_type": "brownfield",
   "depth": "comprehensive",
-  "status_date": "2026-05-07",
-  "status_note": "Estado actualizado contra el código y la documentación vigente. Los documentos de Phase 1-8 quedan como histórico/justificación; la fuente de verdad operativa está en ARCHITECTURE.md, DOCS_CODE_ALIGNMENT_AUDIT.md, ADR-010 y ADR-011.",
+  "status_date": "2026-05-25",
+  "status_note": "ADR-012 está accepted y parcialmente implementado: Redis + Arq worker, sync_jobs, cron nocturno, endpoints de sync/jobs y POST /v1/sims/details. Sigue pendiente POST /v1/sims/export. El principio de proxy puro de ADR-002 se preserva: detalles siempre en vivo, sin caché de estado. Los reportes/planes antiguos de raíz fueron archivados en docs/archive/2026-05-provider-remediation/; la fuente de verdad operativa está en ARCHITECTURE.md, _context_state.json, PROVIDER_SPEC_GAPS.md y ADRs.",
   "focus_areas": [
     "analysis",
     "DDD",
@@ -26,6 +26,7 @@
     "deploy": "Docker / docker-compose",
     "secrets": "Credenciales proveedor cifradas con Fernet en company_provider_credentials.credentials_enc",
     "logging": "structlog + RequestIDMiddleware",
+    "queue": "Arq + Redis implemented via ADR-012 — broker for routing sync and future massive exports, NOT used as detail cache",
     "feature_flags": [
       "LIFECYCLE_WRITES_ENABLED",
       "MOABITS_V2_ENRICHMENT_ENABLED"
@@ -35,9 +36,11 @@
   "scale_requirements": {
     "sims_total": 134612,
     "concurrent_users": "15-20",
-    "batch_jobs": "ninguno",
-    "mode": "real-time proxy (sin sincronización ni almacén canónico de SIMs)",
-    "moabits_estimated_sims_per_tenant": "~134k [ASSUMPTION]"
+    "batch_jobs": "routing sync periódico + exports masivos asíncronos (ADR-012)",
+    "mode": "real-time proxy para detalle de SIM; sync periódico para routing map (sin almacén canónico de estado de SIM)",
+    "moabits_estimated_sims_per_tenant": "~134k [ASSUMPTION]",
+    "max_batch_details": 200,
+    "tele2_full_sync_estimate_minutes": "~37 a 60 TPS"
   },
   "implementation_status": {
     "routers_versioned_under_v1": true,
@@ -58,7 +61,11 @@
     "generic_adapter_bulkhead": "pending",
     "metrics_endpoint": "pending",
     "opentelemetry": "pending",
-    "tenant_rate_limit": "pending"
+    "tenant_rate_limit": "pending",
+    "routing_sync_worker": "implemented (ADR-012 fases A/B): Arq worker, manual trigger, cron scheduler, sync_jobs tracking",
+    "batch_details_endpoint": "implemented (ADR-012 fase C): POST /v1/sims/details, max 200 ICCIDs, per-ICCID status",
+    "export_async_endpoint": "pending (ADR-012 fase D): POST /v1/sims/export",
+    "redis_broker": "implemented (ADR-012): queue broker only, no SIM detail cache"
   },
   "decisions_made": [
     "D1 → ADR-001: Modular Monolith",
@@ -71,7 +78,8 @@
     "D5 → ADR-008: Reuse existing JWT + RBAC + Company scope + lifecycle audit for SIM writes",
     "D6 → ADR-009: Test pyramid + provider contract tests + golden/realistic payload tests",
     "ADR-010: Moabits company_codes bootstrap is explicit; selected codes live in provider_source_configs.settings.company_codes, not credentials_enc",
-    "ADR-011: Moabits v2 enrichment is optional for GET /v1/sims?provider=moabits; v1 simList remains source of ICCIDs"
+    "ADR-011: Moabits v2 enrichment is optional for GET /v1/sims?provider=moabits; v1 simList remains source of ICCIDs",
+    "ADR-012: Routing sync periódico (Arq + Redis) + POST /v1/sims/details batch + POST /v1/sims/export asíncrono. Preserva ADR-002: sim_routing_map sigue minimal (iccid + provider + company_id + last_seen_at), sin estado cacheado. Detalle siempre live."
   ],
   "current_provider_behaviour": {
     "kite": {
@@ -104,8 +112,8 @@
     }
   },
   "open_questions": [
-    "¿Qué proveedor se considera autoridad si un mismo ICCID aparece en más de uno? Caso esperado: nunca, pero falta política explícita.",
-    "¿La carga inicial del mapping ICCID→provider será por CSV/import admin o por listados provider-scoped operados manualmente?",
+    "¿Qué proveedor se considera autoridad si un mismo ICCID aparece en más de uno? Caso esperado: nunca, pero falta política explícita. (Conflictos tracked en sim_routing_prefix_map.conflict_count; el sync de ADR-012 puede surfacearlos.)",
+    "[RESOLVED 2026-05-25 vía ADR-012] La carga del mapping ICCID→provider es por sync periódico (cron + trigger manual), complementado por CSV bootstrap inicial y lazy discovery on-demand de ADR-002.",
     "¿Qué SLA/quotas reales tienen Kite, Tele2 y Moabits para calibrar timeouts, circuit breaker y rate limiting?",
     "¿Moabits v2 reutiliza siempre la misma X-API-KEY que v1 o requiere x_api_key_v2 por tenant?",
     "¿Cuál es el batch máximo y rate limit real de Moabits v2?",
@@ -125,7 +133,7 @@
     "domain_aggregate_root": "Subscription",
     "domain_value_object_consumption": "UsageSnapshot",
     "domain_value_object_usage_metric": "UsageMetric",
-    "domain_value_object_status": "AdministrativeStatus",
+    "domain_status_field": "status",
     "domain_value_object_presence": "ConnectivityPresence",
     "domain_event": "StatusChange",
     "anti_corruption_layer": "Provider Adapter",
@@ -147,7 +155,7 @@
     "tenant": "Company"
   },
   "docs_status": {
-    "current_summary": "docs/architecture/DOCS_CODE_ALIGNMENT_AUDIT.md",
+    "current_summary": "docs/architecture/ARCHITECTURE.md and docs/architecture/_context_state.json",
     "main_architecture": "docs/architecture/ARCHITECTURE.md",
     "moabits_v2_contract": "docs/architecture/MOABITS_ORION_GATEWAY_API_V2.md",
     "moabits_v2_decision": "docs/architecture/adrs/ADR-011-moabits-v2-list-enrichment.md",
@@ -155,7 +163,8 @@
     "historical_phase_docs": [
       "docs/architecture/arch-analysis.md",
       "docs/architecture/patterns-decisions.md",
-      "docs/architecture/_phase7_consistency_check.md"
+      "docs/architecture/_phase7_consistency_check.md",
+      "docs/archive/2026-05-provider-remediation/"
     ]
   },
   "phases_to_run": [],

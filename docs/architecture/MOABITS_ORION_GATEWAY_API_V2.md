@@ -48,7 +48,7 @@ under `provider_fields`. Notable Moabits mappings:
 
 | Source | Output |
 |--------|--------|
-| v1 `simStatus` | top-level `status` plus `native_status` |
+| v1 `simStatus` | top-level `status` |
 | v1 `dataService`, `smsService` | `provider_fields.data_service`, `provider_fields.sms_service`, `provider_fields.services` |
 | v2 detail `imsiNumber` | top-level `imsi` and `provider_fields.imsi_number` |
 | v2 detail `imsi` | `provider_fields.imsi_raw` |

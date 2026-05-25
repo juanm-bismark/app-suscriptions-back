@@ -35,6 +35,33 @@ def test_provider_capabilities_exposes_minimum_contract() -> None:
     }
     assert body["capabilities"]["purge"]["status"] == "supported"
     assert body["capabilities"]["status_history"]["status"] == "supported"
+    assert body["capabilities"]["set_administrative_status"]["targets"] == [
+        "ACTIVE",
+        "TEST",
+        "ACTIVATION_READY",
+        "ACTIVATION_PENDANT",
+        "INACTIVE_NEW",
+    ]
+
+
+def test_tele2_capability_targets_are_provider_native_values() -> None:
+    client = _client(Settings(lifecycle_writes_enabled=True))
+
+    response = client.get("/v1/providers/tele2/capabilities")
+
+    assert response.status_code == 200
+    capabilities = response.json()["capabilities"]
+    assert capabilities["set_administrative_status"]["targets"] == [
+        "ACTIVATED",
+        "TEST_READY",
+        "ACTIVATION_READY",
+        "DEACTIVATED",
+        "INVENTORY",
+        "PURGED",
+        "RETIRED",
+        "REPLACED",
+    ]
+    assert capabilities["purge"]["targets"] == ["PURGED"]
 
 
 def test_moabits_purge_capability_supported_when_writes_enabled() -> None:

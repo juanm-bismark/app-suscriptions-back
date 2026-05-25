@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -12,12 +13,18 @@ from app.config import Settings, get_settings
 from app.database import get_db
 from app.identity.dependencies import get_current_profile
 from app.identity.models.profile import AppRole, Profile
+from app.providers.base import Provider
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import encrypt_credentials
-from app.shared.errors import DomainError
-from app.subscriptions.domain import AdministrativeStatus, Subscription
+from app.shared.errors import BatchTooLarge, DomainError, ProviderResourceNotFound
+from app.subscriptions.domain import Subscription
 from app.subscriptions.routers import sims
-from app.subscriptions.schemas.sim import SimListOut
+from app.subscriptions.schemas.sim import (
+    SimDetailsIn,
+    SimListOut,
+    SimSearchIn,
+    SimSearchProviderFilters,
+)
 from app.tenancy.models.credentials import CompanyProviderCredentials
 from app.tenancy.models.provider_mapping import CompanyProviderMapping
 
@@ -181,8 +188,7 @@ async def test_global_listing_bootstraps_empty_routing_map(monkeypatch) -> None:
                         iccid=f"iccid-{self.provider}",
                         msisdn=None,
                         imsi=None,
-                        status=AdministrativeStatus.ACTIVE,
-                        native_status="active",
+                        status="active",
                         provider=self.provider,
                         company_id=str(COMPANY_ID),
                         activated_at=None,
@@ -269,8 +275,7 @@ async def test_global_listing_uses_provider_summaries_without_detail_calls(
                         iccid=f"iccid-{self.provider}",
                         msisdn=None,
                         imsi=None,
-                        status=AdministrativeStatus.ACTIVE,
-                        native_status="active",
+                        status="active",
                         provider=self.provider,
                         company_id=str(COMPANY_ID),
                         activated_at=None,
@@ -414,8 +419,7 @@ async def test_global_listing_respects_total_limit_across_providers(
                         iccid=f"iccid-{self.provider}-{idx:02d}",
                         msisdn=None,
                         imsi=None,
-                        status=AdministrativeStatus.ACTIVE,
-                        native_status="active",
+                        status="active",
                         provider=self.provider,
                         company_id=str(COMPANY_ID),
                         activated_at=None,
@@ -504,8 +508,7 @@ async def test_global_listing_carries_unqueried_providers_in_cursor(
                         iccid=f"iccid-{self.provider}",
                         msisdn=None,
                         imsi=None,
-                        status=AdministrativeStatus.ACTIVE,
-                        native_status="active",
+                        status="active",
                         provider=self.provider,
                         company_id=str(COMPANY_ID),
                         activated_at=None,
@@ -558,6 +561,148 @@ async def test_global_listing_carries_unqueried_providers_in_cursor(
         ("tele2", "ok", 1),
         ("moabits", "not_queried", 0),
     ]
+
+
+@pytest.mark.asyncio
+async def test_batch_details_returns_per_iccid_statuses(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class _ProviderAdapter:
+        def __init__(self, provider: str) -> None:
+            self.provider = provider
+
+        async def get_subscription(self, iccid, credentials):
+            calls.append((self.provider, iccid))
+            if iccid == "tele2-missing":
+                raise ProviderResourceNotFound(detail="provider returned 404")
+            return Subscription(
+                iccid=iccid,
+                msisdn=None,
+                imsi=None,
+                status="active",
+                provider=self.provider,
+                company_id=str(COMPANY_ID),
+                activated_at=None,
+                updated_at=None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            return _ProviderAdapter(provider)
+
+    routes = {
+        "kite-ok": SimpleNamespace(
+            iccid="kite-ok", provider=Provider.KITE.value, company_id=COMPANY_ID
+        ),
+        "tele2-missing": SimpleNamespace(
+            iccid="tele2-missing", provider=Provider.TELE2.value, company_id=COMPANY_ID
+        ),
+        "moabits-filtered": SimpleNamespace(
+            iccid="moabits-filtered",
+            provider=Provider.MOABITS.value,
+            company_id=COMPANY_ID,
+        ),
+    }
+
+    async def _resolve(iccid, *args, **kwargs):
+        if iccid == "unknown":
+            from app.shared.errors import SubscriptionNotFound
+
+            raise SubscriptionNotFound(detail="not routed")
+        return routes[iccid], None
+
+    async def _credentials(*args, **kwargs):
+        return {"token": "ok"}
+
+    monkeypatch.setattr(sims, "_resolve_routing_or_discover", _resolve)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+
+    result = await sims.get_sim_details_batch(
+        SimDetailsIn(
+            iccids=["kite-ok", "tele2-missing", "unknown", "moabits-filtered"],
+            providers=[Provider.KITE, Provider.TELE2],
+        ),
+        company_id=COMPANY_ID,
+        db=object(),
+        settings=Settings(max_batch_details=200),
+        registry=_Registry(),
+    )
+
+    assert result.results["kite-ok"].status == "ok"
+    assert result.results["kite-ok"].data is not None
+    assert result.results["tele2-missing"].status == "not_found"
+    assert result.results["tele2-missing"].error is not None
+    assert result.results["tele2-missing"].error.code == "provider.resource_not_found"
+    assert result.summary.ok == 1
+    assert result.summary.not_found == 1
+    assert result.summary.total == 2
+    assert result.unresolved == ["unknown"]
+    assert result.filtered_out == ["moabits-filtered"]
+    assert calls == [("kite", "kite-ok"), ("tele2", "tele2-missing")]
+
+
+@pytest.mark.asyncio
+async def test_batch_details_reuses_credentials_per_provider(monkeypatch) -> None:
+    credential_calls: list[str] = []
+    detail_calls: list[str] = []
+
+    class _ProviderAdapter:
+        async def get_subscription(self, iccid, credentials):
+            detail_calls.append(iccid)
+            return Subscription(
+                iccid=iccid,
+                msisdn=None,
+                imsi=None,
+                status="active",
+                provider=Provider.KITE.value,
+                company_id=str(COMPANY_ID),
+                activated_at=None,
+                updated_at=None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            return _ProviderAdapter()
+
+    async def _resolve(iccid, *args, **kwargs):
+        return (
+            SimpleNamespace(iccid=iccid, provider=Provider.KITE.value, company_id=COMPANY_ID),
+            None,
+        )
+
+    async def _credentials(_company_id, provider, *args, **kwargs):
+        credential_calls.append(provider)
+        return {"token": "ok"}
+
+    monkeypatch.setattr(sims, "_resolve_routing_or_discover", _resolve)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+
+    result = await sims.get_sim_details_batch(
+        SimDetailsIn(iccids=["kite-1", "kite-2"]),
+        company_id=COMPANY_ID,
+        db=object(),
+        settings=Settings(max_batch_details=200),
+        registry=_Registry(),
+    )
+
+    assert result.summary.ok == 2
+    assert credential_calls == [Provider.KITE.value]
+    assert detail_calls == ["kite-1", "kite-2"]
+
+
+@pytest.mark.asyncio
+async def test_batch_details_rejects_oversized_request() -> None:
+    with pytest.raises(BatchTooLarge) as excinfo:
+        await sims.get_sim_details_batch(
+            SimDetailsIn(iccids=["1", "2", "3"]),
+            company_id=COMPANY_ID,
+            db=object(),
+            settings=Settings(max_batch_details=2),
+            registry=object(),
+        )
+
+    assert excinfo.value.code == "request.batch_too_large"
+    assert excinfo.value.extra["max_batch_details"] == 2
 
 
 @pytest.mark.asyncio
@@ -672,7 +817,7 @@ def test_provider_listing_builds_canonical_filters(monkeypatch) -> None:
     assert response.status_code == 200
     assert captured["provider"] == "kite"
     assert captured["limit"] == 50
-    assert captured["filters"].status.value == "active"
+    assert captured["filters"].status == "active"
     assert captured["filters"].iccid == "893"
     assert captured["filters"].custom == {"customField1": "acme"}
 
@@ -741,8 +886,7 @@ def test_subscription_output_includes_normalized_blocks() -> None:
             iccid="8988216716970004975",
             msisdn="882351697004975",
             imsi="901161697004975",
-            status=AdministrativeStatus.ACTIVE,
-            native_status="ACTIVATED",
+            status="ACTIVATED",
             provider="tele2",
             company_id=str(COMPANY_ID),
             activated_at=None,
@@ -753,6 +897,8 @@ def test_subscription_output_includes_normalized_blocks() -> None:
                 "rate_plan": "hphlr rp1",
                 "communication_plan": "CP_Basic_ON",
                 "account_id": "100020620",
+                "ip_address": "10.1.2.3",
+                "fixed_ip_address": "192.0.2.5",
                 "date_shipped": "2016-06-27 07:00:00.000+0000",
                 "account_custom_1": "78",
             },
@@ -761,9 +907,18 @@ def test_subscription_output_includes_normalized_blocks() -> None:
 
     assert out.detail_level == "detail"
     assert out.normalized["identity"]["imei"] == "12345"
+    assert out.normalized["status"] == {
+        "label": "Activated",
+        "group": "active_like",
+        "group_label": "Active-like",
+        "source": "provider",
+        "last_changed_at": "2016-07-06T22:04:04Z",
+    }
     assert out.normalized["plan"]["name"] == "hphlr rp1"
     assert out.normalized["plan"]["communication_plan"] == "CP_Basic_ON"
     assert out.normalized["customer"]["account_id"] == "100020620"
+    assert out.normalized["network"]["ip_address"] == "10.1.2.3"
+    assert out.normalized["network"]["fixed_ip_address"] == "192.0.2.5"
     assert out.normalized["hardware"]["shipped_at"] == "2016-06-27T07:00:00Z"
     assert out.normalized["custom_fields"] == {"account_custom_1": "78"}
 
@@ -774,8 +929,7 @@ def test_moabits_summary_output_normalizes_minimal_simlist_fields() -> None:
             iccid="8910300000001880253",
             msisdn=None,
             imsi=None,
-            status=AdministrativeStatus.SUSPENDED,
-            native_status="Suspended",
+            status="Suspended",
             provider="moabits",
             company_id=str(COMPANY_ID),
             activated_at=None,
@@ -790,9 +944,11 @@ def test_moabits_summary_output_normalizes_minimal_simlist_fields() -> None:
     )
 
     assert out.detail_level == "summary"
-    assert out.normalized["identity"]["iccid"] == "8910300000001880253"
-    assert out.normalized["status"]["value"] == "suspended"
-    assert out.normalized["status"]["native"] == "Suspended"
+    assert out.iccid == "8910300000001880253"
+    assert out.normalized["status"]["label"] == "Suspended"
+    assert out.normalized["status"]["group"] == "suspended_like"
+    assert out.normalized["status"]["group_label"] == "Suspended-like"
+    assert out.normalized["status"]["source"] == "provider"
     assert out.normalized["services"]["active"] == ["sms"]
     assert out.normalized["services"]["data_service"] is False
     assert out.normalized["services"]["sms_service"] is True
@@ -819,8 +975,7 @@ async def test_provider_listing_commits_routing_upserts_once(monkeypatch) -> Non
                         iccid="8934071100303041838",
                         msisdn=None,
                         imsi=None,
-                        status=AdministrativeStatus.ACTIVE,
-                        native_status="active",
+                        status="active",
                         provider="kite",
                         company_id=str(COMPANY_ID),
                         activated_at=None,
@@ -830,8 +985,7 @@ async def test_provider_listing_commits_routing_upserts_once(monkeypatch) -> Non
                         iccid="8934071100303041796",
                         msisdn=None,
                         imsi=None,
-                        status=AdministrativeStatus.ACTIVE,
-                        native_status="active",
+                        status="active",
                         provider="kite",
                         company_id=str(COMPANY_ID),
                         activated_at=None,
@@ -894,8 +1048,7 @@ async def test_global_iccid_search_uses_routing_map_for_moabits(
                 iccid=iccid,
                 msisdn=None,
                 imsi=None,
-                status=AdministrativeStatus.ACTIVE,
-                native_status="Active",
+                status="Active",
                 provider="moabits",
                 company_id=str(COMPANY_ID),
                 activated_at=None,
@@ -955,6 +1108,84 @@ async def test_global_iccid_search_uses_routing_map_for_moabits(
 
 
 @pytest.mark.asyncio
+async def test_global_iccid_search_uses_prefix_routing(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class _Db:
+        async def commit(self):
+            raise AssertionError("prefix ICCID lookup should not rewrite routing")
+
+    class _Routing:
+        provider = "tele2"
+
+    class _Provider:
+        async def get_subscription(self, iccid, credentials):
+            calls.append(("get_subscription", iccid))
+            return Subscription(
+                iccid=iccid,
+                msisdn=None,
+                imsi=None,
+                status="ACTIVE",
+                provider="tele2",
+                company_id=str(COMPANY_ID),
+                activated_at=None,
+                updated_at=None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            assert provider == "tele2"
+            return _Provider()
+
+    async def _find(iccid, company_id, db):
+        assert iccid == "89462038075065380465"
+        return None
+
+    async def _find_prefix(iccid, company_id, db):
+        assert iccid == "89462038075065380465"
+        return _Routing()
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+
+    result = await sims._list_via_routing_index(
+        cursor=None,
+        limit=50,
+        filters=sims._build_filters(
+            status_filter=None,
+            modified_since=None,
+            modified_till=None,
+            iccid="894620-38075065380465",
+            imsi=None,
+            msisdn=None,
+            custom=None,
+        ),
+        company_id=COMPANY_ID,
+        db=_Db(),
+        settings=Settings(),
+        registry=_Registry(),
+    )
+
+    assert calls == [("get_subscription", "89462038075065380465")]
+    assert result.partial is False
+    assert result.items[0].provider == "tele2"
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "not_queried", 0),
+        ("tele2", "ok", 1),
+        ("moabits", "not_queried", 0),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_global_iccid_search_queries_moabits_when_unmapped(
     monkeypatch,
 ) -> None:
@@ -980,8 +1211,7 @@ async def test_global_iccid_search_queries_moabits_when_unmapped(
                             iccid=filters.iccid,
                             msisdn=None,
                             imsi=None,
-                            status=AdministrativeStatus.ACTIVE,
-                            native_status="Active",
+                            status="Active",
                             provider="moabits",
                             company_id=str(COMPANY_ID),
                             activated_at=None,
@@ -1004,6 +1234,9 @@ async def test_global_iccid_search_queries_moabits_when_unmapped(
     async def _find(*args, **kwargs):
         return None
 
+    async def _find_prefix(*args, **kwargs):
+        return None
+
     async def _credentials(*args, **kwargs):
         return {}
 
@@ -1011,6 +1244,7 @@ async def test_global_iccid_search_queries_moabits_when_unmapped(
         return None
 
     monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
     monkeypatch.setattr(sims, "_load_credentials", _credentials)
     monkeypatch.setattr(sims, "_upsert_routing", _upsert)
     db = _Db()
@@ -1052,6 +1286,249 @@ async def test_global_iccid_search_queries_moabits_when_unmapped(
     ]
 
 
+@pytest.mark.asyncio
+async def test_provider_search_uses_provider_specific_filters(monkeypatch) -> None:
+    calls: dict[str, sims.SubscriptionSearchFilters] = {}
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _Provider:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls[self.provider] = filters
+            return [
+                Subscription(
+                    iccid=f"iccid-{self.provider}",
+                    msisdn=None,
+                    imsi=None,
+                    status=filters.status or "UNKNOWN",
+                    provider=self.provider,
+                    company_id=str(COMPANY_ID),
+                    activated_at=None,
+                    updated_at=None,
+                )
+            ], None
+
+    class _Registry:
+        def get(self, provider):
+            return _Provider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+
+    result = await sims._search_via_provider_filters(
+        SimSearchIn(
+            common={"modified_since": "2026-04-18T17:31:34Z"},
+            providers={
+                Provider.KITE: SimSearchProviderFilters(status="ACTIVE"),
+                Provider.TELE2: SimSearchProviderFilters(status="ACTIVATED"),
+            },
+        ),
+        COMPANY_ID,
+        _Db(),
+        Settings(),
+        _Registry(),
+    )
+
+    assert calls["kite"].status == "ACTIVE"
+    assert calls["tele2"].status == "ACTIVATED"
+    assert calls["kite"].modified_since is not None
+    assert calls["tele2"].modified_since is not None
+    assert [item.provider for item in result.items] == ["kite", "tele2"]
+    assert [
+        (status.provider, status.status, status.count)
+        for status in result.provider_statuses
+    ] == [
+        ("kite", "ok", 1),
+        ("tele2", "ok", 1),
+        ("moabits", "not_queried", 0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provider_search_supports_multiple_statuses_per_provider(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str | None, int]] = []
+
+    class _Db:
+        def __init__(self) -> None:
+            self.commit_calls = 0
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    class _Provider:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls.append(("tele2", filters.status, limit))
+            return [
+                Subscription(
+                    iccid=f"iccid-{filters.status}",
+                    msisdn=None,
+                    imsi=None,
+                    status=filters.status or "UNKNOWN",
+                    provider="tele2",
+                    company_id=str(COMPANY_ID),
+                    activated_at=None,
+                    updated_at=None,
+                )
+            ], None
+
+    class _Registry:
+        def get(self, provider):
+            assert provider == "tele2"
+            return _Provider()
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    db = _Db()
+
+    result = await sims._search_via_provider_filters(
+        SimSearchIn(
+            limit=10,
+            providers={
+                Provider.TELE2: SimSearchProviderFilters(
+                    statuses=["ACTIVATED", "TEST_READY"],
+                ),
+            },
+        ),
+        COMPANY_ID,
+        db,
+        Settings(),
+        _Registry(),
+    )
+
+    assert calls == [("tele2", "ACTIVATED", 5), ("tele2", "TEST_READY", 5)]
+    assert [item.status for item in result.items] == ["ACTIVATED", "TEST_READY"]
+    assert result.next_cursor is None
+    assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_search_encodes_status_specific_cursors(monkeypatch) -> None:
+    class _Db:
+        async def commit(self):
+            return None
+
+    class _Provider:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            return [], f"{filters.status}-cursor"
+
+    class _Registry:
+        def get(self, provider):
+            assert provider == "tele2"
+            return _Provider()
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+
+    result = await sims._search_via_provider_filters(
+        SimSearchIn(
+            providers={
+                Provider.TELE2: SimSearchProviderFilters(
+                    statuses=["ACTIVATED", "TEST_READY"],
+                ),
+            },
+        ),
+        COMPANY_ID,
+        _Db(),
+        Settings(),
+        _Registry(),
+    )
+
+    provider_cursors = sims._decode_global_cursor(result.next_cursor)
+    assert provider_cursors is not None
+    status_cursors = sims._decode_status_cursor(provider_cursors["tele2"])
+    assert status_cursors == {
+        "ACTIVATED": "ACTIVATED-cursor",
+        "TEST_READY": "TEST_READY-cursor",
+    }
+
+
+@pytest.mark.asyncio
+async def test_provider_search_returns_partial_provider_errors(monkeypatch) -> None:
+    class _Db:
+        async def commit(self):
+            return None
+
+    class _Provider:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            if self.provider == "tele2":
+                raise RuntimeError("tele2 timeout")
+            return [
+                Subscription(
+                    iccid="iccid-kite",
+                    msisdn=None,
+                    imsi=None,
+                    status="ACTIVE",
+                    provider="kite",
+                    company_id=str(COMPANY_ID),
+                    activated_at=None,
+                    updated_at=None,
+                )
+            ], None
+
+    class _Registry:
+        def get(self, provider):
+            return _Provider(provider)
+
+    async def _credentials(*args, **kwargs):
+        return {}
+
+    async def _upsert(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+
+    result = await sims._search_via_provider_filters(
+        SimSearchIn(
+            providers={
+                Provider.KITE: SimSearchProviderFilters(status="ACTIVE"),
+                Provider.TELE2: SimSearchProviderFilters(status="ACTIVATED"),
+            },
+        ),
+        COMPANY_ID,
+        _Db(),
+        Settings(),
+        _Registry(),
+    )
+
+    assert result.partial is True
+    assert [item.provider for item in result.items] == ["kite"]
+    assert result.failed_providers == [
+        {
+            "provider": "tele2",
+            "code": "provider.unavailable",
+            "title": "Provider request failed",
+        }
+    ]
+
+
 # ── Lazy ICCID resolution (routing map → fan-out) ──────────────────────────────
 
 
@@ -1067,13 +1544,27 @@ def _make_subscription(iccid: str, provider: str) -> Subscription:
         iccid=iccid,
         msisdn=None,
         imsi=None,
-        status=AdministrativeStatus.ACTIVE,
-        native_status="active",
+        status="active",
         provider=provider,
         company_id=str(COMPANY_ID),
         activated_at=None,
         updated_at=None,
     )
+
+
+@pytest.mark.parametrize(
+    ("iccid", "expected"),
+    [
+        ("8934070100000000001", "893407"),
+        (" 894620-38075065380465 ", "894620"),
+        ("12345", None),
+    ],
+)
+def test_iccid_routing_prefix_normalizes_digits(
+    iccid: str,
+    expected: str | None,
+) -> None:
+    assert sims._iccid_routing_prefix(iccid) == expected
 
 
 @pytest.mark.asyncio
@@ -1102,6 +1593,43 @@ async def test_resolve_or_discover_hits_routing_map_without_fanout(
 
 
 @pytest.mark.asyncio
+async def test_resolve_or_discover_uses_prefix_routing_before_fanout(
+    monkeypatch,
+) -> None:
+    lookup_calls: list[tuple[str, str]] = []
+
+    async def _find(iccid, company_id, db):
+        lookup_calls.append(("exact", iccid))
+        return None
+
+    async def _find_prefix(iccid, company_id, db):
+        lookup_calls.append(("prefix", iccid))
+        return _Routing()
+
+    async def _discover(*args, **kwargs):
+        raise AssertionError("prefix-routing hit must not trigger fan-out")
+
+    monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
+    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+
+    routing, prefetched = await sims._resolve_routing_or_discover(
+        "894620-38075065380465",
+        COMPANY_ID,
+        db=object(),
+        settings=Settings(),
+        registry=object(),
+    )
+
+    assert routing.provider == "tele2"
+    assert prefetched is None
+    assert lookup_calls == [
+        ("exact", "89462038075065380465"),
+        ("prefix", "89462038075065380465"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_resolve_or_discover_falls_back_to_fanout_when_unmapped(
     monkeypatch,
 ) -> None:
@@ -1120,7 +1648,11 @@ async def test_resolve_or_discover_falls_back_to_fanout_when_unmapped(
         discovery_calls.append(iccid)
         return discovered_sub
 
+    async def _find_prefix(iccid, company_id, db):
+        return None
+
     monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
     monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
 
     routing, prefetched = await sims._resolve_routing_or_discover(
@@ -1150,6 +1682,7 @@ async def test_resolve_or_discover_raises_and_caches_negative_on_miss(
         return None
 
     monkeypatch.setattr(sims, "_find_routing", _find)
+    monkeypatch.setattr(sims, "_find_prefix_routing", _find)
     monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
 
     from app.shared.errors import SubscriptionNotFound

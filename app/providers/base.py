@@ -16,7 +16,6 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityPresence,
     Subscription,
     SubscriptionSearchFilters,
@@ -57,7 +56,7 @@ class SubscriptionProvider(Protocol):
         iccid: str,
         credentials: dict[str, Any],
         *,
-        target: AdministrativeStatus,
+        target: str,
         idempotency_key: str,
         data_service: bool | None = None,
         sms_service: bool | None = None,

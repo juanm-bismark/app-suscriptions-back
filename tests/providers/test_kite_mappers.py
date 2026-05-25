@@ -9,7 +9,7 @@ from app.providers.kite.mappers import (
     parse_subscription,
     parse_usage_snapshot,
 )
-from app.subscriptions.domain import AdministrativeStatus, ConnectivityState
+from app.subscriptions.domain import ConnectivityState
 
 _KITE_NS = "http://www.telefonica.com/schemas/UNICA/SOAP/Globalm2m/inventory/v12/types"
 
@@ -164,8 +164,7 @@ class TestKiteMapperSubscription:
         assert sub.msisdn == "346000000001"
         assert sub.imsi == "214070000000001"
         assert sub.provider == "kite"
-        assert sub.status == AdministrativeStatus.ACTIVE
-        assert sub.native_status == "ACTIVE"
+        assert sub.status == "ACTIVE"
         assert sub.provider_fields["sgsn_ip"] == "192.0.2.10"
         assert sub.provider_fields["ggsn_ip"] == "192.0.2.11"
         assert sub.provider_fields["manual_location"] == {"lat": "40.4168", "lng": "-3.7038"}

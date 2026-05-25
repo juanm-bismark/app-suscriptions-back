@@ -8,7 +8,6 @@ from decimal import Decimal
 from typing import Any
 
 from app.providers.base import Provider
-from app.providers.kite.status_map import map_status
 from app.subscriptions.domain import (
     ConnectivityPresence,
     ConnectivityState,
@@ -180,7 +179,7 @@ def _parse_nested_block(el: ET.Element | None) -> dict[str, Any] | None:
 
 
 def parse_subscription(el: ET.Element, iccid: str, company_id: str) -> Subscription:
-    native_status = _text(el, "lifeCycleStatus") or "UNKNOWN"
+    provider_status = _text(el, "lifeCycleStatus") or "UNKNOWN"
     provider_fields: dict[str, Any] = {}
 
     # Core subscription identifiers
@@ -315,8 +314,7 @@ def parse_subscription(el: ET.Element, iccid: str, company_id: str) -> Subscript
         iccid=_text(el, "icc") or iccid,
         msisdn=_text(el, "msisdn"),
         imsi=_text(el, "imsi"),
-        status=map_status(native_status),
-        native_status=native_status,
+        status=provider_status,
         provider=Provider.KITE.value,
         company_id=company_id,
         activated_at=_parse_dt(_text(el, "activationDate")),

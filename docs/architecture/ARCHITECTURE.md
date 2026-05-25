@@ -8,12 +8,12 @@ Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaci
 
 | | |
 |---|---|
-| **Fecha** | 2026-04-29 |
-| **Versión** | 1.0 |
-| **Estado** | Accepted — listo para implementación del primer proveedor (mitigaciones de seguridad AP-1, AP-8 implementadas) |
+| **Fecha** | 2026-05-25 |
+| **Versión** | 1.1 |
+| **Estado** | Accepted — arquitectura vigente alineada con ADR-012 fases A/B/C |
 | **Autores** | Equipo backend + solution architect |
 | **Depth del ejercicio** | comprehensive (Phases 1–8) |
-| **Últimas actualizaciones** | 2026-05-07: Moabits v2 enrichment para `GET /v1/sims?provider=moabits` se intenta por defecto (`MOABITS_V2_ENRICHMENT_ENABLED=true`) después de descubrir ICCIDs con v1 `simList`; `false` conserva salida legacy v1-only (ADR-011). Bootstrap explícito de `company_codes` Moabits — eliminado el auto-scope por nombre en `_list_via_provider_search` (ADR-010). El listado responde 412 si `company_codes` está vacío, apuntando a `discover` + `PUT company-codes`; la selección se persiste en `provider_source_configs` y el `PUT` es admin-only. 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 `GET /v1/sims?provider=tele2` enriquece hasta 5 SIMs por página con `Get Device Details`. 2026-05-05: fachada canónica `purge` confirmada para Kite/Tele2/Moabits; Orion API 2.0.0 confirma `PUT /api/sim/purge/`; Kite PFX/mTLS cert-only soportado con WSSE opcional; `getSubscriptions` alineado al orden WSDL |
+| **Últimas actualizaciones** | 2026-05-25: ADR-012 aceptado parcialmente implementado: Redis + Arq worker, `sync_jobs`, cron nocturno, `/v1/sync/trigger`, `/v1/sync/status`, `/v1/jobs/{job_id}` y `POST /v1/sims/details`. Pendiente: `POST /v1/sims/export`. 2026-05-07: Moabits v2 enrichment para `GET /v1/sims?provider=moabits` se intenta por defecto (`MOABITS_V2_ENRICHMENT_ENABLED=true`) después de descubrir ICCIDs con v1 `simList`; `false` conserva salida legacy v1-only (ADR-011). Bootstrap explícito de `company_codes` Moabits (ADR-010). 2026-05-06: `SubscriptionOut` agrega `detail_level` y `normalized`; Tele2 listing enriquece hasta 5 SIMs por página con `Get Device Details`. |
 
 ---
 
@@ -24,24 +24,22 @@ Esta API centraliza, bajo un modelo de dominio único, la consulta y las operaci
 - Hoy cada proveedor se consulta por herramientas distintas — UX fragmentada, imposibilidad de ver el catálogo completo en un solo lugar.
 - Objetivo: una sola API (y un solo frontend interno) para las tres plataformas.
 
-Listing behaviour: `GET /v1/sims` requiere `?provider=<name>` por
-defecto. Las credenciales son siempre `Company × Provider` y no existe
-una credencial global que permita listar de todos los proveedores a
-la vez de forma segura y eficiente.
+Listing behaviour:
+- Provider-scoped listing: `GET /v1/sims?provider=<name>` resolves
+  `company_provider_credentials` and uses the provider's native pagination
+  when the adapter implements `SearchableProvider`.
+- Global listing (sin `provider`): uses known routing first and can bootstrap a
+  small provider page when the routing map is empty or incomplete. ADR-012 adds
+  periodic/manual routing sync so global pages are not dependent only on lazy
+  discovery.
+- Batch details: `POST /v1/sims/details` resolves each ICCID through routing,
+  prefix fallback and lazy discovery, then fetches current details live from the
+  owning provider. No SIM state is cached locally.
 
-Por tanto:
-- Provider-scoped listing (requerido): `GET /v1/sims?provider=<name>`
-   — resolver `company_provider_credentials` y usar la paginación
-   nativa del proveedor si existe (`SearchableProvider`).
-- Global listing (sin `provider`): deshabilitado por defecto y sólo
-   disponible tras un **bootstrap explícito por tenant** que poblare el
-   `sim_routing_map` (import CSV o proceso admin). Hasta entonces el
-   cliente debe pedir `?provider=`.
-
-Rationale: sin un `sim_routing_map` poblado por tenant no hay forma
-fiable de decidir qué credenciales usar para cada `iccid` y evitar un
-fan-out indiscriminado a todos los proveedores. Ver `migrations/001_sim_routing_map.sql`
-y `migrations/002_company_provider_credentials.sql`.
+Rationale: `sim_routing_map` is the routing index that decides which
+credentials/provider to use for each `iccid` and prevents repeated
+cross-provider fan-out. Ver `migrations/001_sim_routing_map.sql`,
+`migrations/002_company_provider_credentials.sql` y `migrations/008_sync_jobs.sql`.
 
 ### Technical context
 - Stack existente: FastAPI (async) + SQLAlchemy 2.0 + asyncpg + PyJWT + bcrypt + httpx.
@@ -49,8 +47,8 @@ y `migrations/002_company_provider_credentials.sql`.
 - Desplegado en Docker. Postgres managed (tipo Supabase o equivalente).
 
 ### Constraints
-- **Modo proxy puro**: decisión explícita del producto — sin sync, sin batch, sin almacén canónico del SIM.
-- **Escala**: 15–20 usuarios concurrentes, 134 612 SIMs totales, sin batch jobs.
+- **Modo proxy preservado**: no hay almacén canónico de estado de SIM. El detalle (`status`, `msisdn`, `usage`, `presence`, plan, etc.) sigue viviendo sólo en el proveedor. ADR-012 agrega sync periódico únicamente para `sim_routing_map`.
+- **Escala**: 15–20 usuarios concurrentes, 134 612 SIMs totales, routing sync nocturno y batch details hasta 200 ICCIDs.
 - **Equipo**: `[ASSUMPTION: team_size < 5]` — descarta microservicios.
 
 ---
@@ -72,6 +70,7 @@ Detalle completo en [adrs/](adrs/).
 | ADR-009 | Pirámide de tests + golden files de mappers + contract tests + FakeProvider | [ADR-009](adrs/ADR-009-testing-strategy.md) | Accepted |
 | ADR-010 | Moabits: bootstrap explícito de `company_codes` (sin auto-scope por nombre) | [ADR-010](adrs/ADR-010-moabits-explicit-company-codes-bootstrap.md) | Accepted |
 | ADR-011 | Moabits: enrichment v2 por defecto para listado provider-scoped | [ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md) | Accepted |
+| ADR-012 | Routing sync con Arq + Redis, batch details y jobs async | [ADR-012](adrs/ADR-012-routing-sync-and-async-jobs.md) | Accepted — fases A/B/C implementadas |
 
 ---
 
@@ -85,14 +84,14 @@ Detalle en [domain-model.md](domain-model.md) y [context-map.mermaid](context-ma
 3. **Subscription Aggregation** *(nuevo)* — aggregate `Subscription`, `SIM Routing Map`. Sin persistir estado del SIM.
 4. **Provider Integration** *(nuevo, técnico)* — ACL con un adapter por proveedor.
 
-**Aggregate root**: `Subscription` identificado por `iccid`, con value objects `AdministrativeStatus`, `ConnectivityPresence`, `UsageSnapshot`, `UsageMetric`, `CommercialPlan`, `ConsumptionLimit`, y el historial `StatusChange`.
+**Aggregate root**: `Subscription` identificado por `iccid`, con `status` como valor crudo de proveedor, value objects `ConnectivityPresence`, `UsageSnapshot`, `UsageMetric`, `CommercialPlan`, `ConsumptionLimit`, y el historial `StatusChange`.
 
-**Lenguaje ubicuo**: vocabulario de proveedor (`icc`, `lifeCycleStatus`, `simStatus`, `Edit Device Details`, …) **sólo** aparece dentro de un Provider Adapter. El dominio y los routers usan únicamente `iccid`, `AdministrativeStatus`, `ControlOperation`.
+**Lenguaje ubicuo**: vocabulario de proveedor (`icc`, `lifeCycleStatus`, `simStatus`, `Edit Device Details`, …) aparece dentro de Provider Adapters y se expone como `status` cuando representa el estado administrativo del proveedor. El dominio y los routers usan únicamente `iccid`, `status` y `ControlOperation`.
 
 **Decisiones semánticas críticas**:
 - `ControlOperation` — Operación canónica `purge` mapeada por adapters a las APIs proveedoras (p.ej. Kite `networkReset`, Tele2 `Edit Device {status: PURGED}`, Moabits `PUT /api/sim/purge/`). Operaciones no soportadas por el provider de la SIM devuelven `409 UnsupportedOperation`.
 - El contrato expuesto al frontend separa:
-  - campos top-level canónicos (`iccid`, `msisdn`, `imsi`, `status`, `native_status`, `provider`, fechas);
+  - campos top-level (`iccid`, `msisdn`, `imsi`, `status`, `provider`, fechas);
   - `normalized` (bloques homogéneos para UI: `identity`, `status`, `plan`, `customer`, `network`, `hardware`, `services`, `limits`, `dates`, `custom_fields`);
   - `provider_fields` (bloque dinámico de atributos del proveedor para vistas avanzadas);
   - `provider_metrics`/`usage_metrics` (consumo normalizado y métricas nativas).
@@ -139,11 +138,11 @@ Tabla completa en [nfr-analysis.md](nfr-analysis.md).
 |---|---|
 | Performance | P50 ≤ 800 ms, P95 ≤ 3 s, P99 ≤ 8 s (GET iccid) · P95 ≤ 5 s (provider-scoped listing / routing-map page) |
 | Availability | 99.5% mensual; caída de un proveedor no genera 5xx para SIMs de otros |
-| Scalability | 20 concurrentes en 1 worker; horizontal N workers sin cambios de código |
+| Scalability | 20 concurrentes en una instancia API; escalar horizontalmente requiere mover rate limits estrictos a Redis si el TPS de proveedores lo exige |
 | Security | CORS explícito · refresh tokens hasheados · Fernet en credenciales · lifecycle writes auditados · rate limit 60 req/s por tenant pendiente |
 | Observability | `request_id` middleware y `structlog` activos · métricas Prometheus y trazas OTel pendientes |
 | Maintainability | Cobertura 80% global, 90% mappers · import-linter contratos · nuevo provider sin tocar dominio |
-| Cost | 1 servicio, 1 DB, cero brokers; sin fan-out cross-provider por defecto |
+| Cost | 1 servicio API + Postgres + Redis broker + worker async; sin caché de detalles en Redis |
 
 **Blockers ya cerrados**:
 - **NFR-Sec2**: refresh tokens se guardan como sha256.
@@ -285,7 +284,7 @@ Detalle en [patterns-decisions.md D7](patterns-decisions.md) y [ADR-005](adrs/AD
 
 **Palancas de costo**:
 1. **Sin fan-out cross-provider por defecto.** Single-SIM y mutaciones llaman sólo al proveedor resuelto; listados usan listing nativo provider-scoped o una página acotada de `sim_routing_map`.
-2. **Sin infra adicional en MVP**: 1 servicio, 1 Postgres. No Redis, no broker, no cola.
+2. **Infra acotada**: 1 servicio API + Postgres + Redis (broker) + worker async para sync de inventario y exports (ver ADR-012). **No** se introduce caché de detalles en Redis: el detalle sigue siendo proxy puro en vivo (ADR-002 §preservado).
 3. **Rate limit por `company_id`** protege la cuota del tenant y evita que un cliente descontrolado queme su propia cuota o la de otros.
 
 **Drivers de costo a monitorear**:
@@ -308,7 +307,8 @@ Detalle en [patterns-decisions.md D7](patterns-decisions.md) y [ADR-005](adrs/AD
 
 **Cuándo esto deja de ser óptimo**:
 - Si se introducen reportes cross-proveedor → Postgres va a recibir carga grande de lectura → mover a modo agregador (implica invalidar ADR-002).
-- Si se escala a N workers, el cache deja de ser óptimo per-proc → mover a Redis (decisión explícita, no gratis).
+- Si se escala a N workers de API en paralelo, el cache per-proc deja de ser óptimo → mover el cache a Redis (que ya existe como infra desde ADR-012; sigue siendo una decisión explícita y no automática).
+- Si el sync worker (ADR-012) y el tráfico real coexisten en la misma ventana → migrar el rate limiter de in-proc a Redis (ver ADR-005 §revisión 2026-05-25).
 
 ---
 
@@ -344,7 +344,7 @@ Blockers de seguridad (NFR-Sec2, NFR-Sec3):
 - Reorganizar carpetas a paquetes por bounded context (`identity/`, `tenancy/`, `shared/`) sin cambio funcional.
 
 ### Ola 1 — Fundación del dominio de suscripciones (primer proveedor: Kite)
-- DDL: `001_sim_routing_map.sql`, `002_company_provider_credentials.sql`, `003_audit_log.sql`, `004_idempotency_keys.sql`, `005_lifecycle_change_audit.sql`, `006_provider_source_configs.sql`.
+- DDL: `001_sim_routing_map.sql`, `002_company_provider_credentials.sql`, `003_audit_log.sql`, `004_idempotency_keys.sql`, `005_lifecycle_change_audit.sql`, `006_moabits_source_companies.sql`, `007_company_provider_mappings.sql`, `008_sync_jobs.sql`.
 - `app/subscriptions/` con aggregate canónico y use cases implementados en router/helpers.
 - `app/providers/base.py` con Protocol + errores.
 - `app/providers/kite/` completo (client, dto, mappers, adapter) + tests Capa 1 y 2.
@@ -387,7 +387,7 @@ Capturadas durante el proceso; ninguna bloquea el diseño, algunas bloquean impl
 
 ## Next Steps (priorizado, accionable)
 
-> **Nota de estado (2026-05-07)**: esta sección conserva la secuencia original de implementación. Varios puntos de Ola 0/Ola 1 ya están hechos; los pendientes reales están resumidos en `DOCS_CODE_ALIGNMENT_AUDIT.md` y `IMPLEMENTATION_PLAN.md`.
+> **Nota de estado (2026-05-25)**: esta sección conserva la secuencia original de implementación como contexto histórico. Los pendientes reales están resumidos en este documento, `_context_state.json`, `PROVIDER_SPEC_GAPS.md` y ADR-012. Los planes/reportes antiguos se archivaron en `docs/archive/2026-05-provider-remediation/`.
 
 **Orden sugerido de ejecución**:
 

@@ -1,7 +1,7 @@
 # Phase 6 — Análisis de Requisitos No Funcionales (NFR)
 
 > **Regla**: cada requisito tiene un número medible. "Alta disponibilidad" no es un NFR; "99.5% uptime mensual" sí.
-> **Contexto de escala**: 134 612 SIMs, 15–20 usuarios concurrentes, sin batch.
+> **Contexto de escala**: 134 612 SIMs, 15–20 usuarios concurrentes, routing sync nocturno y batch details hasta 200 ICCIDs. No existe almacén canónico de estado de SIM.
 
 ---
 
@@ -24,8 +24,8 @@
 | NFR-Sec5 | Security | **Tenant isolation 100 %**: ningún iccid de otra Company se devuelve | Filtro por `company_id` en `SimRoutingMap`. Tests de isolation obligatorios. | Bug de query = brecha multi-tenant | plan |
 | NFR-Sec6 | Security | **TLS 1.2+ en tránsito; HSTS; no HTTP plano** | Terminación TLS en el orquestador (reverse proxy / PaaS). | Config deploy fuera del scope del código | plan |
 | NFR-Sec7 | Security | **Rate limiting por `company_id`**: ≤ 60 req/s sostenidos por tenant | Token bucket in-memory (`slowapi` o implementación propia). | Un tenant pequeño no debe impactar otro | plan |
-| NFR-O1 | Observability | **100 % de requests con `request_id` propagado end-to-end** (header, logs, audit) | Middleware FastAPI que inyecta/echo `X-Request-ID` en `contextvars`. | — | plan |
-| NFR-O2 | Observability | **Logs JSON estructurados** con: `ts`, `level`, `request_id`, `tenant_id`, `actor_id`, `path`, `provider?`, `operation?`, `latency_ms`, `outcome` | `structlog` o `loguru` + formatter JSON. | Logs viejos no estructurados serán ruido | plan |
+| NFR-O1 | Observability | **100 % de requests con `request_id` propagado end-to-end** (header, logs, audit) | Middleware FastAPI que inyecta/echo `X-Request-ID`. | — | **done** |
+| NFR-O2 | Observability | **Logs JSON estructurados** con: `ts`, `level`, `request_id`, `tenant_id`, `actor_id`, `path`, `provider?`, `operation?`, `latency_ms`, `outcome` | `structlog` + formatter JSON. | Logs viejos no estructurados serán ruido | **partial** |
 | NFR-O3 | Observability | **Métricas Prometheus** expuestas en `/metrics`: `http_requests_total{route,status}`, `provider_request_duration_seconds{provider,operation,outcome}`, `circuit_breaker_state{provider}`, `cache_hit_ratio{provider,operation}` | `prometheus-fastapi-instrumentator` + métricas custom en el adapter base. | — | plan |
 | NFR-O4 | Observability | **Alertas**: breaker abierto > 5 min; error_ratio(provider) > 10 % sobre 5 min; tenant con 429 > 1 % de sus requests; P95 total > 5 s | Config en el sistema de alertas (Grafana/Alertmanager). | Depende del stack de observabilidad del equipo | plan |
 | NFR-O5 | Observability | **Trazas OpenTelemetry** con spans: http request → service → adapter → provider call | `opentelemetry-instrumentation-fastapi` + `opentelemetry-instrumentation-httpx`. Opcional pero recomendado. | — | plan |
@@ -35,17 +35,18 @@
 | NFR-D1 | Data integrity | **SIM Routing Map consistente** con credenciales activas del tenant (si una credencial se desactiva, sus iccids dejan de responder) | Join en SELECT: `routing_map JOIN credentials WHERE active`. | Join performance con 134k rows — trivial | plan |
 | NFR-D2 | Data integrity | **Idempotency-Key evita doble ejecución** en `POST /v1/sims/{iccid}/purge` con TTL 24 h | Tabla `idempotency_keys`. | Cliente viejo no envía key → forzar 400 | plan |
 | NFR-C1 | Cost | **No hacer fan-out cross-provider por defecto**; single-SIM y mutaciones llaman sólo al provider resuelto | `sim_routing_map` + provider-scoped search + caché single-flight para lecturas por ICCID | Un bug en routing dispara discovery/fan-out = cuota × 3 | plan |
-| NFR-C2 | Cost | **Infra API**: 1 servicio, 1 DB, cero colas/brokers | Modular monolith (ADR-001) | — | plan |
+| NFR-C2 | Cost | **Infra API**: 1 servicio API, 1 DB, Redis broker y 1 worker async | Modular monolith + Arq/Redis para routing sync y future exports (ADR-012). Redis no cachea detalles. | Redis/worker agregan operación mínima | **done** |
 
 Leyenda: `done` = implementado. `plan` = a implementar en la primera fase. `blocker` = debe pagarse antes de exponer la API a producción.
 
-### Estado observado al 2026-05-07
+### Estado observado al 2026-05-25
 
 La tabla anterior conserva NFRs objetivo. Contra el código actual:
 
 - `done`: CORS explícito, refresh tokens hasheados, `X-Request-ID`,
   `structlog`, circuit breaker por adapter, `lifecycle_change_audit` para
-  writes de SIM, idempotency keys para `status`/`purge`.
+  writes de SIM, idempotency keys para `status`/`purge`, Redis + Arq worker
+  para routing sync y batch details.
 - `parcial`: timeouts por adapter, aislamiento de fallos, tenant
   isolation, auditoría. El `audit_log` genérico existe, pero falta un
   middleware/decorador que cubra toda mutación y toda denegación 403.

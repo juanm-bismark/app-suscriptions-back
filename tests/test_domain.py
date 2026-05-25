@@ -1,7 +1,5 @@
-"""Unit tests for domain model and status mappings.
+"""Unit tests for domain model value objects.
 
-These tests validate the canonical domain model:
-- AdministrativeStatus enum with all 7 states
 - Subscription aggregate with immutability and provider_fields extensibility
 - ConnectivityPresence and other value objects
 """
@@ -9,33 +7,12 @@ These tests validate the canonical domain model:
 import pytest
 
 from app.subscriptions.domain import (
-    AdministrativeStatus,
     ConnectivityPresence,
     ConnectivityState,
     Subscription,
     UsageMetric,
     UsageSnapshot,
 )
-
-
-class TestAdministrativeStatus:
-    """Test the canonical AdministrativeStatus enum."""
-
-    def test_all_states_exist(self):
-        """All 7 states should be defined."""
-        assert AdministrativeStatus.ACTIVE.value == "active"
-        assert AdministrativeStatus.IN_TEST.value == "in_test"
-        assert AdministrativeStatus.SUSPENDED.value == "suspended"
-        assert AdministrativeStatus.TERMINATED.value == "terminated"
-        assert AdministrativeStatus.PURGED.value == "purged"
-        assert AdministrativeStatus.PENDING.value == "pending"
-        assert AdministrativeStatus.UNKNOWN.value == "unknown"
-
-    def test_enum_string_conversion(self):
-        """Status enum should convert to/from string."""
-        status = AdministrativeStatus("active")
-        assert status == AdministrativeStatus.ACTIVE
-        assert status.value == "active"
 
 
 class TestSubscriptionAggregate:
@@ -47,8 +24,7 @@ class TestSubscriptionAggregate:
             iccid="8934070100000000001",
             msisdn="346000000001",
             imsi="214070000000001",
-            status=AdministrativeStatus.ACTIVE,
-            native_status="ACTIVE",
+            status="ACTIVE",
             provider="moabits",
             company_id="550e8400-0000-0000-0000-000000000001",
             activated_at=None,
@@ -64,8 +40,7 @@ class TestSubscriptionAggregate:
             iccid="8934070100000000001",
             msisdn=None,
             imsi=None,
-            status=AdministrativeStatus.IN_TEST,
-            native_status="Ready",
+            status="Ready",
             provider="tele2",
             company_id="550e8400-0000-0000-0000-000000000001",
             activated_at=None,
@@ -86,8 +61,7 @@ class TestSubscriptionAggregate:
             iccid="8934070100000000001",
             msisdn="346000000001",
             imsi="214070000000001",
-            status=AdministrativeStatus.ACTIVE,
-            native_status="ACTIVE",
+            status="ACTIVE",
             provider="kite",
             company_id="550e8400-0000-0000-0000-000000000001",
             activated_at=None,
@@ -98,8 +72,7 @@ class TestSubscriptionAggregate:
             iccid="8934070100000000001",
             msisdn="346000000001",
             imsi="214070000000001",
-            status=AdministrativeStatus.ACTIVE,
-            native_status="ACTIVE",
+            status="ACTIVE",
             provider="kite",
             company_id="550e8400-0000-0000-0000-000000000001",
             activated_at=None,

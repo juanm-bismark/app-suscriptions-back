@@ -124,6 +124,30 @@ async def test_signup_rejects_duplicate_company_name_before_insert() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authenticated_signup_admin_requires_company_id() -> None:
+    db = _SignupDb()
+
+    with pytest.raises(Exception) as excinfo:
+        await signup(
+            SignupRequest(
+                email="invited@example.com",
+                password="secret",
+                role="member",
+            ),
+            db,
+            Settings(jwt_secret=JWT_SECRET),
+            _admin_profile(),
+        )
+
+    assert getattr(excinfo.value, "status_code", None) == 422
+    assert getattr(excinfo.value, "detail", None) == (
+        "company_id is required when creating a user as admin"
+    )
+    assert db.added == []
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
 async def test_authenticated_signup_normalizes_invited_user_email() -> None:
     db = _SignupDb()
 
@@ -132,6 +156,7 @@ async def test_authenticated_signup_normalizes_invited_user_email() -> None:
             email="  Invited@Example.COM  ",
             password="secret",
             role="member",
+            company_id=COMPANY_ID,
         ),
         db,
         Settings(jwt_secret=JWT_SECRET),

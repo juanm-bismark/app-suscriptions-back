@@ -8,12 +8,14 @@ C4Container
 
   System_Boundary(api_sys, "Subscriptions API (modular monolith)") {
     Container(api_app, "FastAPI App", "Python 3.12 · FastAPI · Uvicorn", "HTTP handlers, routers, middleware (request_id, CORS, auth, problem+json). Single deployable.")
+    Container(worker, "Arq Worker", "Python 3.12 · Arq", "Routing sync jobs, nightly cron scheduler, future exports. Uses adapters; no SIM detail cache.")
     Container(domain, "Subscription Aggregation Module", "Python package", "Aggregate Subscription, services (Fetcher, Search, Purge), Provider Registry. No conoce vocabulario de proveedores.")
     Container(providers, "Provider Adapters", "Python packages (kite, tele2, moabits)", "Anti-Corruption Layer. httpx clients + DTOs + mappers + circuit breaker + provider-specific timeout/limiters.")
     Container(iam, "Identity & Tenancy Module", "Python package", "users, profiles, companies, company_provider_credentials, refresh_tokens, JWT, RBAC, credential resolver (Fernet).")
   }
 
-  SystemDb(pg, "PostgreSQL", "asyncpg · SQLAlchemy 2.0 async", "Tenancy + Identity + SIM Routing Map + provider_source_configs + audit_log + lifecycle_change_audit + idempotency_keys")
+  SystemDb(pg, "PostgreSQL", "asyncpg · SQLAlchemy 2.0 async", "Tenancy + Identity + SIM Routing Map + sync_jobs + provider_source_configs + audit_log + lifecycle_change_audit + idempotency_keys")
+  SystemDb(redis, "Redis", "Redis 7", "Arq broker only. No SIM detail cache.")
 
   System_Ext(kite, "Kite")
   System_Ext(tele2, "Tele2 IoT")
@@ -22,6 +24,10 @@ C4Container
   Rel(user, api_app, "HTTPS /v1/…", "JSON")
   Rel(api_app, iam, "Auth + tenant scope", "in-process")
   Rel(api_app, domain, "Use cases", "in-process")
+  Rel(api_app, redis, "enqueue async jobs", "Arq")
+  Rel(worker, redis, "consume jobs + cron", "Arq")
+  Rel(worker, pg, "sync_jobs + sim_routing_map", "SQL")
+  Rel(worker, providers, "SubscriptionProvider/listing", "in-process")
   Rel(domain, providers, "SubscriptionProvider Protocol", "in-process")
   Rel(domain, pg, "SIM Routing Map, lifecycle audit, idempotency", "SQL")
   Rel(iam, pg, "users, companies, credentials cifradas", "SQL")
