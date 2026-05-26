@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +18,12 @@ from app.providers.base import Provider
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import encrypt_credentials
 from app.shared.errors import BatchTooLarge, DomainError, ProviderResourceNotFound
-from app.subscriptions.domain import Subscription
+from app.subscriptions.domain import (
+    LocationDetail,
+    StatusHistoryRecord,
+    Subscription,
+    SubscriptionSearchFilters,
+)
 from app.subscriptions.routers import sims
 from app.subscriptions.schemas.sim import (
     SimDetailsIn,
@@ -74,12 +80,14 @@ async def _db_override():
     yield object()
 
 
-def _profile(role: AppRole) -> Profile:
-    return Profile(id=USER_ID, company_id=COMPANY_ID, role=role)
+def _profile(role: AppRole, company_id: uuid.UUID | None = COMPANY_ID) -> Profile:
+    return Profile(id=USER_ID, company_id=company_id, role=role)
 
 
 def _client(
-    role: AppRole, registry: ProviderRegistry | _Registry | None = None
+    role: AppRole,
+    registry: ProviderRegistry | _Registry | None = None,
+    company_id: uuid.UUID | None = COMPANY_ID,
 ) -> TestClient:
     app = FastAPI()
 
@@ -88,10 +96,11 @@ def _client(
         return JSONResponse(
             status_code=exc.http_status,
             content={"code": exc.code, "detail": exc.detail, **exc.extra},
-        )
+    )
 
     app.include_router(sims.router, prefix="/v1")
-    app.dependency_overrides[get_current_profile] = lambda: _profile(role)
+    app.include_router(sims.admin_router, prefix="/v1")
+    app.dependency_overrides[get_current_profile] = lambda: _profile(role, company_id)
     app.dependency_overrides[get_db] = _db_override
     app.dependency_overrides[get_settings] = lambda: Settings()
     app.dependency_overrides[sims.get_registry] = lambda: (
@@ -160,6 +169,509 @@ def test_tele2_bootstrap_filters_include_default_modified_since() -> None:
 
     assert filters.modified_since is not None
     assert filters.modified_since.tzinfo == UTC
+
+
+def test_stats_data_service_query_bool_parsing(monkeypatch) -> None:
+    seen: list[bool | None] = []
+
+    async def _collect_provider_stats(
+        provider_name,
+        filters,
+        company_id,
+        db,
+        settings,
+        registry,
+        stale_threshold,
+    ):
+        seen.append(filters.data_service)
+        return (
+            {
+                "total": 0,
+                "by_status": {},
+                "by_status_group": {},
+                "stale_lu_count": 0,
+            },
+            False,
+        )
+
+    monkeypatch.setattr(sims, "_collect_provider_stats", _collect_provider_stats)
+    client = _client(AppRole.member)
+
+    cases = [
+        ("/v1/sims/stats?provider=moabits&data_service=true", True),
+        ("/v1/sims/stats?provider=moabits&data_service=false", False),
+        ("/v1/sims/stats?provider=moabits&data_service=", None),
+        ("/v1/sims/stats?provider=moabits", None),
+    ]
+    for url, expected in cases:
+        response = client.get(url)
+        assert response.status_code == 200
+        assert seen[-1] is expected
+
+    assert seen == [True, False, None, None]
+
+
+def test_get_sim_stats_returns_aggregated_provider_counts(monkeypatch) -> None:
+    seen: list[tuple[str, str | None, dict[str, str]]] = []
+
+    async def _collect_provider_stats(
+        provider_name,
+        filters,
+        company_id,
+        db,
+        settings,
+        registry,
+        stale_threshold,
+    ):
+        seen.append((provider_name, filters.operator, filters.custom))
+        return (
+            {
+                "total": 3,
+                "by_status": {"Active": 2, "Suspended": 1},
+                "by_status_group": {"active_like": 2, "suspended_like": 1},
+                "stale_lu_count": 1,
+            },
+            False,
+        )
+
+    monkeypatch.setattr(sims, "_collect_provider_stats", _collect_provider_stats)
+    client = _client(AppRole.member)
+
+    response = client.get(
+        "/v1/sims/stats?provider=moabits&operator=Claro&custom=product_name%3DFull"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 3
+    assert body["by_status"] == {"Active": 2, "Suspended": 1}
+    assert body["by_status_group"] == {"active_like": 2, "suspended_like": 1}
+    assert body["stale_lu_count"] == 1
+    assert body["provider"] == "moabits"
+    assert body["partial"] is False
+    assert body["failed_providers"] == []
+    assert seen == [("moabits", "Claro", {"product_name": "Full"})]
+
+
+def test_admin_list_sims_iterates_active_credentials(monkeypatch) -> None:
+    company_a = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+    company_b = uuid.UUID("00000000-0000-0000-0000-0000000000b2")
+    rows = [
+        SimpleNamespace(company_id=company_a, provider="moabits"),
+        SimpleNamespace(company_id=company_b, provider="moabits"),
+    ]
+    calls: list[tuple[str, int]] = []
+
+    async def _active_rows(db, provider=None):
+        assert provider == Provider.MOABITS
+        return rows
+
+    async def _credentials(company_id, provider, db, settings):
+        return {"company_id": str(company_id)}
+
+    class _Adapter:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            calls.append((credentials["company_id"], limit))
+            return (
+                [
+                    Subscription(
+                        iccid=f"iccid-{credentials['company_id'][-2:]}",
+                        msisdn=None,
+                        imsi=None,
+                        status="Active",
+                        provider="moabits",
+                        company_id=credentials["company_id"],
+                        activated_at=None,
+                        updated_at=None,
+                    )
+                ],
+                None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            assert provider == "moabits"
+            return _Adapter()
+
+    monkeypatch.setattr(sims, "_active_admin_credential_rows", _active_rows)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    client = _client(AppRole.admin, registry=_Registry(), company_id=None)
+
+    response = client.get("/v1/admin/sims?provider=moabits&limit=20")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["company_id"] for item in body["items"]] == [
+        str(company_a),
+        str(company_b),
+    ]
+    assert body["provider_statuses"] == [
+        {
+            "provider": "moabits",
+            "status": "ok",
+            "count": 2,
+            "code": None,
+            "title": None,
+        }
+    ]
+    assert calls == [(str(company_a), 10), (str(company_b), 10)]
+
+
+def test_admin_sims_requires_admin_role() -> None:
+    client = _client(AppRole.manager)
+
+    response = client.get("/v1/admin/sims")
+
+    assert response.status_code == 403
+
+
+def test_admin_search_sims_applies_common_filters_across_credentials(
+    monkeypatch,
+) -> None:
+    company_a = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+    rows = [SimpleNamespace(company_id=company_a, provider="moabits")]
+    seen_operator: list[str | None] = []
+
+    async def _active_rows(db, provider=None):
+        assert provider == Provider.MOABITS
+        return rows
+
+    async def _credentials(company_id, provider, db, settings):
+        return {"company_id": str(company_id)}
+
+    class _Adapter:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            seen_operator.append(filters.operator)
+            return (
+                [
+                    Subscription(
+                        iccid="iccid-claro",
+                        msisdn=None,
+                        imsi=None,
+                        status="Active",
+                        provider="moabits",
+                        company_id=credentials["company_id"],
+                        activated_at=None,
+                        updated_at=None,
+                        provider_fields={"operator": "Claro Colombia"},
+                    )
+                ],
+                None,
+            )
+
+    class _Registry:
+        def get(self, provider):
+            assert provider == "moabits"
+            return _Adapter()
+
+    monkeypatch.setattr(sims, "_active_admin_credential_rows", _active_rows)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    client = _client(AppRole.admin, registry=_Registry(), company_id=None)
+
+    response = client.post(
+        "/v1/admin/sims/search",
+        json={
+            "limit": 25,
+            "common": {"operator": "Claro"},
+            "providers": {"moabits": {}},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["iccid"] for item in body["items"]] == ["iccid-claro"]
+    assert seen_operator == ["Claro"]
+
+
+def test_admin_sim_stats_aggregates_active_credentials(monkeypatch) -> None:
+    company_a = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+    company_b = uuid.UUID("00000000-0000-0000-0000-0000000000b2")
+    rows = [
+        SimpleNamespace(company_id=company_a, provider="moabits"),
+        SimpleNamespace(company_id=company_b, provider="moabits"),
+    ]
+    seen_companies: list[str] = []
+
+    async def _active_rows(db, provider=None):
+        assert provider == Provider.MOABITS
+        return rows
+
+    async def _credentials(company_id, provider, db, settings):
+        return {"company_id": str(company_id)}
+
+    async def _collect_with_credentials(
+        provider_name,
+        filters,
+        adapter,
+        creds,
+        stale_threshold,
+    ):
+        seen_companies.append(creds["company_id"])
+        return (
+            {
+                "total": 2,
+                "by_status": {"Active": 1, "Suspended": 1},
+                "by_status_group": {"active_like": 1, "suspended_like": 1},
+                "stale_lu_count": 1,
+            },
+            False,
+        )
+
+    class _Adapter:
+        async def list_subscriptions(self, credentials, *, cursor, limit, filters):
+            return [], None
+
+    class _Registry:
+        def get(self, provider):
+            assert provider == "moabits"
+            return _Adapter()
+
+    monkeypatch.setattr(sims, "_active_admin_credential_rows", _active_rows)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(
+        sims,
+        "_collect_provider_stats_with_credentials",
+        _collect_with_credentials,
+    )
+    client = _client(AppRole.admin, registry=_Registry(), company_id=None)
+
+    response = client.get("/v1/admin/sims/stats?provider=moabits")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 4
+    assert body["by_status"] == {"Active": 2, "Suspended": 2}
+    assert body["stale_lu_count"] == 2
+    assert body["partial"] is False
+    assert seen_companies == [str(company_a), str(company_b)]
+
+
+def test_get_status_history_endpoint_calls_capability_and_serializes(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, dict, datetime | None, datetime | None]] = []
+    record_time = datetime(2026, 5, 20, 10, 30, tzinfo=UTC)
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    end = datetime(2026, 5, 21, tzinfo=UTC)
+
+    class _HistoryAdapter:
+        async def get_status_history(
+            self,
+            iccid,
+            credentials,
+            *,
+            start_date=None,
+            end_date=None,
+        ):
+            calls.append((iccid, credentials, start_date, end_date))
+            return [
+                StatusHistoryRecord(
+                    state="ACTIVE",
+                    automatic=False,
+                    time=record_time,
+                    reason="manual activation",
+                    user="operator@example.com",
+                )
+            ]
+
+    async def _resolve(*args, **kwargs):
+        return SimpleNamespace(provider="kite", iccid="routed-iccid"), None
+
+    async def _credentials(*args, **kwargs):
+        return {"token": "secret"}
+
+    monkeypatch.setattr(sims, "_resolve_routing_or_discover", _resolve)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    client = _client(AppRole.member, _Registry(_HistoryAdapter()))
+
+    response = client.get(
+        "/v1/sims/requested-iccid/status-history",
+        params={"start_date": start.isoformat(), "end_date": end.isoformat()},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["iccid"] == "requested-iccid"
+    assert body["period_start"] == start.isoformat().replace("+00:00", "Z")
+    assert body["period_end"] == end.isoformat().replace("+00:00", "Z")
+    assert body["records"] == [
+        {
+            "state": "ACTIVE",
+            "automatic": False,
+            "time": record_time.isoformat().replace("+00:00", "Z"),
+            "reason": "manual activation",
+            "user": "operator@example.com",
+        }
+    ]
+    assert calls == [("routed-iccid", {"token": "secret"}, start, end)]
+
+
+def test_get_location_endpoint_calls_capability_and_sanitizes_raw(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    timestamp = datetime(2026, 5, 20, 10, 30, tzinfo=UTC)
+
+    class _LocationAdapter:
+        async def get_location(self, iccid, credentials):
+            calls.append((iccid, credentials))
+            return LocationDetail(
+                iccid=iccid,
+                latitude=Decimal("4.7110"),
+                longitude=Decimal("-74.0721"),
+                accuracy_m=Decimal("12.5"),
+                timestamp=timestamp,
+                source="automatic",
+                raw={"provider_secret": "must-not-leak"},
+            )
+
+    async def _resolve(*args, **kwargs):
+        return SimpleNamespace(provider="tele2", iccid="routed-iccid"), None
+
+    async def _credentials(*args, **kwargs):
+        return {"token": "secret"}
+
+    monkeypatch.setattr(sims, "_resolve_routing_or_discover", _resolve)
+    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    client = _client(AppRole.member, _Registry(_LocationAdapter()))
+
+    response = client.get("/v1/sims/requested-iccid/location")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "iccid": "routed-iccid",
+        "latitude": "4.7110",
+        "longitude": "-74.0721",
+        "accuracy_m": "12.5",
+        "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+        "source": "automatic",
+    }
+    assert "raw" not in body
+    assert calls == [("routed-iccid", {"token": "secret"})]
+
+
+def test_post_filters_match_operator_services_and_lu() -> None:
+    subs = [
+        Subscription(
+            iccid="1",
+            msisdn=None,
+            imsi="imsi-1",
+            status="Active",
+            provider="moabits",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=None,
+            provider_fields={
+                "operator": "Claro Colombia",
+                "data_service": "Enabled",
+                "sms_service": "Disabled",
+                "last_lu": "2026-05-01T00:00:00Z",
+            },
+        ),
+        Subscription(
+            iccid="2",
+            msisdn=None,
+            imsi="imsi-2",
+            status="Active",
+            provider="moabits",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=None,
+            provider_fields={
+                "operator": "Telefonica",
+                "data_service": "Disabled",
+                "sms_service": "Enabled",
+                "last_lu": "2026-02-01T00:00:00Z",
+            },
+        ),
+    ]
+
+    filtered = sims._apply_post_filters(
+        subs,
+        SubscriptionSearchFilters(
+            operator="claro",
+            data_service=True,
+            sms_service=False,
+            last_lu_since=datetime(2026, 4, 1, tzinfo=UTC),
+        ),
+    )
+
+    assert [sub.iccid for sub in filtered] == ["1"]
+
+
+def test_post_filters_match_provider_specific_custom_fields() -> None:
+    subs = [
+        Subscription(
+            iccid="kite-1",
+            msisdn=None,
+            imsi="imsi-1",
+            status="Active",
+            provider="kite",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=None,
+            provider_fields={
+                "alias": "Truck 01",
+                "commercial_group": "Fleet",
+                "custom_field_1": "North",
+            },
+        ),
+        Subscription(
+            iccid="tele2-1",
+            msisdn=None,
+            imsi="imsi-2",
+            status="Active",
+            provider="tele2",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=None,
+            provider_fields={
+                "rate_plan": "Gold data",
+                "communication_plan": "LTE-M",
+                "account_custom_1": "Logistics",
+            },
+        ),
+        Subscription(
+            iccid="moabits-1",
+            msisdn=None,
+            imsi="imsi-3",
+            status="Active",
+            provider="moabits",
+            company_id=str(COMPANY_ID),
+            activated_at=None,
+            updated_at=None,
+            provider_fields={
+                "product_name": "Full Pack 15MB",
+                "autorenewal": "Yes",
+                "data_limit_mb": "15",
+            },
+        ),
+    ]
+
+    assert [
+        sub.iccid
+        for sub in sims._apply_post_filters(
+            subs,
+            SubscriptionSearchFilters(custom={"alias": "truck", "customField1": "north"}),
+        )
+    ] == ["kite-1"]
+    assert [
+        sub.iccid
+        for sub in sims._apply_post_filters(
+            subs,
+            SubscriptionSearchFilters(
+                custom={"rate_plan": "gold", "accountCustom1": "logistics"}
+            ),
+        )
+    ] == ["tele2-1"]
+    assert [
+        sub.iccid
+        for sub in sims._apply_post_filters(
+            subs,
+            SubscriptionSearchFilters(custom={"product_name": "full", "autorenewal": "true"}),
+        )
+    ] == ["moabits-1"]
 
 
 @pytest.mark.asyncio

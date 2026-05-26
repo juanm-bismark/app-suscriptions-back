@@ -29,12 +29,16 @@ def test_provider_capabilities_exposes_minimum_contract() -> None:
         "set_administrative_status",
         "purge",
         "status_history",
+        "sms_history",
+        "location",
         "aggregated_usage",
         "plan_catalog",
         "quota_management",
     }
     assert body["capabilities"]["purge"]["status"] == "supported"
     assert body["capabilities"]["status_history"]["status"] == "supported"
+    assert body["capabilities"]["location"]["status"] == "supported"
+    assert body["capabilities"]["sms_history"]["status"] == "not_supported"
     assert body["capabilities"]["set_administrative_status"]["targets"] == [
         "ACTIVE",
         "TEST",
@@ -51,6 +55,8 @@ def test_tele2_capability_targets_are_provider_native_values() -> None:
 
     assert response.status_code == 200
     capabilities = response.json()["capabilities"]
+    assert capabilities["location"]["status"] == "supported"
+    assert capabilities["status_history"]["status"] == "not_supported"
     assert capabilities["set_administrative_status"]["targets"] == [
         "ACTIVATED",
         "TEST_READY",
@@ -77,6 +83,8 @@ def test_moabits_purge_capability_supported_when_writes_enabled() -> None:
     assert status_write["status"] == "supported"
     assert "active/" in status_write["reason"]
     assert status_write["targets"] == ["active", "suspended"]
+    assert response.json()["capabilities"]["sms_history"]["status"] == "supported"
+    assert response.json()["capabilities"]["location"]["status"] == "not_supported"
 
 
 def test_moabits_purge_capability_requires_feature_flag_when_writes_disabled() -> None:

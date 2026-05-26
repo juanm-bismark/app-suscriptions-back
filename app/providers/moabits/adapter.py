@@ -23,16 +23,26 @@ Usage snapshot exposes Moabits-specific raw fields under provider_metrics:
     iccid, active_sim (bool|None), sms_mo (int|None), sms_mt (int|None),
     data_mb (int|None — Moabits returns data in MB).
 
+Moabits has two public API surfaces. The adapter prefers Gateway API v2
+`GET /api/v2/sim/{iccidList}` for single-SIM reads because that endpoint returns
+the SIM with its detail fields and some accounts no longer serve v1 `details`;
+v1 still provides auth, company listing, usage, SMS history, service status, and
+the canonical purge fallback.
+
+Current product scope is read-heavy: SIM views use GET calls, and the only new
+canonical control operation is purge. Legacy active/suspend service writes are
+kept behind the lifecycle feature flag for compatibility.
+
 Orion API 2.0.0 paths used here are documented in the public Swagger:
     GET /integrity/authorization-token
     GET /api/company/childs/{companyCode}
-    GET /api/sim/details/{iccidList}
+    GET /api/sim/details/{iccidList}               (legacy fallback; v2 SIM read is preferred)
     GET /api/sim/serviceStatus/{iccidList}
     GET /api/usage/simUsage
     GET /api/company/simList/{companyCodes}
     GET /api/company/simListDetail/{companyCodes}
     GET /api/sim/connectivityStatus/{iccidList}
-    GET /api/v2/sim/{iccidList}                 (v2, X-API-KEY directly)
+    GET /api/v2/sim/{iccidList}                 (v2 SIM read, X-API-KEY directly)
     GET /api/v2/sim/connectivity/{iccidList}    (v2, X-API-KEY directly)
     PUT /api/sim/active/
     PUT /api/sim/suspend/
@@ -46,7 +56,7 @@ import dataclasses
 import json
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -68,6 +78,7 @@ from app.shared.errors import (
 from app.subscriptions.domain import (
     ConnectivityPresence,
     ConnectivityState,
+    SmsHistoryRecord,
     Subscription,
     SubscriptionSearchFilters,
     UsageMetric,
@@ -640,7 +651,10 @@ def _v2_enrichment_cache_store(
 async def _v2_fetch_details_chunk(
     base_url: str, x_api_key: str, iccids: list[str], timeout: float
 ) -> dict[str, dict[str, Any]]:
-    """Fetch a single batch of v2 sim details. Returns {iccid: simInfo row}.
+    """Fetch one batch from v2 getSimDetails (`/api/v2/sim/{iccidList}`).
+
+    Returns {iccid: simInfo row}. There is no separate v2 `/details` route; this
+    SIM read endpoint carries the detail fields.
 
     404 from v2 means none of the iccids in the batch exist there → {}.
     """
@@ -704,7 +718,7 @@ async def _fetch_v2_enrichment(
     iccids: list[str],
     settings: _V2Settings,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Fetch v2 details + connectivity in parallel, chunked, with graceful degradation.
+    """Fetch v2 SIM records + connectivity in parallel, chunked, with graceful degradation.
 
     Failures (timeouts, 5xx, 401, 403, rate limits) are logged and produce an
     empty map for the affected chunk, plus any rows found in the short-lived
@@ -836,7 +850,7 @@ def _apply_v2_connectivity(pf: dict[str, Any], conn: dict[str, Any]) -> None:
     Keys here align with the `network.*` block built in
     `app/subscriptions/routers/sims.py::_normalized_subscription`. Empty
     strings and None are dropped so a partial payload does not overwrite
-    information already supplied by v1 or v2 detail.
+    information already supplied by v1 or the v2 SIM read.
     """
     for src, dst in _V2_CONNECTIVITY_FIELD_MAP.items():
         v = conn.get(src)
@@ -864,12 +878,12 @@ def _build_listing_subscription(
     Layering rules:
     - v1 is the authoritative source of `simStatus` and current service flags
       (dataService/smsService) — the active-state view.
-    - v2 detail provides identity (msisdn, imsi, imei), plan, customer, dates.
+    - v2 SIM read provides identity (msisdn, imsi, imei), plan, customer, dates.
       If absent, the Subscription stays at `detail_level=summary`.
     - v2 connectivity provides real-time network info. If absent, network.*
       stays empty; callers must not assume it.
     - `services` (active list) is derived from v1's enabled/disabled flags, not
-      from v2 detail's administrative `services` string. v2's `services_raw` is
+      from v2 SIM read's administrative `services` string. v2's `services_raw` is
       kept under provider_fields for inspection.
 
     `v2_attempted=False` means the v2 enrichment flag is off; in that case the
@@ -1048,14 +1062,58 @@ class MoabitsAdapter(BaseAdapter):
         self, iccid: str, credentials: dict[str, Any]
     ) -> Subscription:
         creds = _creds(credentials)
-        # getSimDetails and getServiceStatus in parallel — both needed for a full view.
-        details_coro = _get(creds, f"/api/sim/details/{iccid}")
-        status_coro = _get(creds, f"/api/sim/serviceStatus/{iccid}")
-        details_result: dict[str, Any] | BaseException
-        status_result: dict[str, Any] | BaseException
-        details_result, status_result = await asyncio.gather(
-            details_coro, status_coro, return_exceptions=True
+        v2_settings = _v2_settings_from_app_settings()
+        try:
+            status_result: dict[str, Any] | BaseException = await _get(
+                creds, f"/api/sim/serviceStatus/{iccid}"
+            )
+        except Exception as exc:
+            status_result = exc
+        detail_map: dict[str, dict[str, Any]] = {}
+        conn_map: dict[str, dict[str, Any]] = {}
+        if v2_settings.enabled:
+            detail_map, conn_map = await _fetch_v2_enrichment(
+                v2_base_url=v2_settings.base_url,
+                x_api_key=creds.x_api_key,
+                iccids=[iccid],
+                settings=v2_settings,
+            )
+
+        status_data: dict[str, Any] = {}
+        if isinstance(status_result, Exception):
+            logger.warning(
+                "moabits_status_lookup_failed",
+                iccid=iccid,
+                error=str(status_result),
+            )
+        else:
+            status_data = cast(dict[str, Any], status_result)
+        sim_status_row: dict[str, Any] | None = _first_from(
+            status_data, "info", "iccidList"
         )
+
+        v2_detail = detail_map.get(iccid)
+        v2_connectivity = conn_map.get(iccid)
+        if v2_detail is not None or v2_connectivity is not None:
+            v1_row = {"iccid": iccid}
+            if sim_status_row:
+                v1_row.update(sim_status_row)
+            return _build_listing_subscription(
+                v1_row=v1_row,
+                v2_detail=v2_detail,
+                v2_connectivity=v2_connectivity,
+                v2_attempted=v2_settings.enabled,
+                company_id=credentials.get("company_id", ""),
+            )
+
+        # Legacy v1 details is a fallback only. Some Moabits accounts no longer
+        # serve this endpoint, while v2 /api/v2/sim/{iccidList} returns the SIM.
+        try:
+            details_result: dict[str, Any] | BaseException = await _get(
+                creds, f"/api/sim/details/{iccid}"
+            )
+        except Exception as exc:
+            details_result = exc
 
         if isinstance(details_result, Exception) and isinstance(status_result, Exception):
             raise details_result
@@ -1068,20 +1126,8 @@ class MoabitsAdapter(BaseAdapter):
             details_data = {}
         else:
             details_data = cast(dict[str, Any], details_result)
-        if isinstance(status_result, Exception):
-            logger.warning(
-                "moabits_status_lookup_failed",
-                iccid=iccid,
-                error=str(status_result),
-            )
-            status_data = {}
-        else:
-            status_data = cast(dict[str, Any], status_result)
 
         sim_info: dict[str, Any] = _first_from(details_data, "info", "simInfo") or {}
-        sim_status_row: dict[str, Any] | None = _first_from(
-            status_data, "info", "iccidList"
-        )
 
         return _build_subscription(
             sim_info, sim_status_row, iccid, credentials.get("company_id", "")
@@ -1278,6 +1324,100 @@ class MoabitsAdapter(BaseAdapter):
             raise ProviderValidationError(
                 detail="Moabits purge did not confirm info.purged=true"
             )
+
+    async def get_sms_history(
+        self,
+        iccid: str,
+        credentials: dict[str, Any],
+        *,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> list[SmsHistoryRecord]:
+        return await self._call_with_breaker(
+            self._get_sms_history_impl, iccid, credentials, start_date, end_date
+        )
+
+    async def _get_sms_history_impl(
+        self,
+        iccid: str,
+        credentials: dict[str, Any],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> list[SmsHistoryRecord]:
+        # Orion v1 `getSmsHistory` returns SMS records account-wide for a date
+        # range (max 3 months). Each record carries `iccids[]`, so the adapter
+        # filters in-memory for the requested SIM.
+        # Path confirmed against Orion API 2.0.0 Swagger UI at
+        # https://www.api.myorion.co/api-doc/ (`GET /api/sms/history`).
+        if end_date < start_date:
+            raise ProviderValidationError(detail="end_date must be after start_date")
+        if end_date - start_date > timedelta(days=92):
+            raise ProviderValidationError(
+                detail="Moabits SMS history range cannot exceed 3 months"
+            )
+        creds = _creds(credentials)
+        fmt = "%Y-%m-%d %H:%M:%S"
+        data = await _get(
+            creds,
+            "/api/sms/history",
+            params={
+                "initialDate": start_date.strftime(fmt),
+                "finalDate": end_date.strftime(fmt),
+            },
+        )
+        info = data.get("info") if isinstance(data, dict) else None
+        rows: list[Any] = []
+        if isinstance(info, dict):
+            raw = info.get("SMSList") or info.get("smsList") or info.get("messages")
+            if isinstance(raw, list):
+                rows = raw
+        elif isinstance(data, dict):
+            raw = data.get("SMSList") or data.get("smsList") or data.get("messages")
+            if isinstance(raw, list):
+                rows = raw
+        elif isinstance(data, list):
+            rows = data
+
+        records: list[SmsHistoryRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            iccids_field = row.get("iccids")
+            if isinstance(iccids_field, list):
+                if iccid not in (str(x) for x in iccids_field):
+                    continue
+            elif iccids_field is not None and str(iccids_field) != iccid:
+                continue
+
+            raw_date = row.get("date")
+            try:
+                msg_date = (
+                    datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                    if raw_date
+                    else datetime.now(tz=UTC)
+                )
+            except ValueError:
+                continue
+
+            sms_type_raw = str(row.get("smsType") or "").upper()
+            sms_type = "MT" if "MT" in sms_type_raw else "MO"
+
+            gw = row.get("SMSGWDELIVERY")
+            sc = row.get("SMSCDELIVERY")
+
+            records.append(
+                SmsHistoryRecord(
+                    iccid=iccid,
+                    date=msg_date,
+                    message=str(row.get("message") or ""),
+                    sms_type=sms_type,
+                    gateway_delivered=_coerce_bool(gw) if gw is not None else None,
+                    sms_center_delivered=_coerce_bool(sc) if sc is not None else None,
+                )
+            )
+
+        records.sort(key=lambda r: r.date, reverse=True)
+        return records
 
     def supports_list_filter(self, filter_name: str) -> bool:
         return filter_name == "iccid"

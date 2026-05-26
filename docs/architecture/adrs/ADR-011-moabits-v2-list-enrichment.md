@@ -16,13 +16,21 @@ Moabits del listado salen como `detail_level=summary` y muchos campos de
 
 Orion Gateway API v2 expone endpoints bulk por lista de ICCIDs:
 
-- `GET /api/v2/sim/{iccidList}` para identidad, plan, cliente y fechas.
+- `GET /api/v2/sim/{iccidList}` para traer la SIM con sus campos de identidad,
+  plan, cliente y fechas. El Swagger llama a esta operación `getSimDetails`,
+  pero no existe una ruta v2 separada `/details`.
 - `GET /api/v2/sim/connectivity/{iccidList}` para conectividad en tiempo
   real.
 
-La API v2 autentica con `X-API-KEY` directo. No documenta un endpoint de
-listing por `companyCode`, por lo que no reemplaza a `simList` v1 como
-fuente del universo de SIMs.
+La API v2 autentica con `X-API-KEY` directo.
+
+Nota de reconciliación Swagger: el Swagger v2 actual sí documenta `GET
+/api/v2/company/sim-list/{companyCodes}` y `GET
+/api/v2/company/sim-list-detail/{companyCodes}`. Esta ADR mantiene v1 como
+fuente operativa porque fue la ruta confirmada al implementar el enrichment y
+porque sus campos/status ya están mapeados en producción. Migrar el universo de
+SIMs a los listados v2 debe tratarse como una decisión nueva con smoke tests
+contra credenciales reales.
 
 ## Decisión
 
@@ -44,13 +52,13 @@ El flujo implementado es:
 5. Cada SIM se arma por merge:
    - v1 manda para `simStatus`, `dataService`, `smsService` y lista de
      servicios activos.
-   - v2 detail aporta `msisdn`, `imsi`, `imei`, `product_*`,
+   - v2 `GET /api/v2/sim/{iccidList}` aporta `msisdn`, `imsi`, `imei`, `product_*`,
      `clientName`, `companyCode`, límites y fechas.
    - v2 connectivity aporta `operator`, `country`, `rat_type`,
      `ip_address`, `mcc`, `mnc`, `data_session_id`,
      `session_started_at`, `usage_kb` y campos relacionados.
 
-El enrichment es degradable: un fallo de v2 detail o connectivity se
+El enrichment es degradable: un fallo de la lectura v2 de SIM o de connectivity se
 registra en logs estructurados y produce mapas vacíos para ese batch; el
 endpoint sigue devolviendo las SIMs de v1.
 
@@ -64,9 +72,9 @@ Valores actuales en `app/config.py`:
 | `MOABITS_V2_BASE_URL` | `https://apiv2.myorion.co` | Host v2 global |
 | `MOABITS_V2_MAX_BATCH` | `125` | ICCIDs por request v2 |
 | `MOABITS_V2_MAX_CONCURRENT_CHUNKS` | `2` | Concurrencia máxima de chunks |
-| `MOABITS_V2_DETAIL_TIMEOUT_SECONDS` | `20.0` | Timeout de detail |
+| `MOABITS_V2_DETAIL_TIMEOUT_SECONDS` | `20.0` | Timeout de `GET /api/v2/sim/{iccidList}` |
 | `MOABITS_V2_CONNECTIVITY_TIMEOUT_SECONDS` | `15.0` | Timeout de connectivity |
-| `MOABITS_V2_ENRICHMENT_CACHE_TTL_SECONDS` | `30.0` | Cache corto por ICCID para detail/connectivity |
+| `MOABITS_V2_ENRICHMENT_CACHE_TTL_SECONDS` | `30.0` | Cache corto por ICCID para SIM/connectivity |
 
 El código actual reutiliza `x_api_key` de la credencial Moabits v1 para
 v2. No existe todavía `x_api_key_v2` ni `base_url_v2` dentro de
@@ -79,11 +87,12 @@ Implementado en:
 - `app/config.py`: flags y timeouts `MOABITS_V2_*`.
 - `app/providers/moabits/adapter.py`: `_v2_get`,
   `_v2_fetch_details_chunk`, `_v2_fetch_connectivity_chunk`,
-  `_fetch_v2_enrichment` y merge en `list_subscriptions`.
+  `_fetch_v2_enrichment`, merge en `list_subscriptions`, y preferencia v2 en
+  `get_subscription` con fallback legacy a v1 `/api/sim/details/{iccidList}`.
 - `tests/providers/test_moabits_adapter.py`: cobertura para full
-  enrichment, flag apagado, detail 404, connectivity 5xx, ambos v2
-  fallando, subset de ICCIDs ausentes, chunking y uso directo de
-  `X-API-KEY`.
+  enrichment, flag apagado, SIM read 404, connectivity 5xx, ambos v2
+  fallando, subset de ICCIDs ausentes, chunking, uso directo de `X-API-KEY`, y
+  detalle single-SIM v2-first.
 
 Pendientes conocidos:
 
@@ -92,9 +101,9 @@ Pendientes conocidos:
 - Confirmar rate limit y batch máximo real. Swagger declara
   `iccidList.maxLength=4000`, pero no documenta cuota ni cantidad máxima
   de ICCIDs.
-- El adapter hoy mapea `smsLimit` legacy a `provider_fields.sms_limit`,
-  pero no conserva todavía `smsLimitMo` / `smsLimitMt` v2 como campos
-  separados. La documentación del contrato v2 sí los menciona.
+- El adapter conserva `smsLimitMo` / `smsLimitMt` v2 como
+  `provider_fields.sms_limit_mo` / `provider_fields.sms_limit_mt`; si no hay
+  `smsLimit`, expone `sms_limit` como suma de ambos.
 - `_normalized_subscription` no expone todavía `usage_kb`,
   `data_session_id`, `mcc`, `mnc`, `charge_towards` ni
   `session_started_at` como campos canónicos; permanecen en
@@ -102,7 +111,7 @@ Pendientes conocidos:
 - Los fallos de v2 no se propagan a `SimListOut.partial` ni
   `failed_providers`; la degradación es por SIM mediante
   `provider_fields.enrichment_status` y logs.
-- No hay `provider_call_audit` para `enrich_sim_v2_detail` ni
+- No hay `provider_call_audit` para `enrich_sim_v2_read` ni
   `enrich_sim_v2_connectivity`; PR-15 sigue pendiente.
 
 ## Consecuencias
@@ -117,7 +126,7 @@ Pendientes conocidos:
 **Negativas / mitigaciones**
 - El listado puede tardar más cuando el flag está activo.
   - Mitigación: timeouts separados y degradación a v1.
-- La concurrencia duplica llamadas por chunk (detail + connectivity).
+- La concurrencia duplica llamadas por chunk (`GET /api/v2/sim/{iccidList}` + connectivity).
   - Mitigación: semáforo global por request y batch configurable.
 - La respuesta canónica `partial=false` puede ocultar degradaciones v2 a
   consumidores que no inspeccionen `provider_fields.enrichment_status`.
@@ -127,8 +136,11 @@ Pendientes conocidos:
 ## Alternativas Consideradas
 
 1. **Reemplazar v1 por v2**
-   - Rechazada: v2 recibe ICCIDs, no `companyCode`; no puede descubrir el
-     universo de SIMs.
+   - Rechazada en esta ADR: al momento de decisión, el flujo v1 era el contrato
+     confirmado para descubrir SIMs por compañía. El Swagger v2 actual ya
+     documenta listados por `companyCodes`, pero migrar a ellos requiere una
+     validación separada de shape, permisos, paginación implícita y paridad de
+     status/services.
 
 2. **Enrichment background con persistencia local**
    - Rechazada por ADR-002: el sistema es proxy en tiempo real y no debe
@@ -141,8 +153,9 @@ Pendientes conocidos:
 
 ## Cuándo Revisar
 
-- Si Moabits publica un listing v2 por cliente/company que permita
-  reemplazar `GET /api/company/simList/{companyCode}`.
+- Si se valida en ambiente real que `GET /api/v2/company/sim-list/{companyCodes}`
+  y `GET /api/v2/company/sim-list-detail/{companyCodes}` pueden reemplazar el
+  universo v1 sin perder status/services ni romper permisos por tenant.
 - Si la latencia del listado enriquecido supera el SLO de UX.
 - Si Moabits confirma que v2 requiere una API key distinta por tenant.
 - Si producto necesita visibilidad explícita de degradaciones v2 en

@@ -36,6 +36,7 @@ from app.shared.errors import (
     ProviderAuthFailed,
     ProviderProtocolError,
     ProviderRateLimited,
+    ProviderResourceNotFound,
     ProviderUnavailable,
     ProviderValidationError,
     UnsupportedOperation,
@@ -43,6 +44,7 @@ from app.shared.errors import (
 from app.subscriptions.domain import (
     ConnectivityPresence,
     ConnectivityState,
+    LocationDetail,
     Subscription,
     SubscriptionSearchFilters,
     UsageMetric,
@@ -278,6 +280,15 @@ def _parse_dt(value: str | None) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
+        return None
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
         return None
 
 
@@ -689,6 +700,55 @@ class Tele2Adapter(BaseAdapter):
             last_seen_at=last_seen_at,
         )
 
+    async def get_location(
+        self, iccid: str, credentials: dict[str, Any]
+    ) -> LocationDetail:
+        return await self._call_with_breaker(
+            self._get_location_impl, iccid, credentials
+        )
+
+    async def _get_location_impl(
+        self, iccid: str, credentials: dict[str, Any]
+    ) -> LocationDetail:
+        creds = _creds(credentials)
+        try:
+            data = await self._limited_get(credentials, creds, f"/devices/{iccid}/location")
+        except ProviderResourceNotFound:
+            return LocationDetail(iccid=iccid)
+        except ProviderProtocolError as exc:
+            if _is_http_not_found(exc):
+                return LocationDetail(iccid=iccid)
+            raise
+        if not isinstance(data, dict):
+            raise ProviderProtocolError(detail="Tele2 location response was not an object")
+        latitude = (
+            data.get("latitude")
+            or data.get("lat")
+            or (cast(dict[str, Any], data.get("location") or {})).get("latitude")
+            or (cast(dict[str, Any], data.get("coordinates") or {})).get("latitude")
+        )
+        longitude = (
+            data.get("longitude")
+            or data.get("lon")
+            or data.get("lng")
+            or (cast(dict[str, Any], data.get("location") or {})).get("longitude")
+            or (cast(dict[str, Any], data.get("coordinates") or {})).get("longitude")
+        )
+        timestamp = (
+            data.get("timestamp")
+            or data.get("dateLocated")
+            or data.get("dateLocationUpdated")
+        )
+        return LocationDetail(
+            iccid=iccid,
+            latitude=_decimal(latitude),
+            longitude=_decimal(longitude),
+            accuracy_m=_decimal(data.get("accuracy") or data.get("accuracyMeters")),
+            timestamp=_parse_dt(cast(str | None, timestamp)),
+            source=cast(str | None, data.get("source") or data.get("locationType")),
+            raw=cast(dict[str, Any], data),
+        )
+
     async def set_administrative_status(
         self,
         iccid: str,
@@ -864,15 +924,15 @@ class Tele2Adapter(BaseAdapter):
                 params["imsi"] = filters.imsi
             if filters.msisdn:
                 params["msisdn"] = filters.msisdn
+            if filters.imei:
+                params["imei"] = filters.imei
             for key, value in filters.custom.items():
                 if not (
                     key.startswith("accountCustom")
                     or key.startswith("operatorCustom")
                     or key.startswith("customerCustom")
                 ):
-                    raise UnsupportedOperation(
-                        detail=f"Tele2 Search Devices does not support custom filter '{key}'"
-                    )
+                    continue
                 params[key] = value
 
         data = await self._limited_get(credentials, creds, "/devices", params)

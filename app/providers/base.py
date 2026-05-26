@@ -17,6 +17,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from app.subscriptions.domain import (
     ConnectivityPresence,
+    LocationDetail,
+    SmsHistoryRecord,
+    StatusHistoryRecord,
     Subscription,
     SubscriptionSearchFilters,
     UsageSnapshot,
@@ -95,3 +98,51 @@ class SearchableProvider(Protocol):
     def supports_list_filter(self, filter_name: str) -> bool: ...
 
     def bootstrap_filters(self) -> SubscriptionSearchFilters: ...
+
+
+@runtime_checkable
+class SmsHistoryProvider(Protocol):
+    """Optional capability — adapters that expose SMS log/history.
+
+    Currently only Moabits implements this. The router dispatches via
+    `isinstance(adapter, SmsHistoryProvider)`; adapters that do not implement
+    this protocol cause the endpoint to return 501 / NOT_SUPPORTED.
+
+    Adapters whose underlying provider exposes SMS history at the *account*
+    level (not per-ICCID) must filter the results to the requested ICCID
+    before returning. Records returned are always pre-filtered for the SIM.
+    """
+
+    async def get_sms_history(
+        self,
+        iccid: str,
+        credentials: dict[str, Any],
+        *,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> list[SmsHistoryRecord]: ...
+
+
+@runtime_checkable
+class StatusHistoryProvider(Protocol):
+    """Optional capability — adapters that expose lifecycle/status history."""
+
+    async def get_status_history(
+        self,
+        iccid: str,
+        credentials: dict[str, Any],
+        *,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> list[StatusHistoryRecord]: ...
+
+
+@runtime_checkable
+class LocationProvider(Protocol):
+    """Optional capability — adapters that expose SIM/device location detail."""
+
+    async def get_location(
+        self,
+        iccid: str,
+        credentials: dict[str, Any],
+    ) -> LocationDetail: ...

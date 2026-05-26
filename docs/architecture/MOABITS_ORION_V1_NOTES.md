@@ -9,7 +9,11 @@
 Actualización basada en Swagger Orion API 2.0.0 (`https://www.api.myorion.co/api-doc`).
 
 - Server declarado: `https://www.api.myorion.co/`. No se declara sandbox separado.
-- Alcance acordado para backend v1: endpoints `GET`, operaciones admin `PUT /api/sim/active/` y `PUT /api/sim/suspend/`, y la excepción de escritura `PUT /api/sim/purge/`.
+- Alcance producto actual: las vistas de SIM consumen endpoints `GET`; la única
+  operación canónica de control que debe crecer en esta superficie es purge. El
+  adapter conserva `PUT /api/sim/active/` y `PUT /api/sim/suspend/` como soporte
+  legacy detrás del feature flag de lifecycle writes, pero no son parte del
+  alcance nuevo de lectura/diagnóstico.
 - Autorización: `GET /integrity/authorization-token` con header `x-api-key`; retorna un JWT que debe usarse como `Authorization: Bearer <authorizationToken>`.
 - En credenciales del backend, el único campo canónico para Orion es `x_api_key`. El adapter lo envía a Orion como header `x-api-key`, obtiene el JWT con `GET /integrity/authorization-token`, y no almacena ni acepta un Bearer/JWT directo como credencial canónica.
 - Solo se incluyen operaciones definidas explícitamente en el documento fuente.
@@ -27,7 +31,12 @@ El listado canónico del backend combina las dos superficies Orion:
    - `GET /api/v2/sim/connectivity/{iccidList}`
 4. La respuesta pública conserva campos comunes en `normalized` y deja valores Moabits específicos o diagnósticos en `provider_fields`.
 
-API v2 no reemplaza a v1 porque no documenta un listado por `companyCode`. Si v2 falla o no encuentra detalle para una SIM, la fila sigue saliendo con datos v1 y `provider_fields.enrichment_status` indica `v1_only`, `detail_only`, `connectivity_only` o `full`.
+API v2 ya documenta endpoints de listado por compañía, pero el backend aún no
+los usa como fuente del universo de SIMs. La ruta productiva actual conserva v1
+para el listado confirmado y usa v2 para enriquecer detalle/conectividad. Si v2
+falla o no encuentra detalle para una SIM, la fila sigue saliendo con datos v1 y
+`provider_fields.enrichment_status` indica `v1_only`, `detail_only`,
+`connectivity_only` o `full`.
 
 Mapeos relevantes de enrichment:
 
@@ -104,6 +113,10 @@ Mapeos relevantes de enrichment:
 - Propósito: Recuperar el detalle administrativo/técnico de SIMs a partir de una lista de ICCIDs.
 - Parámetros de entrada: `iccidList` (path, `array<string>`, requerido, máximo 50 por petición).
 - Esquema de respuesta: `status`; objeto `info` con `simInfo[]`, con los mismos campos documentados para `simListDetail`.
+- Nota de implementación: este endpoint se mantiene como fallback legacy. Para
+  single-SIM lookup el backend prefiere Gateway API v2 `GET
+  /api/v2/sim/{iccidList}`, que trae la SIM con sus detalles, porque en algunas
+  cuentas v1 `details` no responde aunque v2 sí tenga la SIM.
 
 ## 2) Estatus
 
@@ -268,13 +281,20 @@ Notas:
 - Los límites a nivel de SIM individual (`dataLimit`, `smsLimit`) no tienen endpoint propio de consulta y viajan embebidos dentro de la respuesta de `getSimDetails` y `getCompanySimListDetail`.
 - Los límites a nivel de compañía también aparecen replicados como `mblimit` y `smslimit` dentro del payload de `getCompanyInfo`.
 
-## 6) Escrituras Admin / Purga / Network Reset
+## 6) Escrituras Legacy / Purga / Network Reset
+
+Nota de scope: Swagger v1 documenta `activeSims`, `suspendSims` y `purgeSims`.
+El producto actual para vistas de SIM prioriza GETs, con purge como única
+operación canónica de control. `activeSims` y `suspendSims` se describen aquí
+porque existen en Swagger y el adapter conserva soporte legacy detrás del
+feature flag de lifecycle writes; no deben tomarse como expansión del alcance
+nuevo.
 
 ### Endpoint / Operación: `activeSims`
 
 - Ruta: `PUT /api/sim/active/`
 - Propósito: Activar los servicios (datos y/o SMS) de una lista de SIMs identificadas por ICCID. Es la contraparte de escritura de `getSimServiceStatus`: cambia `dataService` / `smsService` a `Enabled` y, en consecuencia, `simStatus` a `Active`.
-- Alcance backend v1: solo administradores mediante `PUT /v1/sims/{iccid}/status` con `target=active`.
+- Alcance backend v1 legacy: solo administradores mediante `PUT /v1/sims/{iccid}/status` con `target=active`, detrás del feature flag de lifecycle writes.
 - Parámetros de entrada: body `application/json` con:
   - `iccidList` (`array<string>`, requerido)
   - `dataService` (boolean, requerido), `true` para activar servicio de datos
@@ -287,7 +307,7 @@ Notas:
 
 - Ruta: `PUT /api/sim/suspend/`
 - Propósito: Suspender los servicios (datos y/o SMS) de una lista de SIMs identificadas por ICCID. Es la contraparte de escritura de `getSimServiceStatus`: cambia `dataService` / `smsService` a `Disabled` y, en consecuencia, `simStatus` a `Suspended`.
-- Alcance backend v1: solo administradores mediante `PUT /v1/sims/{iccid}/status` con `target=suspended`.
+- Alcance backend v1 legacy: solo administradores mediante `PUT /v1/sims/{iccid}/status` con `target=suspended`, detrás del feature flag de lifecycle writes.
 - Parámetros de entrada: body `application/json` con:
   - `iccidList` (`array<string>`, requerido)
   - `dataService` (boolean, requerido), `true` para suspender servicio de datos
@@ -328,4 +348,4 @@ Notas:
 - No hay un endpoint público `getSubscriptions` ni `getStatusDetail` con esos nombres exactos en el Swagger; las suscripciones se modelan vía los endpoints de listado/detalle de SIM y el estatus vía `getSimServiceStatus`.
 - `trafficCut` / `consumptionDaily` no aparecen como objetos en el Swagger fuente; no se incluyen para evitar inventar campos no documentados.
 - No hay filtros públicos de listado por fecha de modificación/cambio. Si Moabits expone en el futuro un filtro equivalente a `modified_since` / `modified_till`, deberá mapearse como filtro normalizado en el adapter; si solo expone algo semánticamente distinto como `last_cdr`, debería evaluarse como otro filtro normalizado separado, por ejemplo `last_activity_since`.
-- Las escrituras Moabits de backend v1 quedan restringidas a administradores: `activeSims`, `suspendSims` y `purgeSims`. Las demás operaciones `PUT` del Swagger quedan fuera de contrato.
+- La operación canónica de control que debe usarse desde producto es purge (`POST /v1/sims/{iccid}/purge`, mapeada a `PUT /api/sim/purge/` en Orion). `activeSims` y `suspendSims` son soporte legacy restringido a administradores y feature flag; las demás operaciones `PUT` del Swagger quedan fuera de contrato.

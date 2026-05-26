@@ -107,9 +107,9 @@ The `purge()` method delegates to `set_administrative_status()` to avoid duplica
 
 ## Moabits
 
-Moabits has two separate Orion API surfaces. The adapter uses the older Orion v1 API for authorization, company discovery, per-SIM detail, usage, presence and lifecycle writes. For provider-scoped listing, it uses v1 `simList` as the source of ICCIDs and attempts Orion Gateway API v2 detail/connectivity enrichment for the paginated ICCIDs by default (`MOABITS_V2_ENRICHMENT_ENABLED=true`; see ADR-011).
+Moabits has two separate Orion API surfaces. The adapter uses the older Orion v1 API for authorization, company discovery/listing, usage, presence, SMS history, service status, and the legacy purge route. For provider-scoped listing, it uses v1 `simList` as the source of ICCIDs and attempts Orion Gateway API v2 SIM/connectivity enrichment for the paginated ICCIDs by default (`MOABITS_V2_ENRICHMENT_ENABLED=true`; see ADR-011). Single-SIM lookup also prefers v2 `GET /api/v2/sim/{iccidList}`, which returns the SIM with its detail fields, and falls back to v1 `details` only when v2 has no usable data.
 
-The dedicated v2 reference for this backend is [MOABITS_ORION_GATEWAY_API_V2.md](MOABITS_ORION_GATEWAY_API_V2.md). It intentionally documents only the needed read endpoints plus `active`, `suspend`, and `purge`.
+The dedicated v2 reference for this backend is [MOABITS_ORION_GATEWAY_API_V2.md](MOABITS_ORION_GATEWAY_API_V2.md). Current product scope is SIM read enrichment through GET endpoints; the canonical public control operation remains `POST /v1/sims/{iccid}/purge`. Provider active/suspend writes are not part of the new SIM-view scope.
 
 Confirmed API v2 paths in scope:
 - `GET /api/v2/sim/{iccidList}`
@@ -117,11 +117,20 @@ Confirmed API v2 paths in scope:
 
 Documented by Swagger but not used by current backend code:
 - `GET /api/v2/sim/service-status/{iccidList}`
+- `GET /api/v2/company/sim-list/{companyCodes}`
+- `GET /api/v2/company/sim-list-detail/{companyCodes}`
 - `GET /api/v2/product/product-list/{id}`
 - `GET /api/v2/client/children`
+- `GET /api/v2/company/children/{companyCode}`
+- `GET /api/v2/flex-plan/sim/{iccid}/status`
 - `PUT /api/v2/sim/active`
 - `PUT /api/v2/sim/suspend`
 - `PUT /api/v2/sim/purge`
+- `PUT /api/v2/sim/{iccid}/name`
+- `PUT /api/v2/sim/limits`
+- `POST /api/v2/usage/by-iccids`
+- `POST /api/v2/usage/by-company`
+- `POST /api/v2/product/assignSIM`
 
 Current backend behavior in the v2 enrichment mapper:
 - `smsLimitMo` and `smsLimitMt` are preserved separately as `sms_limit_mo` and `sms_limit_mt`; when v2 does not provide a total `smsLimit`, the backend exposes `sms_limit` as their sum.
@@ -135,6 +144,9 @@ Current backend behavior in the v2 enrichment mapper:
 | `PUT /api/v2/sim/{iccid}/name` | SIM rename is not needed for this backend scope. |
 | `PUT /api/v2/sim/limits` | Quota writes are not needed for this backend scope. |
 | `POST /api/v2/product/assignSIM` | Product assignment is not needed for this backend scope. |
+| `POST /api/v2/usage/by-iccids` | Read-like usage operation, but it is POST; current Moabits SIM-view scope stays on GETs except canonical purge. |
+| `POST /api/v2/usage/by-company` | Aggregate reporting scope, not per-SIM detail. |
+| `PUT /api/v2/sim/active`, `PUT /api/v2/sim/suspend` | Documented by Swagger, but outside the current GET-focused SIM-view scope. |
 
 ### Provider Limitations (Native API v2)
 

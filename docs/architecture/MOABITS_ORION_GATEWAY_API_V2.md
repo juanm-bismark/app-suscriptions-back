@@ -1,8 +1,14 @@
 # Moabits Orion Gateway API v2
 
-Source: `https://apiv2.myorion.co/v3/api-docs`
+Source: `https://apiv2.myorion.co/swagger-ui/index.html#/` backed by
+`https://apiv2.myorion.co/v3/api-docs`.
 
-This document captures the Moabits second API contract needed by this backend. It intentionally covers only read operations plus the supported SIM write operations: activate, suspend, and purge.
+This document captures the Moabits second API contract needed by this backend.
+Current product scope uses v2 for SIM read enrichment only: `GET
+/api/v2/sim/{iccidList}` and connectivity. There is no separate v2 `/details`
+route; the `getSimDetails` operation is the SIM read endpoint itself. The
+canonical public mutation remains purge; v2 activate/suspend operations are
+documented by Moabits but are outside the current SIM-view scope.
 
 ## Metadata
 
@@ -18,30 +24,36 @@ This document captures the Moabits second API contract needed by this backend. I
 
 The v2 API declares a single security scheme: `apiKey` in the `X-API-KEY` header. Unlike the older Moabits API currently reflected in some code/docs, this API does not document a JWT bootstrap endpoint.
 
-Backend integration status: `GET /v1/sims?provider=moabits` uses v1
-`/api/company/simList/{companyCode}` for listing and, by default, attempts
-v2 detail/connectivity enrichment for the ICCIDs in the returned page. See
-[ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md).
+Backend integration status: `GET /v1/sims?provider=moabits` still uses the
+confirmed v1 `/api/company/simList/{companyCode}` listing and, by default,
+attempts v2 SIM/connectivity enrichment for the ICCIDs in the returned page.
+Single SIM lookup also prefers v2 `GET /api/v2/sim/{iccidList}` and falls back to legacy v1 `GET
+/api/sim/details/{iccidList}` only when v2 has no usable data. See
+[ADR-011](adrs/ADR-011-moabits-v2-list-enrichment.md). Current v2 Swagger also
+documents `GET /api/v2/company/sim-list/{companyCodes}` and `GET
+/api/v2/company/sim-list-detail/{companyCodes}`; those are not integrated yet.
 
 ## Backend Listing Flow
 
-Moabits does not expose a v2 listing endpoint by `companyCode`, so v1 remains
-the source of the SIM universe. The backend listing flow is:
+The backend currently keeps v1 as the source of the SIM universe. The v2 Swagger
+now documents company listing endpoints, but the integration has not switched to
+them yet because the established production path and field mapping are v1 list
+plus v2 enrichment. The backend listing flow is:
 
 1. Call v1 `GET /api/company/simList/{companyCode}` to discover ICCIDs plus
    `simStatus`, `dataService`, and `smsService`.
 2. Page locally over those v1 rows.
 3. For the ICCIDs in the requested page, call v2 in batches:
-   - `GET /api/v2/sim/{iccidList}` for detail data.
+   - `GET /api/v2/sim/{iccidList}` for the SIM record and its detail fields.
    - `GET /api/v2/sim/connectivity/{iccidList}` for live connectivity data.
 4. Merge v1 and v2 into one canonical `SubscriptionOut`.
 
 This enrichment is enabled by default with `MOABITS_V2_ENRICHMENT_ENABLED=true`.
 Setting it to `false` keeps the legacy v1-only listing behavior. v2 failures are
-degradable: a failed detail/connectivity batch logs
+degradable: a failed SIM/connectivity batch logs
 `moabits_v2_enrichment_chunk_failed` and the endpoint still returns the v1 rows.
 The v2 calls are batched and cached briefly per ICCID to avoid repeating the
-same detail/connectivity lookups during rapid UI refreshes.
+same SIM/connectivity lookups during rapid UI refreshes.
 
 Common fields go under `normalized`; provider-specific or diagnostic fields stay
 under `provider_fields`. Notable Moabits mappings:
@@ -50,10 +62,10 @@ under `provider_fields`. Notable Moabits mappings:
 |--------|--------|
 | v1 `simStatus` | top-level `status` |
 | v1 `dataService`, `smsService` | `provider_fields.data_service`, `provider_fields.sms_service`, `provider_fields.services` |
-| v2 detail `imsiNumber` | top-level `imsi` and `provider_fields.imsi_number` |
-| v2 detail `imsi` | `provider_fields.imsi_raw` |
-| v2 detail `dataLimit` | `provider_fields.data_limit_mb` as integer |
-| v2 detail `smsLimitMo`, `smsLimitMt` | `provider_fields.sms_limit_mo`, `provider_fields.sms_limit_mt`; summed into `sms_limit` when no total is provided |
+| v2 SIM read `imsiNumber` | top-level `imsi` and `provider_fields.imsi_number` |
+| v2 SIM read `imsi` | `provider_fields.imsi_raw` |
+| v2 SIM read `dataLimit` | `provider_fields.data_limit_mb` as integer |
+| v2 SIM read `smsLimitMo`, `smsLimitMt` | `provider_fields.sms_limit_mo`, `provider_fields.sms_limit_mt`; summed into `sms_limit` when no total is provided |
 | v2 connectivity `network`, `country`, `rat`, `privateIp` | `provider_fields.operator`, `country`, `rat_type`, `ip_address` |
 | v2 connectivity `mcc`, `mnc`, `dataSessionId`, `dateOpened`, `chargeTowards`, `usageKB`, `imsi` | `provider_fields.mcc`, `mnc`, `data_session_id`, `session_started_at`, `charge_towards`, `usage_kb`, `connectivity_imsi_raw` |
 
@@ -61,20 +73,24 @@ under `provider_fields`. Notable Moabits mappings:
 
 | Method | Path | Operation | Purpose |
 |--------|------|-----------|---------|
-| `GET` | `/api/v2/sim/{iccidList}` | `getSimDetails` | SIM details for a comma-separated ICCID list |
+| `GET` | `/api/v2/sim/{iccidList}` | `getSimDetails` | SIM record, including detail fields, for a comma-separated ICCID list |
 | `GET` | `/api/v2/sim/service-status/{iccidList}` | `getServiceStatus` | Current service status for a comma-separated ICCID list |
 | `GET` | `/api/v2/sim/connectivity/{iccidList}` | `getConnectivityStatus` | Connectivity status for a comma-separated ICCID list |
 | `GET` | `/api/v2/product/product-list/{id}` | `getAssignableProducts` | Products assignable to a client |
 | `GET` | `/api/v2/client/children` | `getChildren` | Child clients for the authenticated parent client |
-| `PUT` | `/api/v2/sim/active` | `activateSims` | Activate SIMs and optionally enable data/SMS services |
-| `PUT` | `/api/v2/sim/suspend` | `suspendSims` | Suspend SIMs and optionally disable data/SMS services |
-| `PUT` | `/api/v2/sim/purge` | `purgeSims` | Cancel current network location registration and force re-attach |
+| `GET` | `/api/v2/company/sim-list/{companyCodes}` | `getSimList` | Documented by Moabits; not integrated yet |
+| `GET` | `/api/v2/company/sim-list-detail/{companyCodes}` | `getSimListDetail` | Documented by Moabits; not integrated yet |
+| `GET` | `/api/v2/company/children/{companyCode}` | `getCompanyChildren` | Documented by Moabits; not integrated yet |
+| `GET` | `/api/v2/flex-plan/sim/{iccid}/status` | `getFlexPlanStatus` | Documented by Moabits; candidate SIM read, not integrated yet |
+| `PUT` | `/api/v2/sim/active` | `activateSims` | Documented by Moabits; outside current backend scope |
+| `PUT` | `/api/v2/sim/suspend` | `suspendSims` | Documented by Moabits; outside current backend scope |
+| `PUT` | `/api/v2/sim/purge` | `purgeSims` | Documented by Moabits; backend canonical purge currently uses the v1 Orion route |
 
 ## Read Operations
 
 ### GET `/api/v2/sim/{iccidList}`
 
-Returns SIM detail records for one or more ICCIDs.
+Returns SIM records, including their detail fields, for one or more ICCIDs.
 
 Path parameters:
 
@@ -209,9 +225,31 @@ Notes:
 - The schema should likely be `CompanyDTO[]`, not a single `CompanyDTO`.
 - No pagination or filters are documented.
 
-## Write Operations
+### Other GETs Documented By Swagger
+
+The v2 Swagger also exposes read endpoints that are not wired into the backend:
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/api/v2/company/sim-list/{companyCodes}` | Potential future replacement for v1 `simList`; requires real-account validation before switching the source of the SIM universe. |
+| `GET` | `/api/v2/company/sim-list-detail/{companyCodes}` | Potential future replacement for v1 list + v2 SIM enrichment; requires parity checks for status/services and payload shape. |
+| `GET` | `/api/v2/company/children/{companyCode}` | Company hierarchy/admin read; outside SIM detail view. |
+| `GET` | `/api/v2/flex-plan/sim/{iccid}/status` | SIM-scoped GET and possible future provider-specific read; not currently mapped into `SubscriptionOut`. |
+| `GET` | `/api/v2/lookup/countries`, `/api/v2/lookup/currencies`, `/api/v2/lookup/payment-methods`, `/api/v2/lookup/roles` | Lookup/admin data, outside SIM detail view. |
+
+## Write Operations Documented By Moabits
 
 All documented write operations use `application/json` request bodies and API key auth through `X-API-KEY`.
+
+Backend note: these v2 write operations are not part of the current integration.
+The application exposes purge as the only canonical control operation for this
+provider scope, and the existing implementation maps it to the confirmed v1
+Orion purge endpoint.
+
+Swagger also documents read-like POST endpoints (`POST /api/v2/usage/by-iccids`
+and `POST /api/v2/usage/by-company`). They remain outside the current Moabits
+SIM-view scope because this integration only adds provider reads that are GETs,
+with purge as the sole canonical control exception.
 
 ### PUT `/api/v2/sim/active`
 
@@ -290,13 +328,13 @@ Notes:
 
 Current implementation details compared with this contract:
 
-- v2 detail and connectivity are called with the same `x_api_key` stored
+- v2 SIM read and connectivity are called with the same `x_api_key` stored
   for v1. No separate `x_api_key_v2` is modeled yet.
 - v2 base URL is configured through `MOABITS_V2_BASE_URL`, not per
   tenant credentials.
-- `smsLimitMo` and `smsLimitMt` are documented by v2 but are not yet
-  preserved separately by the adapter; current normalized limits still
-  rely on legacy `smsLimit` when present.
+- `smsLimitMo` and `smsLimitMt` are preserved separately by the adapter as
+  `provider_fields.sms_limit_mo` and `provider_fields.sms_limit_mt`; when no
+  total `smsLimit` is provided, `sms_limit` is computed from their sum.
 - Connectivity fields `mcc`, `mnc`, `chargeTowards`, `dataSessionId`,
   `dateOpened` and `usageKB` are preserved in `provider_fields` as
   `mcc`, `mnc`, `charge_towards`, `data_session_id`,

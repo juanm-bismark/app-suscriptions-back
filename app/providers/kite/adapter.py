@@ -52,6 +52,7 @@ from app.config import get_settings
 from app.providers.adapter_base import BaseAdapter
 from app.providers.kite.client import KiteClient
 from app.providers.kite.mappers import (
+    parse_location_detail,
     parse_presence_fields,
     parse_status_detail,
     parse_status_history,
@@ -61,6 +62,7 @@ from app.providers.kite.mappers import (
 from app.shared.errors import ProviderProtocolError, UnsupportedOperation
 from app.subscriptions.domain import (
     ConnectivityPresence,
+    LocationDetail,
     StatusDetail,
     StatusHistoryRecord,
     Subscription,
@@ -113,6 +115,8 @@ def _kite_search_parameters(
         params["imsi"] = filters.imsi
     if filters.msisdn:
         params["msisdn"] = filters.msisdn
+    if filters.imei:
+        params["imei"] = filters.imei
     if filters.modified_since is not None:
         params["startLastStateChangeDate"] = _format_search_dt(filters.modified_since)
     if filters.modified_till is not None:
@@ -120,9 +124,7 @@ def _kite_search_parameters(
     for key, value in filters.custom.items():
         normalized = key.replace("_", "").lower()
         if normalized not in {"customfield1", "customfield2", "customfield3", "customfield4"}:
-            raise UnsupportedOperation(
-                detail=f"Kite getSubscriptions does not support custom filter '{key}'"
-            )
+            continue
         params[f"customField{normalized[-1]}"] = value
     return params
 
@@ -228,6 +230,24 @@ class KiteAdapter(BaseAdapter):
                 detail="Missing presenceDetailData in Kite response"
             )
         return parse_presence_fields(el, iccid)
+
+    async def get_location(
+        self, iccid: str, credentials: dict[str, Any]
+    ) -> LocationDetail:
+        return await self._call_with_breaker(
+            self._get_location_impl, iccid, credentials
+        )
+
+    async def _get_location_impl(
+        self, iccid: str, credentials: dict[str, Any]
+    ) -> LocationDetail:
+        root = await KiteClient(credentials).get_location_detail(iccid)
+        el = root.find(".//{*}locationDetailData")
+        if el is None:
+            raise ProviderProtocolError(
+                detail="Missing locationDetailData in Kite response"
+            )
+        return parse_location_detail(el, iccid)
 
     async def set_administrative_status(
         self,
@@ -348,8 +368,8 @@ class KiteAdapter(BaseAdapter):
         iccid: str,
         credentials: dict[str, Any],
         *,
-        start_date: str | None = None,
-        end_date: str | None = None,
+        start_date: datetime | str | None = None,
+        end_date: datetime | str | None = None,
     ) -> list[StatusHistoryRecord]:
         """Get status history for a subscription over an optional date range."""
         return await self._call_with_breaker(
@@ -363,6 +383,10 @@ class KiteAdapter(BaseAdapter):
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> list[StatusHistoryRecord]:
+        if isinstance(start_date, datetime):
+            start_date = _format_search_dt(start_date)
+        if isinstance(end_date, datetime):
+            end_date = _format_search_dt(end_date)
         root = await KiteClient(credentials).get_status_history(
             iccid, start_date=start_date, end_date=end_date
         )

@@ -309,6 +309,16 @@ class SimSearchCommonFilters(BaseModel):
     msisdn: str | None = None
     modified_since: datetime | None = None
     modified_till: datetime | None = None
+    imei: str | None = None
+    operator: str | None = Field(
+        default=None,
+        description="Case-insensitive substring match on normalized.network.operator.",
+    )
+    data_service: bool | None = None
+    sms_service: bool | None = None
+    last_lu_since: datetime | None = None
+    last_lu_till: datetime | None = None
+    imsi_list: list[str] | None = None
     custom: dict[str, str] = Field(default_factory=dict)
 
 
@@ -362,3 +372,72 @@ class SimImportIn(BaseModel):
 
 class SimImportOut(BaseModel):
     imported: int
+
+
+class StatusHistoryRecordOut(BaseModel):
+    state: str
+    automatic: bool
+    time: datetime
+    reason: str | None = None
+    user: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class StatusHistoryOut(BaseModel):
+    iccid: str
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    records: list[StatusHistoryRecordOut] = Field(
+        description="Status history records for this ICCID, newest first when the provider supplies order."
+    )
+
+
+class LocationOut(BaseModel):
+    iccid: str
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    accuracy_m: Decimal | None = None
+    timestamp: datetime | None = None
+    source: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class SimStatsOut(BaseModel):
+    total: int
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_status_group: dict[str, int] = Field(default_factory=dict)
+    stale_lu_count: int = 0
+    provider: str | None = None
+    fresh_at: datetime
+    partial: bool = False
+    failed_providers: list[dict[str, str]] = Field(default_factory=list)
+
+
+class SmsHistoryRecordOut(BaseModel):
+    iccid: str
+    date: datetime
+    message: str
+    sms_type: Literal["MO", "MT"] = Field(
+        description="SMS direction: 'MO' (mobile-originated) or 'MT' (mobile-terminated)."
+    )
+    gateway_delivered: bool | None = Field(
+        default=None,
+        description="Gateway-level delivery confirmation (MT only). None for MO.",
+    )
+    sms_center_delivered: bool | None = Field(
+        default=None,
+        description="SMS Center-level delivery confirmation (MT only). None for MO.",
+    )
+
+    model_config = {"from_attributes": True}
+
+
+class SmsHistoryOut(BaseModel):
+    iccid: str
+    period_start: datetime
+    period_end: datetime
+    records: list[SmsHistoryRecordOut] = Field(
+        description="SMS records for this ICCID, newest first."
+    )

@@ -15,10 +15,35 @@ from app.providers.tele2.adapter import Tele2Adapter
 from app.shared.errors import (
     ProviderProtocolError,
     ProviderRateLimited,
+    ProviderResourceNotFound,
     ProviderUnavailable,
     ProviderValidationError,
 )
 from app.subscriptions.domain import SubscriptionSearchFilters
+
+
+@pytest.mark.asyncio
+async def test_get_location_returns_empty_location_on_404() -> None:
+    adapter = Tele2Adapter()
+
+    async def _not_found(*args, **kwargs):
+        raise ProviderResourceNotFound(detail="HTTP 404: not found")
+
+    adapter._limited_get = _not_found  # type: ignore[method-assign]
+
+    location = await adapter.get_location(
+        "8934070100000000001",
+        {
+            "base_url": "https://api.tele2.test",
+            "username": "alice",
+            "api_key": "sekret",
+            "api_version": "v1",
+        },
+    )
+
+    assert location.iccid == "8934070100000000001"
+    assert location.latitude is None
+    assert location.longitude is None
 
 
 @respx.mock

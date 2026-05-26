@@ -44,6 +44,7 @@ from app.subscriptions.domain import (
 
 # Matches /api/usage/simUsage with any querystring (Moabits adds date params).
 _USAGE_URL_RE = re.compile(r"^https://api\.moabits\.test/api/usage/simUsage(\?.*)?$")
+_SMS_HISTORY_URL_RE = re.compile(r"^https://api\.moabits\.test/api/sms/history(\?.*)?$")
 
 
 @pytest.fixture(autouse=True)
@@ -103,12 +104,12 @@ def _details_payload(extra: dict | None = None) -> dict:
     return {"info": {"simInfo": [sim_info]}}
 
 
-def _service_status_payload() -> dict:
+def _service_status_payload(iccid: str = "8934070100000000001") -> dict:
     return {
         "info": {
             "iccidList": [
                 {
-                    "iccid": "8934070100000000001",
+                    "iccid": iccid,
                     "simStatus": "Active",
                     "dataService": "Enabled",
                     "smsService": "Enabled",
@@ -202,7 +203,7 @@ class TestCoercers:
 
 @pytest.mark.asyncio
 async def test_get_subscription_extracts_full_provider_fields(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
@@ -242,7 +243,7 @@ async def test_get_subscription_extracts_full_provider_fields(
 
 @pytest.mark.asyncio
 async def test_get_subscription_uses_service_status_when_details_unavailable(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
@@ -265,7 +266,7 @@ async def test_get_subscription_uses_service_status_when_details_unavailable(
 
 @pytest.mark.asyncio
 async def test_get_subscription_uses_details_when_service_status_unavailable(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
@@ -288,7 +289,7 @@ async def test_get_subscription_uses_details_when_service_status_unavailable(
 
 @pytest.mark.asyncio
 async def test_get_subscription_services_null_does_not_break(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8934070100000000001"
     httpx_mock.add_response(
@@ -308,7 +309,7 @@ async def test_get_subscription_services_null_does_not_break(
 
 @pytest.mark.asyncio
 async def test_get_subscription_optional_fields_missing_ok(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     """Missing optional fields must not break extraction."""
     iccid = "8934070100000000001"
@@ -785,7 +786,7 @@ async def test_get_presence_unknown_status(
 
 @pytest.mark.asyncio
 async def test_raw_status_preserved_from_service_status(
-    httpx_mock, moabits_creds: dict
+    httpx_mock, moabits_creds: dict, disable_moabits_v2
 ) -> None:
     iccid = "8934070100000000001"
     payload = _service_status_payload()
@@ -1112,6 +1113,89 @@ def _v2_connectivity_payload(iccids: list[str]) -> list[dict]:
 
 
 @pytest.mark.asyncio
+async def test_get_sms_history_uses_confirmed_v1_history_path(
+    httpx_mock, moabits_creds: dict
+) -> None:
+    iccid = "89103000000099"
+    httpx_mock.add_response(
+        url=_SMS_HISTORY_URL_RE,
+        json={
+            "status": "Ok",
+            "SMSList": [
+                {
+                    "iccids": [iccid],
+                    "date": "2023-08-07 01:18:10",
+                    "message": "sim configured: ok",
+                    "smsType": "SMS MO",
+                },
+                {
+                    "iccids": [iccid],
+                    "date": "2023-08-07 01:27:27",
+                    "message": "sim config 1",
+                    "SMSGWDELIVERY": True,
+                    "SMSCDELIVERY": True,
+                    "smsType": "SMS MT",
+                },
+                {
+                    "iccids": ["89103000000000"],
+                    "date": "2023-08-07 01:27:27",
+                    "message": "other sim",
+                    "smsType": "SMS MT",
+                },
+            ],
+        },
+    )
+
+    records = await MoabitsAdapter().get_sms_history(
+        iccid,
+        moabits_creds,
+        start_date=datetime(2023, 8, 1, tzinfo=UTC),
+        end_date=datetime(2023, 8, 31, 23, 59, 59, tzinfo=UTC),
+    )
+
+    request = httpx_mock.get_requests()[0]
+    assert request.url.path == "/api/sms/history"
+    assert request.url.params["initialDate"] == "2023-08-01 00:00:00"
+    assert request.url.params["finalDate"] == "2023-08-31 23:59:59"
+    assert [record.sms_type for record in records] == ["MT", "MO"]
+    assert records[0].gateway_delivered is True
+    assert records[0].sms_center_delivered is True
+    assert records[0].message == "sim config 1"
+
+
+@pytest.mark.asyncio
+async def test_get_subscription_prefers_v2_sim_read_when_enabled(
+    httpx_mock, moabits_creds: dict, enable_moabits_v2
+) -> None:
+    iccid = "8910300000046595692"
+    httpx_mock.add_response(
+        url=f"https://api.moabits.test/api/sim/serviceStatus/{iccid}",
+        json=_service_status_payload(iccid=iccid),
+    )
+    httpx_mock.add_response(
+        url=f"https://apiv2.moabits.test/api/v2/sim/{iccid}",
+        json=_v2_detail_payload([iccid]),
+    )
+    httpx_mock.add_response(
+        url=f"https://apiv2.moabits.test/api/v2/sim/connectivity/{iccid}",
+        json=_v2_connectivity_payload([iccid]),
+    )
+
+    sub = await MoabitsAdapter().get_subscription(iccid, moabits_creds)
+
+    assert sub.iccid == iccid
+    assert sub.msisdn == "3460000" + iccid[-4:]
+    assert sub.imsi == "234107959380675"
+    assert sub.status == "Active"
+    assert sub.provider_fields["enrichment_status"] == "full"
+    assert sub.provider_fields["operator"] == "Claro"
+    assert all(
+        request.url.path != f"/api/sim/details/{iccid}"
+        for request in httpx_mock.get_requests()
+    )
+
+
+@pytest.mark.asyncio
 async def test_list_subscriptions_v2_enrichment_full(
     httpx_mock, moabits_creds: dict, enable_moabits_v2
 ) -> None:
@@ -1140,10 +1224,10 @@ async def test_list_subscriptions_v2_enrichment_full(
     sub = subs[0]
     pf = sub.provider_fields
     assert sub.iccid == iccid
-    # Identity from v2 detail
+    # Identity from the v2 SIM read.
     assert sub.msisdn == "3460000" + iccid[-4:]
-    assert sub.imsi == "234107959380675"  # detail wins over connectivity "22-01"
-    # Plan / customer from v2 detail
+    assert sub.imsi == "234107959380675"  # SIM read wins over connectivity "22-01"
+    # Plan / customer from the v2 SIM read.
     assert pf["product_id"] == 22499
     assert pf["client_name"] == "Bismark Colombia"
     assert pf["company_code"] == "48123"
@@ -1208,7 +1292,7 @@ async def test_list_subscriptions_v2_disabled_does_not_call_v2(
 async def test_list_subscriptions_v2_detail_404_keeps_connectivity(
     httpx_mock, moabits_creds: dict, enable_moabits_v2
 ) -> None:
-    """v2 detail 404 ('No SIMs found') is non-fatal — connectivity still applies."""
+    """v2 SIM read 404 ('No SIMs found') is non-fatal — connectivity still applies."""
     iccid = "8910300000046595692"
     httpx_mock.add_response(
         url="https://api.moabits.test/api/company/simList/ACME",
@@ -1251,7 +1335,7 @@ async def test_list_subscriptions_v2_detail_404_keeps_connectivity(
 async def test_list_subscriptions_v2_connectivity_5xx_keeps_detail(
     httpx_mock, moabits_creds: dict, enable_moabits_v2
 ) -> None:
-    """v2 connectivity 5xx is swallowed; detail enrichment still applies."""
+    """v2 connectivity 5xx is swallowed; SIM read enrichment still applies."""
     iccid = "8910300000046595692"
     httpx_mock.add_response(
         url="https://api.moabits.test/api/company/simList/ACME",

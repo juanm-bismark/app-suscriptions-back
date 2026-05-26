@@ -19,6 +19,8 @@ _CAPABILITY_NAMES = (
     "set_administrative_status",
     "purge",
     "status_history",
+    "sms_history",
+    "location",
     "aggregated_usage",
     "plan_catalog",
     "quota_management",
@@ -60,6 +62,14 @@ def _provider_capabilities(
             CapabilityStatus.NOT_SUPPORTED,
             "Limit management is represented in provider payloads, not as a v1 endpoint.",
         ),
+        "sms_history": _cap(
+            CapabilityStatus.NOT_SUPPORTED,
+            "SMS history endpoint is only exposed for providers that publish it.",
+        ),
+        "location": _cap(
+            CapabilityStatus.NOT_SUPPORTED,
+            "Location detail endpoint is only exposed for providers that publish it.",
+        ),
     }
     if provider == Provider.KITE:
         common.update(
@@ -80,6 +90,10 @@ def _provider_capabilities(
                     "Canonical purge maps to Kite networkReset and does not change lifeCycleStatus.",
                 ),
                 "status_history": _cap(CapabilityStatus.SUPPORTED),
+                "location": _cap(
+                    CapabilityStatus.SUPPORTED,
+                    "Maps to Kite getLocationDetail.",
+                ),
             }
         )
     elif provider == Provider.TELE2:
@@ -108,6 +122,10 @@ def _provider_capabilities(
                     CapabilityStatus.NOT_SUPPORTED,
                     "Tele2 catalog does not expose a status history endpoint.",
                 ),
+                "location": _cap(
+                    CapabilityStatus.SUPPORTED,
+                    "Maps to Cisco Control Center Get Device Location.",
+                ),
             }
         )
     else:
@@ -126,6 +144,10 @@ def _provider_capabilities(
                 "status_history": _cap(
                     CapabilityStatus.NOT_SUPPORTED,
                     "Moabits Orion v1 notes do not define a status history endpoint.",
+                ),
+                "sms_history": _cap(
+                    CapabilityStatus.SUPPORTED,
+                    "Maps to Orion v1 getSmsHistory; range capped to 3 months. Records are filtered to the requested ICCID.",
                 ),
                 "aggregated_usage": _cap(
                     CapabilityStatus.NOT_SUPPORTED,

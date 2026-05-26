@@ -11,6 +11,7 @@ from app.providers.base import Provider
 from app.subscriptions.domain import (
     ConnectivityPresence,
     ConnectivityState,
+    LocationDetail,
     StatusDetail,
     StatusHistoryRecord,
     Subscription,
@@ -101,6 +102,33 @@ def _parse_location(el: ET.Element | None) -> dict[str, Any] | None:
         longitude = _text(el, "longitude")
     location = {"lat": latitude, "lng": longitude}
     return location if any(location.values()) else None
+
+
+def _decimal(value: str | None) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(value)
+    except Exception:
+        return None
+
+
+def _location_candidate(el: ET.Element | None, source: str) -> LocationDetail | None:
+    if el is None:
+        return None
+    coordinates = el.find("{*}coordinates")
+    latitude = _text(coordinates, "latitude") if coordinates is not None else _text(el, "latitude")
+    longitude = _text(coordinates, "longitude") if coordinates is not None else _text(el, "longitude")
+    if not latitude and not longitude:
+        return None
+    return LocationDetail(
+        iccid="",
+        latitude=_decimal(latitude),
+        longitude=_decimal(longitude),
+        timestamp=_parse_dt(_text(el, "timestamp")),
+        source=source,
+        raw=_child_dict(el) or {},
+    )
 
 
 def _parse_basic_services(el: ET.Element | None) -> dict[str, Any] | None:
@@ -384,6 +412,27 @@ def parse_presence_fields(el: ET.Element, iccid: str) -> ConnectivityPresence:
         rat_type=_text_any(el, "ratType"),
         network_name=None,
         last_seen_at=_parse_dt(_text_any(el, "timeStamp", "timestamp")),
+    )
+
+
+def parse_location_detail(el: ET.Element, iccid: str) -> LocationDetail:
+    """Parse Kite getLocationDetail response into the best available location."""
+    automatic = _location_candidate(el.find("{*}automaticLocation"), "automatic")
+    manual = _location_candidate(el.find("{*}manualLocation"), "manual")
+    detail = automatic or manual
+    if detail is None:
+        return LocationDetail(iccid=iccid, raw=_child_dict(el) or {})
+    return LocationDetail(
+        iccid=iccid,
+        latitude=detail.latitude,
+        longitude=detail.longitude,
+        accuracy_m=detail.accuracy_m,
+        timestamp=detail.timestamp,
+        source=detail.source,
+        raw={
+            "manualLocation": _child_dict(el.find("{*}manualLocation")),
+            "automaticLocation": _child_dict(el.find("{*}automaticLocation")),
+        },
     )
 
 

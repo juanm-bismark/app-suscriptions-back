@@ -79,7 +79,7 @@
     "D5 → ADR-008: Reuse existing JWT + RBAC + Company scope + lifecycle audit for SIM writes",
     "D6 → ADR-009: Test pyramid + provider contract tests + golden/realistic payload tests",
     "ADR-010: Moabits company code bootstrap is explicit; selected mapping lives in company_provider_mappings, discovered choices in moabits_source_companies, not credentials_enc",
-    "ADR-011: Moabits v2 enrichment is optional for GET /v1/sims?provider=moabits; v1 simList remains source of ICCIDs",
+    "ADR-011: Moabits v2 enrichment is optional for GET /v1/sims?provider=moabits; v1 simList remains source of ICCIDs until v2 company listings are validated with real credentials",
     "ADR-012: Routing sync periódico (Arq + Redis) + POST /v1/sims/details batch + POST /v1/sims/export asíncrono. Preserva ADR-002: sim_routing_map sigue minimal (iccid + provider + company_id + last_seen_at), sin estado cacheado. Detalle siempre live."
   ],
   "current_provider_behaviour": {
@@ -102,9 +102,9 @@
       "auth_v1": "X-API-KEY exchanged for Bearer/JWT through /integrity/authorization-token",
       "auth_v2": "X-API-KEY direct",
       "company_scope": "company_provider_mappings.provider_company_code configured via discover/source-companies + admin PUT provider-mappings",
-      "listing": "v1 /api/company/simList/{companyCode}; local offset pagination; v2 detail/connectivity enrichment attempted by default for page ICCIDs",
+      "listing": "v1 /api/company/simList/{companyCode}; local offset pagination; v2 SIM/connectivity enrichment attempted by default for page ICCIDs through GET /api/v2/sim/{iccidList} and connectivity. Swagger v2 documents company sim-list endpoints, not integrated yet",
       "v2_enrichment": "enabled by default through MOABITS_V2_ENRICHMENT_ENABLED=true; false keeps legacy v1-only listing",
-      "writes": "active/suspend/purge v1 endpoints, gated by LIFECYCLE_WRITES_ENABLED",
+      "writes": "canonical product control is purge; active/suspend remain legacy v1 endpoints gated by LIFECYCLE_WRITES_ENABLED",
       "known_gaps": [
         "Confirm v2 batch/rate limits",
         "v2 provider-specific connectivity fields remain in provider_fields, not normalized",

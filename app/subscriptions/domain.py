@@ -81,6 +81,18 @@ class ConnectivityPresence:
 
 
 @dataclass(frozen=True)
+class LocationDetail:
+    """Manual/automatic provider location for a subscription."""
+    iccid: str
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    accuracy_m: Decimal | None = None
+    timestamp: datetime | None = None
+    source: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class StatusDetail:
     """Current status of a subscription with reason and timestamp."""
     iccid: str
@@ -102,6 +114,17 @@ class StatusHistoryRecord:
 
 
 @dataclass(frozen=True)
+class SmsHistoryRecord:
+    """A single SMS history entry returned by a provider's SMS log API."""
+    iccid: str
+    date: datetime
+    message: str
+    sms_type: str  # "MO" | "MT"
+    gateway_delivered: bool | None = None
+    sms_center_delivered: bool | None = None
+
+
+@dataclass(frozen=True)
 class SubscriptionSearchFilters:
     status: str | None = None
     modified_since: datetime | None = None
@@ -109,6 +132,13 @@ class SubscriptionSearchFilters:
     iccid: str | None = None
     imsi: str | None = None
     msisdn: str | None = None
+    imei: str | None = None
+    operator: str | None = None
+    data_service: bool | None = None
+    sms_service: bool | None = None
+    last_lu_since: datetime | None = None
+    last_lu_till: datetime | None = None
+    imsi_list: list[str] | None = None
     custom: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -121,6 +151,13 @@ class SubscriptionSearchFilters:
                 bool(self.iccid),
                 bool(self.imsi),
                 bool(self.msisdn),
+                bool(self.imei),
+                bool(self.operator),
+                self.data_service is not None,
+                self.sms_service is not None,
+                self.last_lu_since is not None,
+                self.last_lu_till is not None,
+                bool(self.imsi_list),
                 bool(self.custom),
             )
         )

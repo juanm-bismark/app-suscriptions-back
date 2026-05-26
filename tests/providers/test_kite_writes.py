@@ -98,7 +98,7 @@ def test_kite_server_ca_bundle_alias_is_decoded_into_tls_context(monkeypatch):
 async def test_get_subscriptions_search_body_uses_wsdl_order(monkeypatch):
     captured = {}
 
-    async def fake_call(creds, operation, body_xml):
+    async def fake_call(creds, operation, body_xml, **_kwargs):
         captured["operation"] = operation
         captured["body"] = body_xml
         return ET.fromstring("<ok/>")

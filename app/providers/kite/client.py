@@ -182,13 +182,13 @@ def _settings_max_concurrent_requests() -> int:
 
 
 def _retry_max_attempts() -> int:
-    return max(int(get_settings().kite_retry_max_attempts), 1)
+    return max(int(getattr(get_settings(), "kite_retry_max_attempts", 1)), 1)
 
 
 def _retry_delay_seconds(attempt_index: int) -> float:
     settings = get_settings()
-    base = max(float(settings.kite_retry_base_delay_seconds), 0.0)
-    maximum = max(float(settings.kite_retry_max_delay_seconds), 0.0)
+    base = max(float(getattr(settings, "kite_retry_base_delay_seconds", 0.0)), 0.0)
+    maximum = max(float(getattr(settings, "kite_retry_max_delay_seconds", 0.0)), 0.0)
     if maximum == 0.0:
         return 0.0
     delay: float = min(base * (2**attempt_index), maximum)
@@ -534,6 +534,14 @@ class KiteClient:
             f"</gm2minve_s3t:getPresenceDetail>"
         )
         return await _call(self._credentials, "getPresenceDetail", body, retryable=True)
+
+    async def get_location_detail(self, iccid: str) -> ET.Element:
+        body = (
+            f"{_qualified('getLocationDetail')}"
+            f"{_qualified('icc')}{escape(iccid)}</gm2minve_s3t:icc>"
+            f"</gm2minve_s3t:getLocationDetail>"
+        )
+        return await _call(self._credentials, "getLocationDetail", body, retryable=True)
 
     async def get_subscriptions(
         self,
