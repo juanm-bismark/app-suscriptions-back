@@ -1,6 +1,6 @@
-import enum
 import uuid as _uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import DateTime, Enum, String, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.shared.base import Base
 
 
-class AppRole(str, enum.Enum):
+class AppRole(StrEnum):
     public = "public"
     admin = "admin"
     manager = "manager"

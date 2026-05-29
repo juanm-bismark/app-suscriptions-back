@@ -103,18 +103,20 @@ type = "forbidden"
 source_modules = ["app.tenancy"]
 forbidden_modules = ["app.identity.routers"]
 
-# --- Forward-looking contracts: uncomment in Ola 1 once app.subscriptions and app.providers exist ---
-#
-# [[tool.importlinter.contracts]]
-# name = "subscriptions must not import concrete provider adapters"
-# type = "forbidden"
-# source_modules = ["app.subscriptions"]
-# forbidden_modules = ["app.providers.kite", "app.providers.tele2", "app.providers.moabits"]
-#
-# [[tool.importlinter.contracts]]
-# name = "provider adapters must be independent of each other"
-# type = "independence"
-# modules = ["app.providers.kite", "app.providers.tele2", "app.providers.moabits"]
+[[tool.importlinter.contracts]]
+name = "subscriptions must not import concrete provider adapters"
+type = "forbidden"
+source_modules = ["app.subscriptions"]
+forbidden_modules = ["app.providers.kite", "app.providers.tele2", "app.providers.moabits"]
+
+[[tool.importlinter.contracts]]
+name = "provider adapters must be independent of each other"
+type = "independence"
+modules = ["app.providers.kite", "app.providers.tele2", "app.providers.moabits"]
+
+# TODO(remediation): broken — tenancy.routers.companies and tenancy.routers.credentials
+# directly import app.providers.base, app.providers.moabits.adapter, app.providers.registry.
+# Fix requires moving provider-credential validation out of tenancy routers (architecture decision needed).
 #
 # [[tool.importlinter.contracts]]
 # name = "identity and tenancy must not import from subscriptions or providers"
