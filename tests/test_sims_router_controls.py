@@ -25,6 +25,7 @@ from app.subscriptions.domain import (
     SubscriptionSearchFilters,
 )
 from app.subscriptions.routers import sims
+from app.subscriptions.services import listing as sims_listing
 from app.subscriptions.services import routing as sims_routing
 from app.subscriptions.schemas.sim import (
     SimDetailsIn,
@@ -294,8 +295,8 @@ def test_admin_list_sims_iterates_active_credentials(monkeypatch) -> None:
             assert provider == "moabits"
             return _Adapter()
 
-    monkeypatch.setattr(sims, "_active_admin_credential_rows", _active_rows)
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_active_admin_credential_rows", _active_rows)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
     client = _client(AppRole.admin, registry=_Registry(), company_id=None)
 
     response = client.get("/v1/admin/sims?provider=moabits&limit=20")
@@ -365,8 +366,8 @@ def test_admin_search_sims_applies_common_filters_across_credentials(
             assert provider == "moabits"
             return _Adapter()
 
-    monkeypatch.setattr(sims, "_active_admin_credential_rows", _active_rows)
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_active_admin_credential_rows", _active_rows)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
     client = _client(AppRole.admin, registry=_Registry(), company_id=None)
 
     response = client.post(
@@ -724,8 +725,8 @@ async def test_global_listing_bootstraps_empty_routing_map(monkeypatch) -> None:
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._list_via_routing_index(
@@ -811,8 +812,8 @@ async def test_global_listing_uses_provider_summaries_without_detail_calls(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._list_via_routing_index(
@@ -876,7 +877,7 @@ async def test_global_listing_queries_providers_concurrently(monkeypatch) -> Non
     async def _credentials(*args, **kwargs):
         return {"company_code": "48123"}
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
 
     result = await sims._list_via_routing_index(
         cursor=None,
@@ -953,8 +954,8 @@ async def test_global_listing_respects_total_limit_across_providers(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._list_via_routing_index(
@@ -1041,8 +1042,8 @@ async def test_global_listing_carries_unqueried_providers_in_cursor(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._list_via_routing_index(
@@ -1515,7 +1516,7 @@ async def test_provider_listing_commits_routing_upserts_once(monkeypatch) -> Non
     async def _credentials(*args, **kwargs):
         return {}
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
     db = _Db()
 
     await sims._list_via_provider_search(
@@ -1586,8 +1587,8 @@ async def test_global_iccid_search_uses_routing_map_for_moabits(
             "company_code": "48123",
         }
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_find_routing", _find)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
 
     result = await sims._list_via_routing_index(
         cursor=None,
@@ -1663,9 +1664,9 @@ async def test_global_iccid_search_uses_prefix_routing(
     async def _credentials(*args, **kwargs):
         return {}
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_find_routing", _find)
+    monkeypatch.setattr(sims_listing, "_find_prefix_routing", _find_prefix)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
 
     result = await sims._list_via_routing_index(
         cursor=None,
@@ -1756,10 +1757,10 @@ async def test_global_iccid_search_queries_moabits_when_unmapped(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_find_routing", _find)
+    monkeypatch.setattr(sims_listing, "_find_prefix_routing", _find_prefix)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._list_via_routing_index(
@@ -1839,8 +1840,8 @@ async def test_provider_search_uses_provider_specific_filters(monkeypatch) -> No
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
 
     result = await sims._search_via_provider_filters(
         SimSearchIn(
@@ -1911,8 +1912,8 @@ async def test_provider_search_supports_multiple_statuses_per_provider(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._search_via_provider_filters(
@@ -1954,7 +1955,7 @@ async def test_provider_search_encodes_status_specific_cursors(monkeypatch) -> N
     async def _credentials(*args, **kwargs):
         return {}
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
 
     result = await sims._search_via_provider_filters(
         SimSearchIn(
@@ -2015,8 +2016,8 @@ async def test_provider_search_returns_partial_provider_errors(monkeypatch) -> N
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_listing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_listing, "_upsert_routing", _upsert)
 
     result = await sims._search_via_provider_filters(
         SimSearchIn(
