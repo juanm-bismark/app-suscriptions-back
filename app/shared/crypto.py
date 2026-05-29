@@ -6,7 +6,7 @@ The Fernet key must be a 32-byte URL-safe base64-encoded string (generate with
 """
 
 import json
-from typing import Any, Mapping, Dict
+from typing import Any, Dict, Mapping
 
 from cryptography.fernet import Fernet, InvalidToken
 

@@ -9,7 +9,6 @@ import logging
 import structlog
 from structlog.types import Processor as StructlogProcessor
 
-
 _NOISY_TRANSPORT_LOGGERS = (
     "httpx",
     "httpcore",

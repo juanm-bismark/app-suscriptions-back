@@ -45,7 +45,7 @@ Provider-specific fields returned in Subscription.provider_fields (Kite block):
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import get_settings
@@ -78,8 +78,8 @@ _KITE_WRITABLE: frozenset[str] = frozenset(
 
 def _format_search_dt(value: datetime) -> str:
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).replace(microsecond=0).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 

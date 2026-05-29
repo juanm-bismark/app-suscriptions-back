@@ -26,6 +26,18 @@ ignore = [
   "UP035",       # imports deprecados de typing (List, Dict, etc.)
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.Header",
+  "fastapi.Path",
+  "fastapi.Body",
+  "fastapi.Cookie",
+  "fastapi.Form",
+  "app.identity.dependencies.require_roles",
+]
+
 [tool.ruff.lint.isort]
 combine-as-imports = true
 

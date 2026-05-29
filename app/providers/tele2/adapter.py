@@ -51,7 +51,6 @@ from app.subscriptions.domain import (
     UsageSnapshot,
 )
 
-
 # Native values accepted by Tele2's PUT /devices/{iccid} status field
 _TELE2_WRITABLE: frozenset[str] = frozenset(
     {"ACTIVATED", "TEST_READY", "PURGED", "DEACTIVATED", "INVENTORY", "REPLACED", "RETIRED", "ACTIVATION_READY"}

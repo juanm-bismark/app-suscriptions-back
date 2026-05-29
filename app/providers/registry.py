@@ -18,8 +18,8 @@ class ProviderRegistry:
     def get(self, provider: str) -> SubscriptionProvider:
         try:
             return self._adapters[provider]
-        except KeyError:
-            raise ProviderUnavailable(detail=f"No adapter registered for provider '{provider}'")
+        except KeyError as exc:
+            raise ProviderUnavailable(detail=f"No adapter registered for provider '{provider}'") from exc
 
     def registered_providers(self) -> list[str]:
         return list(self._adapters)

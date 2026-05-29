@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -18,7 +18,6 @@ from app.subscriptions.domain import (
     UsageMetric,
     UsageSnapshot,
 )
-
 
 # Presence level semantics mapping:
 # - "gprs", "ip", "ip reachability" => ONLINE
@@ -352,7 +351,7 @@ def parse_subscription(el: ET.Element, iccid: str, company_id: str) -> Subscript
 
 
 def parse_usage_snapshot(el: ET.Element, iccid: str) -> UsageSnapshot:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     daily = _parse_consumption_block(el.find("{*}consumptionDaily"))
     monthly = _parse_consumption_block(el.find("{*}consumptionMonthly"))
 
@@ -442,7 +441,7 @@ def parse_status_detail(el: ET.Element, iccid: str) -> StatusDetail:
         iccid=iccid,
         state=_text(el, "state") or "UNKNOWN",
         automatic=_coerce_bool(_text(el, "automatic")) or False,
-        current_status_date=_parse_dt(_text(el, "currentStatusDate")) or datetime.now(tz=timezone.utc),
+        current_status_date=_parse_dt(_text(el, "currentStatusDate")) or datetime.now(tz=UTC),
         change_reason=_text(el, "changeReason"),
         user=_text(el, "user"),
     )
@@ -456,7 +455,7 @@ def parse_status_history(iccid: str, records: list[ET.Element]) -> list[StatusHi
             StatusHistoryRecord(
                 state=_text(el, "state") or "UNKNOWN",
                 automatic=_coerce_bool(_text(el, "automatic")) or False,
-                time=_parse_dt(_text(el, "time")) or datetime.now(tz=timezone.utc),
+                time=_parse_dt(_text(el, "time")) or datetime.now(tz=UTC),
                 reason=_text(el, "reason"),
                 user=_text(el, "user"),
             )

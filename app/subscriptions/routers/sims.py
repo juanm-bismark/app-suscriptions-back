@@ -57,6 +57,7 @@ from app.subscriptions.domain import (
 from app.subscriptions.models.lifecycle_audit import LifecycleChangeAudit
 from app.subscriptions.models.routing import SimRoutingMap, SimRoutingPrefixMap
 from app.subscriptions.schemas.sim import (
+    LocationOut,
     PresenceOut,
     ProviderStatusOut,
     SimDetailsErrorOut,
@@ -72,10 +73,9 @@ from app.subscriptions.schemas.sim import (
     SimStatsOut,
     SmsHistoryOut,
     SmsHistoryRecordOut,
-    LocationOut,
+    StatusChangeIn,
     StatusHistoryOut,
     StatusHistoryRecordOut,
-    StatusChangeIn,
     SubscriptionOut,
     UsageOut,
 )

@@ -29,9 +29,9 @@ async def get_current_profile(
             algorithms=["HS256"],
         )
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired") from None
     except jwt.PyJWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from None
 
     user_id: str | None = payload.get("sub")
     if not user_id:
@@ -68,7 +68,7 @@ async def get_current_profile_optional(
     return result.scalar_one_or_none()
 
 
-def require_roles(*roles: AppRole) -> "Callable[[Profile], Awaitable[Profile]]":
+def require_roles(*roles: AppRole) -> Callable[[Profile], Awaitable[Profile]]:
     async def _checker(profile: Profile = Depends(get_current_profile)) -> Profile:
         if profile.role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")

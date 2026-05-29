@@ -11,8 +11,8 @@ them internally to its own typed credentials dataclass. The dict shape per
 provider is documented in each adapter module.
 """
 
-from enum import StrEnum
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from app.subscriptions.domain import (

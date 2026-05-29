@@ -85,7 +85,6 @@ from app.subscriptions.domain import (
     UsageSnapshot,
 )
 
-
 _TOKEN_REFRESH_MARGIN_SECONDS = 300
 _TOKEN_FALLBACK_TTL_SECONDS = 5 * 60 * 60 + 50 * 60
 _TOKEN_STALE_GRACE_SECONDS = 30

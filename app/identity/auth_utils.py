@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
@@ -18,7 +18,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str, secret: str, expire_minutes: int) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
+    expire = datetime.now(UTC) + timedelta(minutes=expire_minutes)
     payload: dict[str, str | datetime] = {"sub": subject, "exp": expire}
     return jwt.encode(payload, secret, algorithm="HS256")
 
@@ -26,7 +26,7 @@ def create_access_token(subject: str, secret: str, expire_minutes: int) -> str:
 def generate_refresh_token() -> tuple[str, datetime]:
     """Return (raw_token, expires_at). The raw token is sent to the client."""
     token = secrets.token_hex(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expires_at = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     return token, expires_at
 
 
