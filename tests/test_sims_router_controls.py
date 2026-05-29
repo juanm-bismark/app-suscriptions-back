@@ -25,6 +25,7 @@ from app.subscriptions.domain import (
     SubscriptionSearchFilters,
 )
 from app.subscriptions.routers import sims
+from app.subscriptions.services import filters as sims_filters
 from app.subscriptions.services import listing as sims_listing
 from app.subscriptions.services import routing as sims_routing
 from app.subscriptions.schemas.sim import (
@@ -167,7 +168,7 @@ def test_global_listing_rejects_filters_without_provider() -> None:
 
 
 def test_tele2_bootstrap_filters_include_default_modified_since() -> None:
-    filters = sims._bootstrap_filters_for_provider("tele2")
+    filters = sims_filters._bootstrap_filters_for_provider("tele2")
 
     assert filters.modified_since is not None
     assert filters.modified_since.tzinfo == UTC
@@ -589,7 +590,7 @@ def test_post_filters_match_operator_services_and_lu() -> None:
         ),
     ]
 
-    filtered = sims._apply_post_filters(
+    filtered = sims_filters._apply_post_filters(
         subs,
         SubscriptionSearchFilters(
             operator="claro",
@@ -653,14 +654,14 @@ def test_post_filters_match_provider_specific_custom_fields() -> None:
 
     assert [
         sub.iccid
-        for sub in sims._apply_post_filters(
+        for sub in sims_filters._apply_post_filters(
             subs,
             SubscriptionSearchFilters(custom={"alias": "truck", "customField1": "north"}),
         )
     ] == ["kite-1"]
     assert [
         sub.iccid
-        for sub in sims._apply_post_filters(
+        for sub in sims_filters._apply_post_filters(
             subs,
             SubscriptionSearchFilters(
                 custom={"rate_plan": "gold", "accountCustom1": "logistics"}
@@ -669,7 +670,7 @@ def test_post_filters_match_provider_specific_custom_fields() -> None:
     ] == ["tele2-1"]
     assert [
         sub.iccid
-        for sub in sims._apply_post_filters(
+        for sub in sims_filters._apply_post_filters(
             subs,
             SubscriptionSearchFilters(custom={"product_name": "full", "autorenewal": "true"}),
         )
@@ -1066,7 +1067,7 @@ async def test_global_listing_carries_unqueried_providers_in_cursor(
 
     assert calls == [("kite", 1), ("tele2", 1)]
     assert [item.provider for item in result.items] == ["kite", "tele2"]
-    assert sims._decode_global_cursor(result.next_cursor) == {"moabits": None}
+    assert sims_listing._decode_global_cursor(result.next_cursor) == {"moabits": None}
     assert [
         (status.provider, status.status, status.count)
         for status in result.provider_statuses
@@ -1971,9 +1972,9 @@ async def test_provider_search_encodes_status_specific_cursors(monkeypatch) -> N
         _Registry(),
     )
 
-    provider_cursors = sims._decode_global_cursor(result.next_cursor)
+    provider_cursors = sims_listing._decode_global_cursor(result.next_cursor)
     assert provider_cursors is not None
-    status_cursors = sims._decode_status_cursor(provider_cursors["tele2"])
+    status_cursors = sims_listing._decode_status_cursor(provider_cursors["tele2"])
     assert status_cursors == {
         "ACTIVATED": "ACTIVATED-cursor",
         "TEST_READY": "TEST_READY-cursor",
@@ -2048,9 +2049,9 @@ async def test_provider_search_returns_partial_provider_errors(monkeypatch) -> N
 
 @pytest.fixture(autouse=True)
 def _clear_iccid_negative_cache():
-    sims._iccid_negative_cache.clear()
+    sims_routing._iccid_negative_cache.clear()
     yield
-    sims._iccid_negative_cache.clear()
+    sims_routing._iccid_negative_cache.clear()
 
 
 def _make_subscription(iccid: str, provider: str) -> Subscription:
@@ -2078,7 +2079,7 @@ def test_iccid_routing_prefix_normalizes_digits(
     iccid: str,
     expected: str | None,
 ) -> None:
-    assert sims._iccid_routing_prefix(iccid) == expected
+    assert sims_routing._iccid_routing_prefix(iccid) == expected
 
 
 @pytest.mark.asyncio
@@ -2274,7 +2275,7 @@ async def test_discover_iccid_skips_providers_without_iccid_filter(
     monkeypatch.setattr(sims_routing, "_upsert_routing", _upsert)
     db = _Db()
 
-    result = await sims._discover_iccid_across_providers(
+    result = await sims_routing._discover_iccid_across_providers(
         "8934070100000000001",
         COMPANY_ID,
         db=db,
@@ -2332,7 +2333,7 @@ async def test_discover_iccid_treats_provider_errors_as_provider_misses(
     monkeypatch.setattr(sims_routing, "_load_credentials", _credentials)
     monkeypatch.setattr(sims_routing, "_upsert_routing", _upsert)
 
-    result = await sims._discover_iccid_across_providers(
+    result = await sims_routing._discover_iccid_across_providers(
         "8934070100000000001",
         COMPANY_ID,
         db=_Db(),
@@ -2352,7 +2353,7 @@ def test_set_status_does_not_trigger_fanout_on_routing_miss(monkeypatch) -> None
         raise AssertionError("write endpoints must remain strict")
 
     monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+    monkeypatch.setattr(sims_routing, "_discover_iccid_across_providers", _discover)
 
     client = _client(AppRole.admin)
     response = client.put(

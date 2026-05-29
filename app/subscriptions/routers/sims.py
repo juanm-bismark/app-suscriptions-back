@@ -67,8 +67,6 @@ from app.subscriptions.services.credentials import (
     _load_credentials,
 )
 from app.subscriptions.services.filters import (
-    _apply_post_filters,  # noqa: F401  (re-exported for test access)
-    _bootstrap_filters_for_provider,  # noqa: F401  (re-exported for test monkeypatching)
     _build_filters,
     _parse_custom_filters,
     _parse_metric_list,
@@ -83,8 +81,6 @@ from app.subscriptions.services.idempotency import (
     _write_lifecycle_audit,
 )
 from app.subscriptions.services.listing import (
-    _decode_global_cursor,  # noqa: F401  (re-exported for test access)
-    _decode_status_cursor,  # noqa: F401  (re-exported for test access)
     _list_via_admin_credentials,
     _list_via_provider_search,
     _list_via_routing_index,
@@ -103,10 +99,7 @@ from app.subscriptions.services.provider_dispatch import (
     _provider_error_fields,
 )
 from app.subscriptions.services.routing import (
-    _discover_iccid_across_providers,  # noqa: F401  (re-exported for test monkeypatching)
     _find_routing,
-    _iccid_negative_cache,  # noqa: F401  (re-exported for test monkeypatching)
-    _iccid_routing_prefix,  # noqa: F401  (re-exported for test monkeypatching)
     _resolve_routing_or_discover,
     _routing_iccid,
     _upsert_routing,
