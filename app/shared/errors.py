@@ -109,85 +109,47 @@ class ProviderProtocolError(DomainError):
     title = "Unexpected response from provider"
 
 
-class ProviderResourceNotFound(DomainError):
+class _ProviderDetailError(DomainError):
+    """Provider error carrying provider-side request/error identifiers."""
+
+    def __init__(
+        self,
+        *,
+        detail: str | None = None,
+        provider_request_id: str | None = None,
+        provider_error_code: str | None = None,
+        provider_error_message: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        self.provider_request_id = provider_request_id
+        self.provider_error_code = provider_error_code
+        self.provider_error_message = provider_error_message
+        merged_extra = extra or {}
+        if provider_request_id is not None:
+            merged_extra["provider_request_id"] = provider_request_id
+        if provider_error_code is not None:
+            merged_extra["provider_error_code"] = provider_error_code
+        if provider_error_message is not None:
+            merged_extra["provider_error_message"] = provider_error_message
+        super().__init__(detail=detail, extra=merged_extra)
+
+
+class ProviderResourceNotFound(_ProviderDetailError):
     code = "provider.resource_not_found"
     http_status = 404
     title = "Resource not found on provider"
 
-    def __init__(
-        self,
-        *,
-        detail: str | None = None,
-        provider_request_id: str | None = None,
-        provider_error_code: str | None = None,
-        provider_error_message: str | None = None,
-        extra: dict[str, Any] | None = None,
-    ) -> None:
-        self.provider_request_id = provider_request_id
-        self.provider_error_code = provider_error_code
-        self.provider_error_message = provider_error_message
-        merged_extra = extra or {}
-        if provider_request_id is not None:
-            merged_extra["provider_request_id"] = provider_request_id
-        if provider_error_code is not None:
-            merged_extra["provider_error_code"] = provider_error_code
-        if provider_error_message is not None:
-            merged_extra["provider_error_message"] = provider_error_message
-        super().__init__(detail=detail, extra=merged_extra)
 
-
-class ProviderValidationError(DomainError):
+class ProviderValidationError(_ProviderDetailError):
     code = "provider.validation_error"
     http_status = 422
     title = "Provider validation error"
 
-    def __init__(
-        self,
-        *,
-        detail: str | None = None,
-        provider_request_id: str | None = None,
-        provider_error_code: str | None = None,
-        provider_error_message: str | None = None,
-        extra: dict[str, Any] | None = None,
-    ) -> None:
-        self.provider_request_id = provider_request_id
-        self.provider_error_code = provider_error_code
-        self.provider_error_message = provider_error_message
-        merged_extra = extra or {}
-        if provider_request_id is not None:
-            merged_extra["provider_request_id"] = provider_request_id
-        if provider_error_code is not None:
-            merged_extra["provider_error_code"] = provider_error_code
-        if provider_error_message is not None:
-            merged_extra["provider_error_message"] = provider_error_message
-        super().__init__(detail=detail, extra=merged_extra)
 
-
-class ProviderForbidden(DomainError):
+class ProviderForbidden(_ProviderDetailError):
     code = "provider.forbidden"
     http_status = 403
     title = "Provider forbidden"
-
-    def __init__(
-        self,
-        *,
-        detail: str | None = None,
-        provider_request_id: str | None = None,
-        provider_error_code: str | None = None,
-        provider_error_message: str | None = None,
-        extra: dict[str, Any] | None = None,
-    ) -> None:
-        self.provider_request_id = provider_request_id
-        self.provider_error_code = provider_error_code
-        self.provider_error_message = provider_error_message
-        merged_extra = extra or {}
-        if provider_request_id is not None:
-            merged_extra["provider_request_id"] = provider_request_id
-        if provider_error_code is not None:
-            merged_extra["provider_error_code"] = provider_error_code
-        if provider_error_message is not None:
-            merged_extra["provider_error_message"] = provider_error_message
-        super().__init__(detail=detail, extra=merged_extra)
 
 
 class UnsupportedOperation(DomainError):
@@ -196,6 +158,12 @@ class UnsupportedOperation(DomainError):
     code = "provider.unsupported_operation"
     http_status = 409
     title = "Operation not supported by this provider"
+
+
+class ConfigurationError(DomainError):
+    code = "config.invalid"
+    http_status = 500
+    title = "Server configuration error"
 
 
 # ── Tenancy / credentials ──────────────────────────────────────────────────────

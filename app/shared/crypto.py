@@ -8,9 +8,12 @@ The Fernet key must be a 32-byte URL-safe base64-encoded string (generate with
 import json
 from typing import Any, Dict, Mapping
 
+import structlog
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.shared.errors import ProviderUnavailable
+from app.shared.errors import ConfigurationError
+
+_log = structlog.get_logger()
 
 
 def encrypt_credentials(plaintext: Mapping[str, Any], fernet_key: str) -> str:
@@ -24,8 +27,11 @@ def decrypt_credentials(encrypted: str, fernet_key: str) -> Dict[str, Any]:
         decoded: Dict[str, Any] = json.loads(f.decrypt(encrypted.encode()))
         return decoded
     except InvalidToken as exc:
-        raise ProviderUnavailable(
+        raise ConfigurationError(
             detail="Credential decryption failed — verify FERNET_KEY configuration"
         ) from exc
     except Exception as exc:
-        raise ProviderUnavailable(detail=f"Credential load error: {exc}") from exc
+        _log.error("credential_decrypt_unexpected_error", error=str(exc))
+        raise ConfigurationError(
+            detail="Credential load error — check server configuration"
+        ) from exc
