@@ -15,3 +15,6 @@ import-linter>=2.0
 
 # Type checking (optional but recommended)
 mypy>=1.0.0
+
+# Pre-commit hooks (run: pre-commit install)
+pre-commit>=3.0
