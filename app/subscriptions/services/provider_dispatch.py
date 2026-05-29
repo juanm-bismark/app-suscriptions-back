@@ -1,6 +1,6 @@
 """Provider capability checks and dispatch helpers."""
 import asyncio
-from typing import Any, Literal, TypeGuard
+from typing import Any, Literal, TypeGuard, cast
 
 from app.providers.base import Provider, SearchableProvider
 from app.shared.errors import (
@@ -29,7 +29,6 @@ def _adapter_bootstrap_filters(
     provider_name: str,
     adapter: Any,
 ) -> SubscriptionSearchFilters:
-    from typing import cast
     bootstrap_filters = getattr(adapter, "bootstrap_filters", None)
     if callable(bootstrap_filters):
         return cast(SubscriptionSearchFilters, bootstrap_filters())

@@ -28,6 +28,7 @@ from app.subscriptions.routers import sims
 from app.subscriptions.services import filters as sims_filters
 from app.subscriptions.services import listing as sims_listing
 from app.subscriptions.services import routing as sims_routing
+from app.subscriptions.services import stats as sims_stats
 from app.subscriptions.schemas.sim import (
     SimDetailsIn,
     SimListOut,
@@ -197,7 +198,7 @@ def test_stats_data_service_query_bool_parsing(monkeypatch) -> None:
             False,
         )
 
-    monkeypatch.setattr(sims, "_collect_provider_stats", _collect_provider_stats)
+    monkeypatch.setattr(sims_stats, "_collect_provider_stats", _collect_provider_stats)
     client = _client(AppRole.member)
 
     cases = [
@@ -237,7 +238,7 @@ def test_get_sim_stats_returns_aggregated_provider_counts(monkeypatch) -> None:
             False,
         )
 
-    monkeypatch.setattr(sims, "_collect_provider_stats", _collect_provider_stats)
+    monkeypatch.setattr(sims_stats, "_collect_provider_stats", _collect_provider_stats)
     client = _client(AppRole.member)
 
     response = client.get(
@@ -432,7 +433,7 @@ def test_admin_sim_stats_aggregates_active_credentials(monkeypatch) -> None:
     monkeypatch.setattr(sims, "_active_admin_credential_rows", _active_rows)
     monkeypatch.setattr(sims, "_load_credentials", _credentials)
     monkeypatch.setattr(
-        sims,
+        sims_stats,
         "_collect_provider_stats_with_credentials",
         _collect_with_credentials,
     )

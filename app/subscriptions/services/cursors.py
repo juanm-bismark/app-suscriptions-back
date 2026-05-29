@@ -2,6 +2,10 @@
 import base64
 import json
 
+_GLOBAL_CURSOR_PREFIX = "global:"
+_ADMIN_CURSOR_PREFIX = "admin:"
+_STATUS_CURSOR_PREFIX = "statuses:"
+
 
 def encode_cursor(prefix: str, mapping: dict[str, str | None]) -> str | None:
     active = {k: v for k, v in mapping.items() if v is not None}

@@ -61,6 +61,7 @@ from app.subscriptions.schemas.sim import (
     SubscriptionOut,
     UsageOut,
 )
+from app.subscriptions.services import stats as _stats
 from app.subscriptions.services.credentials import (
     _active_admin_credential_rows,
     _credential_row_company_id,
@@ -104,11 +105,6 @@ from app.subscriptions.services.routing import (
     _routing_iccid,
     _upsert_routing,
 )
-from app.subscriptions.services.stats import (
-    _collect_provider_stats,
-    _collect_provider_stats_with_credentials,
-    _merge_stats,
-)
 
 logger = structlog.get_logger(__name__)
 
@@ -118,11 +114,6 @@ admin_router = APIRouter(
     tags=["admin-sims"],
     dependencies=[Depends(require_roles(AppRole.admin))],
 )
-_GLOBAL_CURSOR_PREFIX = "global:"
-_ADMIN_CURSOR_PREFIX = "admin:"
-_STATUS_CURSOR_PREFIX = "statuses:"
-_STATS_PAGE_LIMIT = 500
-_STATS_MAX_PAGES = 100
 
 
 # ── Dependencies ────────────────────────────────────────────────────────────────
@@ -363,7 +354,7 @@ async def get_sim_stats(
     partial = False
     for provider_name in selected:
         try:
-            provider_stats, provider_partial = await _collect_provider_stats(
+            provider_stats, provider_partial = await _stats._collect_provider_stats(
                 provider_name,
                 filters,
                 company_id,
@@ -372,7 +363,7 @@ async def get_sim_stats(
                 registry,
                 stale_threshold,
             )
-            _merge_stats(merged, provider_stats)
+            _stats._merge_stats(merged, provider_stats)
             partial = partial or provider_partial
         except Exception as exc:
             failed_provider, _provider_status = _global_provider_failure(
@@ -464,7 +455,7 @@ async def admin_get_sim_stats(
                     )
                 creds = await _load_credentials(company_id, provider_name, db, settings)
                 provider_stats, provider_partial = (
-                    await _collect_provider_stats_with_credentials(
+                    await _stats._collect_provider_stats_with_credentials(
                         provider_name,
                         filters,
                         adapter,
@@ -472,7 +463,7 @@ async def admin_get_sim_stats(
                         stale_threshold,
                     )
                 )
-                _merge_stats(merged, provider_stats)
+                _stats._merge_stats(merged, provider_stats)
                 partial = partial or provider_partial
             except Exception as exc:
                 failed_provider, _provider_status = _global_provider_failure(

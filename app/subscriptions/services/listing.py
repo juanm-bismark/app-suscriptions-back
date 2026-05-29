@@ -34,7 +34,13 @@ from app.subscriptions.services.credentials import (
     _credential_row_provider,
     _load_credentials,
 )
-from app.subscriptions.services.cursors import decode_cursor, encode_cursor
+from app.subscriptions.services.cursors import (
+    _ADMIN_CURSOR_PREFIX,
+    _GLOBAL_CURSOR_PREFIX,
+    _STATUS_CURSOR_PREFIX,
+    decode_cursor,
+    encode_cursor,
+)
 from app.subscriptions.services.filters import (
     _apply_post_filters,
     _merge_search_filters,
@@ -59,10 +65,6 @@ from app.subscriptions.services.routing import (
 )
 
 logger = structlog.get_logger(__name__)
-
-_GLOBAL_CURSOR_PREFIX = "global:"
-_ADMIN_CURSOR_PREFIX = "admin:"
-_STATUS_CURSOR_PREFIX = "statuses:"
 
 
 def _tele2_missing_modified_since_response() -> JSONResponse:
