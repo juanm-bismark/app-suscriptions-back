@@ -9,20 +9,19 @@ import asyncio
 import base64
 import dataclasses
 import json
-import re
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal, TypeGuard, cast
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, get_settings, require_fernet_key
+from app.config import Settings, get_settings
 from app.database import get_db
 from app.identity.dependencies import (
     get_current_company_id,
@@ -37,16 +36,10 @@ from app.providers.base import (
     StatusHistoryProvider,
 )
 from app.providers.registry import ProviderRegistry
-from app.shared.crypto import decrypt_credentials
 from app.shared.errors import (
     BatchTooLarge,
-    CredentialsMissing,
-    DomainError,
     IdempotencyKeyRequired,
     ListingPreconditionFailed,
-    ProviderRateLimited,
-    ProviderResourceNotFound,
-    ProviderUnavailable,
     SubscriptionNotFound,
     UnsupportedOperation,
 )
@@ -55,12 +48,11 @@ from app.subscriptions.domain import (
     SubscriptionSearchFilters,
 )
 from app.subscriptions.models.lifecycle_audit import LifecycleChangeAudit
-from app.subscriptions.models.routing import SimRoutingMap, SimRoutingPrefixMap
+from app.subscriptions.models.routing import SimRoutingMap
 from app.subscriptions.schemas.sim import (
     LocationOut,
     PresenceOut,
     ProviderStatusOut,
-    SimDetailsErrorOut,
     SimDetailsIn,
     SimDetailsItemOut,
     SimDetailsOut,
@@ -79,10 +71,17 @@ from app.subscriptions.schemas.sim import (
     SubscriptionOut,
     UsageOut,
 )
+from app.subscriptions.services.credentials import (
+    _active_admin_credential_rows,
+    _admin_effective_filters,
+    _credential_row_company_id,
+    _credential_row_provider,
+    _load_credentials,
+)
 from app.subscriptions.services.cursors import decode_cursor, encode_cursor
 from app.subscriptions.services.filters import (
     _apply_post_filters,
-    _bootstrap_filters_for_provider,
+    _bootstrap_filters_for_provider,  # noqa: F401  (re-exported for test monkeypatching)
     _build_filters,
     _merge_search_filters,
     _parse_custom_filters,
@@ -97,14 +96,29 @@ from app.subscriptions.services.normalization import (
     _status_group,
     _to_out,
 )
-from app.tenancy.credential_expiry import (
-    CredentialExpiryStatus,
-    credential_expiry_datetime,
-    credential_expiry_status,
+from app.subscriptions.services.provider_dispatch import (
+    _adapter_bootstrap_filters,
+    _adapter_supports_list_filter,
+    _as_exception,
+    _details_error_from_exception,
+    _global_provider_call_limits,
+    _global_provider_failure,
+    _is_global_iccid_search,
+    _is_searchable_provider,
+    _provider_error_fields,
 )
-from app.tenancy.models.credentials import CompanyProviderCredentials
+from app.subscriptions.services.routing import (
+    _discover_iccid_across_providers,  # noqa: F401  (re-exported for test monkeypatching)
+    _find_prefix_routing,
+    _find_routing,
+    _iccid_negative_cache,  # noqa: F401  (re-exported for test monkeypatching)
+    _iccid_routing_prefix,  # noqa: F401  (re-exported for test monkeypatching)
+    _normalize_iccid_for_routing,
+    _resolve_routing_or_discover,
+    _routing_iccid,
+    _upsert_routing,
+)
 from app.tenancy.models.idempotency import IdempotencyKey
-from app.tenancy.models.provider_mapping import CompanyProviderMapping
 
 logger = structlog.get_logger(__name__)
 
@@ -114,8 +128,6 @@ admin_router = APIRouter(
     tags=["admin-sims"],
     dependencies=[Depends(require_roles(AppRole.admin))],
 )
-_ICCID_DIGITS_RE = re.compile(r"\D+")
-_ICCID_ROUTING_PREFIX_LENGTH = 6
 _GLOBAL_CURSOR_PREFIX = "global:"
 _ADMIN_CURSOR_PREFIX = "admin:"
 _STATUS_CURSOR_PREFIX = "statuses:"
@@ -129,83 +141,6 @@ _STATS_MAX_PAGES = 100
 def get_registry(request: Request) -> ProviderRegistry:
     registry: ProviderRegistry = request.app.state.provider_registry
     return registry
-
-
-async def _load_credentials(
-    company_id: uuid.UUID,
-    provider: str,
-    db: AsyncSession,
-    settings: Settings,
-) -> dict:
-    result = await db.execute(
-        select(CompanyProviderCredentials).where(
-            CompanyProviderCredentials.company_id == company_id,
-            CompanyProviderCredentials.provider == provider,
-            CompanyProviderCredentials.active.is_(True),
-        )
-    )
-    row = result.scalar_one_or_none()
-    if row is None:
-        raise CredentialsMissing(
-            detail=f"No active credentials for provider '{provider}'"
-        )
-    _warn_if_kite_certificate_expiring(row)
-    creds = decrypt_credentials(row.credentials_enc, require_fernet_key(settings))
-    creds["company_id"] = str(company_id)
-    creds["account_scope"] = row.account_scope or {}
-    if row.provider == "tele2" and (row.account_scope or {}).get("max_tps") is not None:
-        creds["max_tps"] = (row.account_scope or {})["max_tps"]
-    if row.provider == Provider.MOABITS.value:
-        mapping_result = await db.execute(
-            select(CompanyProviderMapping).where(
-                CompanyProviderMapping.company_id == company_id,
-                CompanyProviderMapping.provider == Provider.MOABITS.value,
-                CompanyProviderMapping.active.is_(True),
-            )
-        )
-        mapping = mapping_result.scalar_one_or_none()
-        if not isinstance(mapping, CompanyProviderMapping):
-            raise ListingPreconditionFailed(
-                detail=(
-                    "Company is not linked to a Moabits company code. "
-                    "An admin must configure the provider mapping first."
-                ),
-                extra={"provider": Provider.MOABITS.value},
-            )
-        creds["company_code"] = mapping.provider_company_code
-        creds["provider_company_mapping"] = {
-            "companyCode": mapping.provider_company_code,
-            "companyName": mapping.provider_company_name,
-            "clie_id": mapping.clie_id,
-        }
-    return creds
-
-
-def _warn_if_kite_certificate_expiring(row: CompanyProviderCredentials) -> None:
-    if row.provider != "kite":
-        return
-    expiry_status = credential_expiry_status(row.account_scope)
-    if expiry_status == CredentialExpiryStatus.VALID:
-        return
-    expires_raw = (row.account_scope or {}).get("cert_expires_at")
-    expires_at = credential_expiry_datetime(row.account_scope)
-    if expiry_status == CredentialExpiryStatus.INVALID or expires_at is None:
-        logger.warning(
-            "kite_cert_expiry_invalid",
-            company_id=str(row.company_id),
-            credential_id=str(row.id),
-            cert_expires_at=expires_raw,
-        )
-        return
-    days_remaining = (expires_at - datetime.now(UTC)).days
-    if days_remaining in {30, 15, 7} or days_remaining < 7:
-        logger.warning(
-            "kite_cert_expiring",
-            company_id=str(row.company_id),
-            credential_id=str(row.id),
-            cert_expires_at=expires_at.isoformat(),
-            days_remaining=days_remaining,
-        )
 
 
 async def _resolve_routing(
@@ -223,237 +158,6 @@ async def _resolve_routing(
             )
         )
     return routing
-
-
-def _normalize_iccid_for_routing(iccid: str) -> str:
-    return _ICCID_DIGITS_RE.sub("", iccid)
-
-
-def _routing_iccid(routing: Any, requested_iccid: str) -> str:
-    routed = getattr(routing, "iccid", None)
-    if routed:
-        return str(routed)
-    return _normalize_iccid_for_routing(requested_iccid) or requested_iccid.strip()
-
-
-async def _find_routing(
-    iccid: str,
-    company_id: uuid.UUID,
-    db: AsyncSession,
-) -> SimRoutingMap | None:
-    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
-    result = await db.execute(
-        select(SimRoutingMap).where(
-            SimRoutingMap.iccid == route_iccid,
-            SimRoutingMap.company_id == company_id,
-        )
-    )
-    return result.scalar_one_or_none()
-
-
-def _iccid_routing_prefix(iccid: str) -> str | None:
-    digits = _normalize_iccid_for_routing(iccid)
-    if len(digits) < _ICCID_ROUTING_PREFIX_LENGTH:
-        return None
-    return digits[:_ICCID_ROUTING_PREFIX_LENGTH]
-
-
-async def _find_prefix_routing(
-    iccid: str,
-    company_id: uuid.UUID,
-    db: AsyncSession,
-) -> SimRoutingMap | None:
-    iccid_prefix = _iccid_routing_prefix(iccid)
-    if iccid_prefix is None:
-        return None
-
-    result = await db.execute(
-        select(SimRoutingPrefixMap).where(
-            SimRoutingPrefixMap.iccid_prefix == iccid_prefix,
-        )
-    )
-    prefix = result.scalar_one_or_none()
-    if prefix is None:
-        return None
-
-    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
-    return SimRoutingMap(
-        iccid=route_iccid,
-        provider=prefix.provider,
-        company_id=company_id,
-    )
-
-
-# ── Lazy ICCID resolution (routing map → cross-provider fan-out) ────────────────
-
-
-_NEGATIVE_CACHE_TTL_SECONDS = 60.0
-_NEGATIVE_CACHE_MAX_ENTRIES = 10_000
-# Process-local cache; per worker is fine — a stale miss just costs one extra
-# fan-out, never a wrong answer.
-_iccid_negative_cache: dict[tuple[uuid.UUID, str], float] = {}
-
-
-def _negative_cache_hit(company_id: uuid.UUID, iccid: str) -> bool:
-    key = (company_id, iccid)
-    expires_at = _iccid_negative_cache.get(key)
-    if expires_at is None:
-        return False
-    if time.monotonic() >= expires_at:
-        _iccid_negative_cache.pop(key, None)
-        return False
-    return True
-
-
-def _negative_cache_record(company_id: uuid.UUID, iccid: str) -> None:
-    now = time.monotonic()
-    if len(_iccid_negative_cache) >= _NEGATIVE_CACHE_MAX_ENTRIES:
-        for key, expires_at in list(_iccid_negative_cache.items()):
-            if expires_at <= now:
-                _iccid_negative_cache.pop(key, None)
-        if len(_iccid_negative_cache) >= _NEGATIVE_CACHE_MAX_ENTRIES:
-            _iccid_negative_cache.pop(next(iter(_iccid_negative_cache)), None)
-    _iccid_negative_cache[(company_id, iccid)] = now + _NEGATIVE_CACHE_TTL_SECONDS
-
-
-def _negative_cache_forget(company_id: uuid.UUID, iccid: str) -> None:
-    _iccid_negative_cache.pop((company_id, iccid), None)
-
-
-def _unresolved_iccid_error(iccid: str) -> SubscriptionNotFound:
-    return SubscriptionNotFound(
-        detail=(
-            f"SIM {iccid} not found in any registered provider that supports "
-            "ICCID lookup. Verify the ICCID is correct. If the SIM lives on a "
-            "provider whose listing API cannot filter by ICCID (e.g. Moabits "
-            "without a populated company code), bootstrap the routing index via "
-            "POST /v1/sims/import or a provider-scoped listing."
-        )
-    )
-
-
-async def _discover_iccid_across_providers(
-    iccid: str,
-    company_id: uuid.UUID,
-    db: AsyncSession,
-    settings: Settings,
-    registry: ProviderRegistry,
-) -> Subscription | None:
-    """Fan out to every provider that supports listing filtered by ICCID.
-
-    Upserts the routing map for every SIM the providers return and commits
-    once at the end. Returns the Subscription whose ICCID matches the query
-    (so callers can short-circuit a second provider call), or None when no
-    provider claimed it. Provider-level failures during setup or the search
-    itself are logged and treated as misses for that provider — discovery
-    succeeds if *any* provider returns a match.
-    """
-    provider_calls: list[tuple[str, Any, dict[str, Any]]] = []
-    for provider in Provider:
-        provider_name = provider.value
-        try:
-            adapter = registry.get(provider_name)
-            if not _is_searchable_provider(adapter):
-                continue
-            if not _adapter_supports_list_filter(provider_name, adapter, "iccid"):
-                continue
-            creds = await _load_credentials(company_id, provider_name, db, settings)
-        except Exception as exc:
-            logger.warning(
-                "iccid_discovery_setup_error",
-                provider=provider_name,
-                iccid=iccid,
-                error=str(exc),
-            )
-            continue
-        provider_calls.append((provider_name, adapter, creds))
-
-    if not provider_calls:
-        return None
-
-    results = await asyncio.gather(
-        *(
-            adapter.list_subscriptions(
-                creds,
-                cursor=None,
-                limit=1,
-                filters=dataclasses.replace(
-                    _adapter_bootstrap_filters(provider_name, adapter),
-                    iccid=iccid,
-                ),
-            )
-            for provider_name, adapter, creds in provider_calls
-        ),
-        return_exceptions=True,
-    )
-
-    matched: Subscription | None = None
-    any_upserted = False
-    for (provider_name, _adapter, _creds), result in zip(
-        provider_calls, results, strict=True
-    ):
-        if isinstance(result, BaseException):
-            logger.warning(
-                "iccid_discovery_provider_error",
-                provider=provider_name,
-                iccid=iccid,
-                error=str(result),
-            )
-            continue
-        subs, _next_cursor = result
-        for sub in subs:
-            await _upsert_routing(db, sub.iccid, provider_name, company_id)
-            any_upserted = True
-            if matched is None and sub.iccid == iccid:
-                matched = sub
-    if any_upserted:
-        await db.commit()
-    return matched
-
-
-async def _resolve_routing_or_discover(
-    iccid: str,
-    company_id: uuid.UUID,
-    db: AsyncSession,
-    settings: Settings,
-    registry: ProviderRegistry,
-) -> tuple[SimRoutingMap, Subscription | None]:
-    """Resolve normalized ICCID → exact route → prefix route → discovery.
-
-    Returns (routing_entry, prefetched_subscription_or_None). The prefetched
-    Subscription is populated only when discovery hit a provider, letting the
-    caller skip a second provider round-trip. Raises SubscriptionNotFound when
-    neither the routing map nor any provider claims the ICCID.
-    """
-    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
-    routing = await _find_routing(route_iccid, company_id, db)
-    if routing is not None:
-        return routing, None
-
-    routing = await _find_prefix_routing(route_iccid, company_id, db)
-    if routing is not None:
-        return routing, None
-
-    if _negative_cache_hit(company_id, route_iccid):
-        raise _unresolved_iccid_error(route_iccid)
-
-    discovered = await _discover_iccid_across_providers(
-        route_iccid, company_id, db, settings, registry
-    )
-    if discovered is None:
-        _negative_cache_record(company_id, route_iccid)
-        raise _unresolved_iccid_error(route_iccid)
-
-    _negative_cache_forget(company_id, route_iccid)
-    routing = await _find_routing(route_iccid, company_id, db)
-    if routing is None:
-        raise SubscriptionNotFound(
-            detail=(
-                f"SIM {iccid} was discovered on provider '{discovered.provider}' "
-                "but the routing entry could not be persisted. Retry the request."
-            )
-        )
-    return routing, discovered
 
 
 def _require_idempotency_key(
@@ -480,127 +184,6 @@ def _tele2_missing_modified_since_response() -> JSONResponse:
             "errorCode": "10000003",
         },
     )
-
-
-def _is_searchable_provider(adapter: Any) -> TypeGuard[SearchableProvider]:
-    return callable(getattr(adapter, "list_subscriptions", None))
-
-
-def _as_exception(exc: BaseException) -> Exception:
-    if isinstance(exc, Exception):
-        return exc
-    return RuntimeError(str(exc))
-
-
-def _adapter_bootstrap_filters(
-    provider_name: str,
-    adapter: Any,
-) -> SubscriptionSearchFilters:
-    bootstrap_filters = getattr(adapter, "bootstrap_filters", None)
-    if callable(bootstrap_filters):
-        return cast(SubscriptionSearchFilters, bootstrap_filters())
-    return _bootstrap_filters_for_provider(provider_name)
-
-
-def _adapter_supports_list_filter(
-    provider_name: str,
-    adapter: Any,
-    filter_name: str,
-) -> bool:
-    supports_list_filter = getattr(adapter, "supports_list_filter", None)
-    if callable(supports_list_filter):
-        return bool(supports_list_filter(filter_name))
-    if filter_name == "iccid":
-        return provider_name in {
-            Provider.KITE.value,
-            Provider.TELE2.value,
-            Provider.MOABITS.value,
-        }
-    return False
-
-
-async def _active_admin_credential_rows(
-    db: AsyncSession,
-    provider: Provider | None = None,
-) -> list[CompanyProviderCredentials]:
-    stmt = select(CompanyProviderCredentials).where(
-        CompanyProviderCredentials.active.is_(True)
-    )
-    if provider is not None:
-        stmt = stmt.where(CompanyProviderCredentials.provider == provider.value)
-    result = await db.execute(
-        stmt.order_by(
-            CompanyProviderCredentials.provider,
-            CompanyProviderCredentials.company_id,
-        )
-    )
-    return list(result.scalars().all())
-
-
-def _credential_row_provider(row: CompanyProviderCredentials) -> str:
-    return str(row.provider)
-
-
-def _credential_row_company_id(row: CompanyProviderCredentials) -> uuid.UUID:
-    company_id = row.company_id
-    if isinstance(company_id, uuid.UUID):
-        return company_id
-    return uuid.UUID(str(company_id))
-
-
-def _admin_effective_filters(
-    provider_name: str,
-    adapter: Any,
-    filters: SubscriptionSearchFilters,
-    *,
-    use_bootstrap: bool,
-) -> SubscriptionSearchFilters:
-    if not use_bootstrap:
-        return filters
-    bootstrap = _adapter_bootstrap_filters(provider_name, adapter)
-    return dataclasses.replace(
-        bootstrap,
-        status=filters.status,
-        modified_since=filters.modified_since or bootstrap.modified_since,
-        modified_till=filters.modified_till,
-        iccid=filters.iccid,
-        imsi=filters.imsi,
-        msisdn=filters.msisdn,
-        imei=filters.imei,
-        operator=filters.operator,
-        data_service=filters.data_service,
-        sms_service=filters.sms_service,
-        last_lu_since=filters.last_lu_since,
-        last_lu_till=filters.last_lu_till,
-        imsi_list=filters.imsi_list,
-        custom=filters.custom,
-    )
-
-
-# ── Routing map helpers ──────────────────────────────────────────────────────────
-
-
-async def _upsert_routing(
-    db: AsyncSession,
-    iccid: str,
-    provider: str,
-    company_id: uuid.UUID,
-) -> None:
-    """Insert or update the routing index entry for this SIM."""
-    route_iccid = _normalize_iccid_for_routing(iccid) or iccid.strip()
-    stmt = (
-        pg_insert(SimRoutingMap)
-        .values(iccid=route_iccid, provider=provider, company_id=company_id)
-        .on_conflict_do_update(
-            index_elements=["iccid"],
-            set_={
-                "provider": provider,
-                "company_id": company_id,
-                "last_seen_at": func.now(),
-            },
-        )
-    )
-    await db.execute(stmt)
 
 
 # ── Idempotency helpers ──────────────────────────────────────────────────────────
@@ -699,15 +282,6 @@ async def _write_lifecycle_audit(
     )
     db.add(record)
     await db.commit()
-
-
-def _provider_error_fields(exc: Exception) -> tuple[str | None, str | None]:
-    if isinstance(exc, DomainError):
-        return (
-            exc.extra.get("provider_request_id") or exc.extra.get("transaction_id"),
-            exc.extra.get("provider_error_code") or exc.extra.get("exception_id"),
-        )
-    return None, None
 
 
 # ── Read endpoints ───────────────────────────────────────────────────────────────
@@ -817,47 +391,6 @@ def _encode_status_cursor(status_cursors: dict[str, str | None]) -> str | None:
 
 def _decode_status_cursor(cursor: str | None) -> dict[str, str | None] | None:
     return decode_cursor(_STATUS_CURSOR_PREFIX, cursor)
-
-
-def _global_provider_call_limits(page_limit: int, provider_count: int) -> list[int]:
-    if provider_count <= 0:
-        return []
-    base, remainder = divmod(page_limit, provider_count)
-    return [base + (1 if index < remainder else 0) for index in range(provider_count)]
-
-
-def _global_provider_failure(
-    provider_name: str,
-    exc: Exception,
-) -> tuple[dict[str, str], ProviderStatusOut]:
-    code = exc.code if isinstance(exc, DomainError) else "provider.unavailable"
-    title = exc.title if isinstance(exc, DomainError) else "Provider request failed"
-    return (
-        {
-            "provider": provider_name,
-            "code": code,
-            "title": title,
-        },
-        ProviderStatusOut(
-            provider=provider_name,
-            status="error",
-            count=0,
-            code=code,
-            title=title,
-        ),
-    )
-
-
-def _is_global_iccid_search(filters: SubscriptionSearchFilters) -> bool:
-    return (
-        bool(filters.iccid)
-        and filters.status is None
-        and filters.modified_since is None
-        and filters.modified_till is None
-        and not filters.imsi
-        and not filters.msisdn
-        and not filters.custom
-    )
 
 
 async def _list_global_iccid_search(
@@ -2293,57 +1826,6 @@ async def admin_get_sim_stats(
         fresh_at=datetime.now(UTC),
         partial=partial,
         failed_providers=failed_providers,
-    )
-
-
-def _details_error_from_exception(exc: Exception) -> tuple[
-    Literal["not_found", "timeout", "error", "rate_limited"],
-    SimDetailsErrorOut,
-]:
-    if isinstance(exc, (SubscriptionNotFound, ProviderResourceNotFound)):
-        return (
-            "not_found",
-            SimDetailsErrorOut(
-                code=exc.code if isinstance(exc, DomainError) else "subscription.not_found",
-                detail=exc.detail or str(exc),
-            ),
-        )
-    if isinstance(exc, ProviderRateLimited):
-        return (
-            "rate_limited",
-            SimDetailsErrorOut(
-                code=exc.code,
-                detail=exc.detail,
-                retry_after=exc.extra.get("retry_after"),
-            ),
-        )
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
-        return (
-            "timeout",
-            SimDetailsErrorOut(
-                code="provider.unavailable",
-                detail="Provider request timed out",
-            ),
-        )
-    if isinstance(exc, ProviderUnavailable) and "timeout" in (
-        (exc.detail or exc.title).lower()
-    ):
-        return (
-            "timeout",
-            SimDetailsErrorOut(code=exc.code, detail=exc.detail),
-        )
-    if isinstance(exc, DomainError):
-        return (
-            "error",
-            SimDetailsErrorOut(
-                code=exc.code,
-                detail=exc.detail,
-                retry_after=exc.extra.get("retry_after"),
-            ),
-        )
-    return (
-        "error",
-        SimDetailsErrorOut(code="provider.unavailable", detail=str(exc)),
     )
 
 

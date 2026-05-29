@@ -25,6 +25,7 @@ from app.subscriptions.domain import (
     SubscriptionSearchFilters,
 )
 from app.subscriptions.routers import sims
+from app.subscriptions.services import routing as sims_routing
 from app.subscriptions.schemas.sim import (
     SimDetailsIn,
     SimListOut,
@@ -2089,8 +2090,8 @@ async def test_resolve_or_discover_hits_routing_map_without_fanout(
     async def _discover(*args, **kwargs):
         raise AssertionError("routing-map hit must not trigger fan-out")
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+    monkeypatch.setattr(sims_routing, "_find_routing", _find)
+    monkeypatch.setattr(sims_routing, "_discover_iccid_across_providers", _discover)
 
     routing, prefetched = await sims._resolve_routing_or_discover(
         "8934070100000000001",
@@ -2121,9 +2122,9 @@ async def test_resolve_or_discover_uses_prefix_routing_before_fanout(
     async def _discover(*args, **kwargs):
         raise AssertionError("prefix-routing hit must not trigger fan-out")
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
-    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+    monkeypatch.setattr(sims_routing, "_find_routing", _find)
+    monkeypatch.setattr(sims_routing, "_find_prefix_routing", _find_prefix)
+    monkeypatch.setattr(sims_routing, "_discover_iccid_across_providers", _discover)
 
     routing, prefetched = await sims._resolve_routing_or_discover(
         "894620-38075065380465",
@@ -2163,9 +2164,9 @@ async def test_resolve_or_discover_falls_back_to_fanout_when_unmapped(
     async def _find_prefix(iccid, company_id, db):
         return None
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_find_prefix_routing", _find_prefix)
-    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+    monkeypatch.setattr(sims_routing, "_find_routing", _find)
+    monkeypatch.setattr(sims_routing, "_find_prefix_routing", _find_prefix)
+    monkeypatch.setattr(sims_routing, "_discover_iccid_across_providers", _discover)
 
     routing, prefetched = await sims._resolve_routing_or_discover(
         "8934070100000000001",
@@ -2193,9 +2194,9 @@ async def test_resolve_or_discover_raises_and_caches_negative_on_miss(
         discovery_calls.append(iccid)
         return None
 
-    monkeypatch.setattr(sims, "_find_routing", _find)
-    monkeypatch.setattr(sims, "_find_prefix_routing", _find)
-    monkeypatch.setattr(sims, "_discover_iccid_across_providers", _discover)
+    monkeypatch.setattr(sims_routing, "_find_routing", _find)
+    monkeypatch.setattr(sims_routing, "_find_prefix_routing", _find)
+    monkeypatch.setattr(sims_routing, "_discover_iccid_across_providers", _discover)
 
     from app.shared.errors import SubscriptionNotFound
 
@@ -2268,8 +2269,8 @@ async def test_discover_iccid_skips_providers_without_iccid_filter(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_routing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_routing, "_upsert_routing", _upsert)
     db = _Db()
 
     result = await sims._discover_iccid_across_providers(
@@ -2327,8 +2328,8 @@ async def test_discover_iccid_treats_provider_errors_as_provider_misses(
     async def _upsert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sims, "_load_credentials", _credentials)
-    monkeypatch.setattr(sims, "_upsert_routing", _upsert)
+    monkeypatch.setattr(sims_routing, "_load_credentials", _credentials)
+    monkeypatch.setattr(sims_routing, "_upsert_routing", _upsert)
 
     result = await sims._discover_iccid_across_providers(
         "8934070100000000001",
