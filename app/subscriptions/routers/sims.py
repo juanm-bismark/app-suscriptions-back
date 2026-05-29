@@ -79,6 +79,7 @@ from app.subscriptions.schemas.sim import (
     SubscriptionOut,
     UsageOut,
 )
+from app.subscriptions.services.cursors import decode_cursor, encode_cursor
 from app.tenancy.credential_expiry import (
     CredentialExpiryStatus,
     credential_expiry_datetime,
@@ -1318,13 +1319,11 @@ async def _list_via_provider_search(
 
 
 def _encode_global_cursor(provider_cursors: dict[str, str | None]) -> str | None:
+    # Cannot use encode_cursor here: global cursor preserves None values so
+    # unqueried providers are re-queried on the next page.
     if not provider_cursors:
         return None
-    payload = json.dumps(
-        provider_cursors,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
+    payload = json.dumps(provider_cursors, separators=(",", ":"), sort_keys=True).encode()
     token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     return f"{_GLOBAL_CURSOR_PREFIX}{token}"
 
@@ -1333,56 +1332,24 @@ def _decode_global_cursor(cursor: str | None) -> dict[str, str | None] | None:
     if cursor is None:
         return None
     if not cursor.startswith(_GLOBAL_CURSOR_PREFIX):
+        # Legacy bare cursor: broadcast it to all known providers.
         return {provider.value: cursor for provider in Provider}
-    token = cursor[len(_GLOBAL_CURSOR_PREFIX) :]
-    padded = token + ("=" * (-len(token) % 4))
-    try:
-        payload = base64.urlsafe_b64decode(padded.encode())
-        decoded = json.loads(payload.decode())
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    if not isinstance(decoded, dict):
-        return {}
-    return {
-        str(provider): str(provider_cursor) if provider_cursor is not None else None
-        for provider, provider_cursor in decoded.items()
-        if provider in {p.value for p in Provider}
-    }
+    decoded = decode_cursor(_GLOBAL_CURSOR_PREFIX, cursor)
+    if not decoded:
+        return decoded
+    known = {p.value for p in Provider}
+    return {k: v for k, v in decoded.items() if k in known}
 
 
 def _encode_admin_cursor(credential_cursors: dict[str, str | None]) -> str | None:
-    active_cursors = {
-        key: cursor for key, cursor in credential_cursors.items() if cursor is not None
-    }
-    if not active_cursors:
-        return None
-    payload = json.dumps(
-        active_cursors,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
-    return f"{_ADMIN_CURSOR_PREFIX}{token}"
+    return encode_cursor(_ADMIN_CURSOR_PREFIX, credential_cursors)
 
 
 def _decode_admin_cursor(cursor: str | None) -> dict[str, str | None] | None:
     if cursor is None:
         return None
-    if not cursor.startswith(_ADMIN_CURSOR_PREFIX):
-        return {}
-    token = cursor[len(_ADMIN_CURSOR_PREFIX) :]
-    padded = token + ("=" * (-len(token) % 4))
-    try:
-        payload = base64.urlsafe_b64decode(padded.encode())
-        decoded = json.loads(payload.decode())
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    if not isinstance(decoded, dict):
-        return {}
-    return {
-        str(key): str(value) if value is not None else None
-        for key, value in decoded.items()
-    }
+    # Generic returns None for prefix mismatch; admin callers expect {} instead.
+    return decode_cursor(_ADMIN_CURSOR_PREFIX, cursor) or {}
 
 
 def _admin_cursor_key(
@@ -1399,36 +1366,11 @@ def _status_cursor_key(status_value: str | None) -> str:
 
 
 def _encode_status_cursor(status_cursors: dict[str, str | None]) -> str | None:
-    active_cursors = {
-        status: cursor for status, cursor in status_cursors.items() if cursor is not None
-    }
-    if not active_cursors:
-        return None
-    payload = json.dumps(
-        active_cursors,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    token = base64.urlsafe_b64encode(payload).decode().rstrip("=")
-    return f"{_STATUS_CURSOR_PREFIX}{token}"
+    return encode_cursor(_STATUS_CURSOR_PREFIX, status_cursors)
 
 
 def _decode_status_cursor(cursor: str | None) -> dict[str, str | None] | None:
-    if cursor is None or not cursor.startswith(_STATUS_CURSOR_PREFIX):
-        return None
-    token = cursor[len(_STATUS_CURSOR_PREFIX) :]
-    padded = token + ("=" * (-len(token) % 4))
-    try:
-        payload = base64.urlsafe_b64decode(padded.encode())
-        decoded = json.loads(payload.decode())
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    if not isinstance(decoded, dict):
-        return {}
-    return {
-        str(status): str(status_cursor) if status_cursor is not None else None
-        for status, status_cursor in decoded.items()
-    }
+    return decode_cursor(_STATUS_CURSOR_PREFIX, cursor)
 
 
 def _global_provider_call_limits(page_limit: int, provider_count: int) -> list[int]:
