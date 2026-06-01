@@ -19,6 +19,22 @@ from app.tenancy.models.provider_mapping import CompanyProviderMapping
 from app.tenancy.routers import companies
 
 COMPANY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+class _MoabitsAdapter:
+    def __init__(self, fn=None) -> None:
+        self._fn = fn
+
+    async def fetch_child_companies(self, credentials: dict) -> list[dict]:
+        return await self._fn(credentials) if self._fn else []
+
+
+class _Registry:
+    def __init__(self, adapter=None) -> None:
+        self._adapter = adapter or _MoabitsAdapter()
+
+    def get(self, provider: str) -> _MoabitsAdapter:
+        return self._adapter
 USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
 FERNET_KEY = Fernet.generate_key().decode()
 
@@ -114,7 +130,7 @@ def _moabits_credential() -> CompanyProviderCredentials:
     )
 
 
-def _client(role: AppRole, db=None) -> TestClient:
+def _client(role: AppRole, db=None, registry=None) -> TestClient:
     app = FastAPI()
     app.include_router(companies.router, prefix="/v1")
     app.dependency_overrides[get_current_profile] = lambda: _profile(role)
@@ -127,6 +143,8 @@ def _client(role: AppRole, db=None) -> TestClient:
             yield db
 
         app.dependency_overrides[get_db] = _custom_db_override
+    if registry is not None:
+        app.dependency_overrides[companies.get_registry] = lambda: registry
     add_pagination(app)
     return TestClient(app)
 
@@ -339,7 +357,7 @@ class _MappingDb:
             row.updated_at = row.updated_at or datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def test_admin_can_upsert_moabits_provider_mapping(monkeypatch) -> None:
+def test_admin_can_upsert_moabits_provider_mapping() -> None:
     async def _children(credentials: dict) -> list[dict]:
         assert credentials["x_api_key"] == "secret-key"
         return [
@@ -350,10 +368,9 @@ def test_admin_can_upsert_moabits_provider_mapping(monkeypatch) -> None:
             }
         ]
 
-    monkeypatch.setattr(companies, "fetch_child_companies", _children)
     db = _MappingDb(credential=_moabits_credential())
 
-    response = _client(AppRole.admin, db).put(
+    response = _client(AppRole.admin, db, _Registry(_MoabitsAdapter(_children))).put(
         f"/v1/companies/{COMPANY_ID}/provider-mappings/moabits",
         json={
             "companyCode": "48123-99",
@@ -373,7 +390,7 @@ def test_admin_can_upsert_moabits_provider_mapping(monkeypatch) -> None:
     assert db.commits == 1
 
 
-def test_admin_can_upsert_moabits_mapping_from_live_discovery(monkeypatch) -> None:
+def test_admin_can_upsert_moabits_mapping_from_live_discovery() -> None:
     async def _children(credentials: dict) -> list[dict]:
         assert credentials["x_api_key"] == "secret-key"
         return [
@@ -384,10 +401,9 @@ def test_admin_can_upsert_moabits_mapping_from_live_discovery(monkeypatch) -> No
             }
         ]
 
-    monkeypatch.setattr(companies, "fetch_child_companies", _children)
     db = _MappingDb(credential=_moabits_credential())
 
-    response = _client(AppRole.admin, db).put(
+    response = _client(AppRole.admin, db, _Registry(_MoabitsAdapter(_children))).put(
         f"/v1/companies/{COMPANY_ID}/provider-mappings/moabits",
         json={"companyCode": "48123-99"},
     )
@@ -401,15 +417,14 @@ def test_admin_can_upsert_moabits_mapping_from_live_discovery(monkeypatch) -> No
     assert db.commits == 1
 
 
-def test_moabits_provider_mapping_code_must_exist_in_moabits_api(monkeypatch) -> None:
+def test_moabits_provider_mapping_code_must_exist_in_moabits_api() -> None:
     async def _children(credentials: dict) -> list[dict]:
         assert credentials["x_api_key"] == "secret-key"
         return [{"companyCode": "48123", "companyName": "Bismark Colombia"}]
 
-    monkeypatch.setattr(companies, "fetch_child_companies", _children)
     db = _MappingDb(credential=_moabits_credential())
 
-    response = _client(AppRole.admin, db).put(
+    response = _client(AppRole.admin, db, _Registry(_MoabitsAdapter(_children))).put(
         f"/v1/companies/{COMPANY_ID}/provider-mappings/moabits",
         json={"companyCode": "48123-99"},
     )
@@ -420,7 +435,7 @@ def test_moabits_provider_mapping_code_must_exist_in_moabits_api(monkeypatch) ->
     assert db.commits == 0
 
 
-def test_admin_can_discover_moabits_mapping_options(monkeypatch) -> None:
+def test_admin_can_discover_moabits_mapping_options() -> None:
     other_company_id = uuid.UUID("00000000-0000-0000-0000-000000000003")
 
     async def _children(credentials: dict) -> list[dict]:
@@ -437,8 +452,6 @@ def test_admin_can_discover_moabits_mapping_options(monkeypatch) -> None:
                 "clie_id": 132,
             },
         ]
-
-    monkeypatch.setattr(companies, "fetch_child_companies", _children)
 
     local_companies = [
         Company(
@@ -500,7 +513,7 @@ def test_admin_can_discover_moabits_mapping_options(monkeypatch) -> None:
             self.commits += 1
 
     db = _DiscoveryDb()
-    response = _client(AppRole.admin, db).get(
+    response = _client(AppRole.admin, db, _Registry(_MoabitsAdapter(_children))).get(
         "/v1/companies/provider-mappings/moabits/discover"
     )
 
@@ -578,11 +591,7 @@ def test_admin_can_list_cached_moabits_source_companies() -> None:
     assert payload["items"][0]["clie_id"] == 132
 
 
-def test_admin_can_list_moabits_mappings_without_live_discovery(monkeypatch) -> None:
-    async def _children(_credentials: dict) -> list[dict]:
-        raise AssertionError("list endpoint must not call Moabits discovery")
-
-    monkeypatch.setattr(companies, "fetch_child_companies", _children)
+def test_admin_can_list_moabits_mappings_without_live_discovery() -> None:
     other_company_id = uuid.UUID("00000000-0000-0000-0000-000000000003")
     local_companies = [
         Company(

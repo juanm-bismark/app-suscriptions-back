@@ -123,6 +123,25 @@ class _Provider:
         return None
 
 
+class _MoabitsProvider(_Provider):
+    """_Provider extended with test_credentials for CredentialTestableProvider tests."""
+
+    def __init__(
+        self,
+        *,
+        test_credentials_raises: Exception | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.test_credentials_raises = test_credentials_raises
+        self.tested: list[dict[str, Any]] = []
+
+    async def test_credentials(self, credentials: dict[str, Any]) -> None:
+        self.tested.append(credentials)
+        if self.test_credentials_raises is not None:
+            raise self.test_credentials_raises
+
+
 class _Registry:
     def __init__(self, provider: _Provider) -> None:
         self.provider = provider
@@ -300,21 +319,9 @@ def test_test_endpoint_returns_provider_failure_without_persisting() -> None:
     assert db.rows == []
 
 
-def test_moabits_test_endpoint_validates_credentials_without_persisting(
-    monkeypatch,
-) -> None:
+def test_moabits_test_endpoint_validates_credentials_without_persisting() -> None:
     db = _Db([])
-    provider = _Provider(fail=True)
-    captured: dict[str, Any] = {}
-
-    async def _moabits_test_credentials(credentials: dict[str, Any]) -> None:
-        captured.update(credentials)
-
-    monkeypatch.setattr(
-        credentials_router,
-        "moabits_test_credentials",
-        _moabits_test_credentials,
-    )
+    provider = _MoabitsProvider(fail=True)
     client = _client(AppRole.admin, db, provider)
 
     response = client.post(
@@ -331,22 +338,17 @@ def test_moabits_test_endpoint_validates_credentials_without_persisting(
     assert response.json() == {"provider": "moabits", "ok": True, "detail": None}
     assert db.rows == []
     assert provider.calls == []
-    assert captured["company_id"] == str(COMPANY_ID)
-    assert captured["x_api_key"] == "new-key"
+    assert len(provider.tested) == 1
+    assert provider.tested[0]["company_id"] == str(COMPANY_ID)
+    assert provider.tested[0]["x_api_key"] == "new-key"
 
 
-def test_moabits_test_endpoint_returns_auth_failure(monkeypatch) -> None:
+def test_moabits_test_endpoint_returns_auth_failure() -> None:
     db = _Db([])
-
-    async def _moabits_test_credentials(credentials: dict[str, Any]) -> None:
-        raise ProviderAuthFailed(detail="Moabits x-api-key is cancelled")
-
-    monkeypatch.setattr(
-        credentials_router,
-        "moabits_test_credentials",
-        _moabits_test_credentials,
+    provider = _MoabitsProvider(
+        test_credentials_raises=ProviderAuthFailed(detail="Moabits x-api-key is cancelled")
     )
-    client = _client(AppRole.admin, db)
+    client = _client(AppRole.admin, db, provider)
 
     response = client.post(
         "/v1/companies/me/credentials/moabits/test",
@@ -492,7 +494,7 @@ def test_admin_patch_merges_only_sent_fields() -> None:
     assert provider.calls[0]["api_key"] == "new-secret"
 
 
-def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
+def test_manager_can_update_moabits_x_api_key_with_mapping() -> None:
     old = _row(
         provider="moabits",
         credentials={
@@ -502,18 +504,8 @@ def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
         account_scope={"environment": "production"},
     )
     db = _Db([old], moabits_mapping=_moabits_mapping())
-    provider = _Provider()
+    provider = _MoabitsProvider()
     client = _client(AppRole.manager, db, provider)
-    tested: list[dict[str, Any]] = []
-
-    async def _moabits_test_credentials(credentials: dict[str, Any]) -> None:
-        tested.append(credentials)
-
-    monkeypatch.setattr(
-        credentials_router,
-        "moabits_test_credentials",
-        _moabits_test_credentials,
-    )
 
     response = client.patch(
         "/v1/companies/me/credentials/moabits",
@@ -527,7 +519,7 @@ def test_manager_can_update_moabits_x_api_key_with_mapping(monkeypatch) -> None:
         "x_api_key": "new-key",
     }
     assert old.account_scope == {"environment": "production"}
-    assert tested[0]["x_api_key"] == "new-key"
+    assert provider.tested[0]["x_api_key"] == "new-key"
     assert "new-key" not in response.text
 
 

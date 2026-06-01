@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlalchemy import apaginate
 from sqlalchemy import delete, or_, select
@@ -15,8 +15,8 @@ from app.database import get_db
 from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
 from app.identity.models.user import User
-from app.providers.base import Provider
-from app.providers.moabits.adapter import fetch_child_companies
+from app.providers.base import ChildCompanyProvider, Provider
+from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials
 from app.tenancy.company_validation import (
     ensure_company_name_is_available,
@@ -49,6 +49,12 @@ MOABITS_DISCOVERY_CACHE_MESSAGE = (
     "available Moabits company codes/names may change."
 )
 
+
+def get_registry(request: Request) -> ProviderRegistry:
+    registry: ProviderRegistry = request.app.state.provider_registry
+    return registry
+
+
 AdminProfile = Annotated[Profile, Depends(require_roles(AppRole.admin))]
 ManagerOrAdminProfile = Annotated[
     Profile,
@@ -60,6 +66,7 @@ CompanyProfile = Annotated[
 ]
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+RegistryDep = Annotated[ProviderRegistry, Depends(get_registry)]
 PageParams = Annotated[Params, Depends()]
 SearchQuery = Annotated[str | None, Query()]
 
@@ -202,6 +209,7 @@ async def _validate_moabits_mapping_code(
     source_company_id: uuid.UUID | None,
     db: AsyncSession,
     settings: Settings,
+    adapter: ChildCompanyProvider,
 ) -> dict[str, Any] | None:
     cached_company = await _cached_moabits_source_company(
         source_company_id,
@@ -228,7 +236,7 @@ async def _validate_moabits_mapping_code(
     )
     provider_companies = {
         row["company_code"]: row
-        for item in await fetch_child_companies(credentials)
+        for item in await adapter.fetch_child_companies(credentials)
         if (row := _moabits_company_row(item)) is not None
     }
     discovered_company = provider_companies.get(provider_company_code)
@@ -493,6 +501,7 @@ async def discover_moabits_provider_mappings(
     current: AdminProfile,
     db: DbSession,
     settings: SettingsDep,
+    registry: RegistryDep,
 ) -> MoabitsProviderMappingDiscoveryOut:
     """Compare local companies with Moabits companies for an explicit link UI."""
     if current.company_id is None:
@@ -507,6 +516,13 @@ async def discover_moabits_provider_mappings(
     )
     if credential is None:
         raise HTTPException(status_code=404, detail="Moabits credential not found")
+
+    adapter = registry.get(Provider.MOABITS.value)
+    if not isinstance(adapter, ChildCompanyProvider):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Moabits adapter does not support child company listing",
+        )
 
     local_result = await db.execute(select(Company).order_by(Company.name))
     local_companies = list(local_result.scalars().all())
@@ -531,7 +547,7 @@ async def discover_moabits_provider_mappings(
         require_fernet_key(settings),
     )
     provider_rows_by_code: dict[str, dict[str, Any]] = {}
-    for item in await fetch_child_companies(credentials):
+    for item in await adapter.fetch_child_companies(credentials):
         row = _moabits_company_row(item)
         if row is not None:
             provider_rows_by_code[row["company_code"]] = row
@@ -609,6 +625,7 @@ async def upsert_company_provider_mapping(
     current: AdminProfile,
     db: DbSession,
     settings: SettingsDep,
+    registry: RegistryDep,
 ) -> CompanyProviderMapping:
     """Create or update the Moabits mapping for a company. Validates the company code against the Moabits API. Admin only."""
     if provider != Provider.MOABITS:
@@ -623,11 +640,18 @@ async def upsert_company_provider_mapping(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="provider_company_code is required",
         )
+    adapter = registry.get(Provider.MOABITS.value)
+    if not isinstance(adapter, ChildCompanyProvider):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Moabits adapter does not support child company listing",
+        )
     discovered_company = await _validate_moabits_mapping_code(
         provider_company_code,
         current.company_id,
         db,
         settings,
+        adapter,
     )
     provider_company_name = (
         body.provider_company_name.strip()

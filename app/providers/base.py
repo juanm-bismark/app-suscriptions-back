@@ -146,3 +146,28 @@ class LocationProvider(Protocol):
         iccid: str,
         credentials: dict[str, Any],
     ) -> LocationDetail: ...
+
+
+@runtime_checkable
+class CredentialTestableProvider(Protocol):
+    """Optional capability — adapters that can validate credentials without persisting.
+
+    The tenancy credential-test endpoint dispatches via this protocol so that
+    adapters with a cheaper validation path (e.g. a token-exchange call) can skip
+    the full `list_subscriptions` probe used for other providers.
+    """
+
+    async def test_credentials(self, credentials: dict[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class ChildCompanyProvider(Protocol):
+    """Optional capability — adapters that expose a sub-account / child-company list.
+
+    Currently only Moabits implements this. The tenancy mapping endpoints use it to
+    validate and discover provider-side company codes at setup time.
+    """
+
+    async def fetch_child_companies(
+        self, credentials: dict[str, Any]
+    ) -> list[dict[str, Any]]: ...

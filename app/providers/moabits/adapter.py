@@ -1418,6 +1418,16 @@ class MoabitsAdapter(BaseAdapter):
         records.sort(key=lambda r: r.date, reverse=True)
         return records
 
+    async def test_credentials(self, credentials: dict[str, Any]) -> None:
+        """Validate Moabits credentials via the CredentialTestableProvider protocol."""
+        await test_credentials(credentials)
+
+    async def fetch_child_companies(
+        self, credentials: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Return Moabits child companies via the ChildCompanyProvider protocol."""
+        return await fetch_child_companies(credentials)
+
     def supports_list_filter(self, filter_name: str) -> bool:
         return filter_name == "iccid"
 

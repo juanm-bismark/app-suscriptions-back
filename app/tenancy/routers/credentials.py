@@ -17,8 +17,7 @@ from app.config import Settings, get_settings
 from app.database import get_db
 from app.identity.dependencies import require_roles
 from app.identity.models.profile import AppRole, Profile
-from app.providers.base import Provider, SearchableProvider
-from app.providers.moabits.adapter import test_credentials as moabits_test_credentials
+from app.providers.base import CredentialTestableProvider, Provider, SearchableProvider
 from app.providers.registry import ProviderRegistry
 from app.shared.crypto import decrypt_credentials, encrypt_credentials
 from app.shared.errors import (
@@ -338,9 +337,9 @@ async def _live_test_credentials(
         return CredentialTestOut(provider=provider.value, ok=False, detail=str(exc))
     credentials = dict(normalized_body.credentials)
     credentials["company_id"] = str(company_id) if company_id is not None else ""
-    if provider == Provider.MOABITS:
+    if isinstance(adapter, CredentialTestableProvider):
         try:
-            await moabits_test_credentials(credentials)
+            await adapter.test_credentials(credentials)
         except DomainError as exc:
             return CredentialTestOut(
                 provider=provider.value,
