@@ -173,9 +173,9 @@ async def test_attach_profile_emails_adds_email_for_user_table() -> None:
         async def execute(self, statement):
             return _RowsResult([_EmailRow(TARGET_ID, "target@example.com")])
 
-    await _attach_profile_emails(profiles, _Db())
+    result = await _attach_profile_emails(profiles, _Db())
 
-    assert profiles[0].email == "target@example.com"
+    assert result[0].email == "target@example.com"
 
 
 @pytest.mark.asyncio

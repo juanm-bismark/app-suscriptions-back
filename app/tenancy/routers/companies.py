@@ -542,6 +542,16 @@ async def discover_moabits_provider_mappings(
     for mapping in mappings:
         mappings_by_code.setdefault(mapping.provider_company_code, []).append(mapping)
 
+    # Snapshot which source companies were already cached + active for this
+    # admin's credential source BEFORE this refresh re-activates the live set,
+    # so `selected_in_source` can distinguish already-tracked from newly-seen.
+    existing_source_result = await db.execute(
+        _list_moabits_source_companies_query(current.company_id, active_only=True)
+    )
+    previously_active_codes = {
+        row.company_code for row in existing_source_result.scalars().all()
+    }
+
     credentials = decrypt_credentials(
         credential.credentials_enc,
         require_fernet_key(settings),
@@ -553,7 +563,11 @@ async def discover_moabits_provider_mappings(
             provider_rows_by_code[row["company_code"]] = row
     provider_rows = list(provider_rows_by_code.values())
     await _cache_moabits_source_companies(current.company_id, provider_rows, db)
-    source_company_codes = sorted({row["company_code"] for row in provider_rows})
+    # Live Moabits companies that were already tracked before this refresh
+    # (intersection keeps the list a subset of the companies shown below).
+    source_company_codes = sorted(
+        code for code in provider_rows_by_code if code in previously_active_codes
+    )
 
     moabits_companies: list[MoabitsProviderCompanyOut] = []
     for row in provider_rows:

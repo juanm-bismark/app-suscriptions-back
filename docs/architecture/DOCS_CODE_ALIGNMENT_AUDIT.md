@@ -55,15 +55,15 @@ status note.
 | `docs/architecture/adrs/ADR-002-*` | Current | Proxy/routing-map decision matches code. |
 | `docs/architecture/adrs/ADR-003-*` | Updated | Removed inaccurate `with_credentials` wrapper example; credentials are passed per call. |
 | `docs/architecture/adrs/ADR-004-*` | Current enough | DomainError → problem+json is implemented. |
-| `docs/architecture/adrs/ADR-005-*` | Updated | Implementation table reflects breaker done, retry/cache/generic bulkhead/metrics not done. |
+| `docs/architecture/adrs/ADR-005-*` | Updated | Implementation table reflects breaker done, retry/cache/generic bulkhead/metrics not done. Section 3 documents failure classification: client-domain errors (`ProviderResourceNotFound`, `ProviderValidationError`, `ProviderForbidden`, `UnsupportedOperation`, `SubscriptionNotFound`, `InvalidICCID`) do not trip the breaker and close a HALF_OPEN breaker. |
 | `docs/architecture/adrs/ADR-006-*` | Updated | Corrected Moabits provider mapping, credential cache, credential audit/idempotency claims. |
 | `docs/architecture/adrs/ADR-007-*` | Mostly current | `/v1`, cursor/list response, and idempotency for SIM writes match code. |
-| `docs/architecture/adrs/ADR-008-*` | Mostly current | RBAC and lifecycle audit align. Generic audit table exists but generic audit middleware remains incomplete. |
+| `docs/architecture/adrs/ADR-008-*` | Updated | RBAC and lifecycle audit align. Generic audit table exists but generic audit middleware remains incomplete. User management endpoints added to authorization matrix; Section 4 clarified: admin is cross-company for `POST/PATCH/PUT/DELETE /v1/users/*` (can manage users of any tenant), but `GET /v1/users/{user_id}` and `GET /v1/users` remain scoped to admin's own company. |
 | `docs/architecture/adrs/ADR-009-*` | Mostly current | Tests exist and are extensive; coverage gates/import-linter are still process goals. |
 | `docs/architecture/adrs/ADR-010-*` | Current | Matches `company_provider_mappings` + `moabits_source_companies` implementation. |
 | `docs/architecture/adrs/ADR-011-*` | Current | Captures Moabits v2 enrichment and known gaps. |
-| `docs/architecture/adrs/ADR-012-*` | Current | Accepted; Redis/Arq, routing sync, jobs endpoints and batch details are implemented. Export remains pending. |
-| `docs/CIRCUIT_BREAKER_IMPLEMENTATION.md` | Updated | Fixed date and status framing. Still intentionally a focused implementation note. |
+| `docs/architecture/adrs/ADR-012-*` | Updated | Accepted; Redis/Arq, routing sync, jobs endpoints and batch details are implemented. Export remains pending. Worker table extended: Credenciales row (worker reuses `_load_credentials` to inject `company_code` for Moabits) and Dedup / jobs abandonados row (stale jobs ≥ 2h self-healed before scheduling; enqueue failure marks job FAILED and returns 503). |
+| `docs/CIRCUIT_BREAKER_IMPLEMENTATION.md` | Updated | Fixed date and status framing. Behavior #1 updated to document failure classification (non-tripping client-domain errors). Still intentionally a focused implementation note. |
 | `docs/LIFECYCLE_FLAG.md` | Current | Matches `LIFECYCLE_WRITES_ENABLED` behavior. |
 | `docs/archive/2026-05-provider-remediation/IMPLEMENTATION_PLAN.md` | Archived | Historical roadmap/provider remediation notes. Not a current source of truth. |
 | `migrations/README.md` | Current | Lists migrations through `008_sync_jobs.sql`. |

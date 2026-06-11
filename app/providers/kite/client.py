@@ -66,6 +66,9 @@ class KiteCredentials:
 
 
 def _creds(data: dict[str, Any]) -> KiteCredentials:
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        raise ProviderAuthFailed(detail="Kite credentials require an endpoint URL")
     username = data.get("username")
     password = data.get("password")
     if bool(username) != bool(password):
@@ -73,7 +76,7 @@ def _creds(data: dict[str, Any]) -> KiteCredentials:
             detail="Kite WS-Security credentials require both username and password"
         )
     return KiteCredentials(
-        endpoint=data["endpoint"],
+        endpoint=endpoint,
         username=username,
         password=password,
         client_cert_pfx_b64=data.get("client_cert_pfx_b64") or data.get("pfx_base64"),

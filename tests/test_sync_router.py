@@ -174,8 +174,9 @@ async def test_trigger_invalid_provider_returns_422() -> None:
 @pytest.mark.asyncio
 async def test_trigger_when_inflight_returns_409_already_running() -> None:
     inflight = _job(job_id="inflight01", status=STATUS_RUNNING)
-    # Dedup check returns the ID of the existing inflight job
-    db = _Db(inflight.id)
+    # First execute() is the stale-job self-heal UPDATE (returns nothing useful);
+    # second is the dedup SELECT returning the existing inflight job's ID.
+    db = _Db(None, inflight.id)
     pool = _FakeArqPool()
 
     with pytest.raises(SyncAlreadyRunning) as exc_info:
@@ -369,7 +370,10 @@ async def test_routing_sync_task_happy_path() -> None:
 
     with (
         patch("app.database._session_factory", _fake_factory),
-        patch("app.shared.crypto.decrypt_credentials", return_value={"api_key": "k"}),
+        patch(
+            "app.subscriptions.services.credentials.decrypt_credentials",
+            return_value={"api_key": "k"},
+        ),
         patch("app.config.get_settings") as mock_settings,
     ):
         mock_settings.return_value = MagicMock(fernet_key="fake-key")

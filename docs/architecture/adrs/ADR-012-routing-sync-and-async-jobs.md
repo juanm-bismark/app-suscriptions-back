@@ -47,8 +47,10 @@ sim_routing_map
 | **Schedule** | Cron diario `02:00 UTC` por defecto, configurable vía `SYNC_CRON_EXPR`. |
 | **Trigger manual** | `POST /v1/sync/trigger?provider={kite\|tele2\|moabits}` (admin role). |
 | **Estado de jobs** | Tabla `sync_jobs(id, kind, provider, company_id, triggered_by, status, progress_done, progress_total, cursor, result_url, result_expires_at, errors_json, params_json, timestamps)` para resumibilidad, polling y observabilidad. |
+| **Credenciales** | El worker carga credenciales con `_load_credentials` (mismo path que la API), que inyecta el scope per-provider — incluido el `company_code` de Moabits desde el mapping activo. Sin él, `MoabitsAdapter.list_subscriptions` devuelve 0 SIMs y el job terminaría "done" sin sincronizar nada. |
 | **Resumibilidad** | Si un sync se interrumpe, el siguiente arranca desde `cursor` (modified_since para Tele2, offset/pageToken para Kite/Moabits). |
 | **Concurrencia** | 1 worker por provider en momentos de sync (semáforo en Arq). Evita multiplicación accidental del budget TPS. |
+| **Dedup / jobs abandonados** | El trigger manual y el cron saltan/rechazan (`409 SyncAlreadyRunning`) si ya hay un job `pending\|running` para ese `(company, provider)`. Los jobs `pending\|running` con antigüedad > 2 h (el techo `job_timeout` es 1 h) se consideran abandonados y se marcan `failed` automáticamente, para que no bloqueen futuros syncs. Si el `enqueue` a Redis falla tras crear la fila, el job se marca `failed` (la API responde `503`) en lugar de quedar `pending` indefinidamente. |
 | **Rate limit** | El worker reutiliza el `RateLimiter` per-proc del adapter (mismo de ADR-005). Si en algún momento corren API + worker contra el mismo provider, comparten el budget — aceptable mientras haya 1 réplica del worker. |
 | **Observabilidad** | Logs estructurados + métricas: `sync_duration_seconds{provider}`, `sync_iccids_seen{provider}`, `sync_errors_total{provider,kind}`. |
 

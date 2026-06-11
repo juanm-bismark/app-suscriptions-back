@@ -140,6 +140,11 @@ def _creds(d: dict[str, Any]) -> _Tele2Creds:
         raise ProviderAuthFailed(
             detail="Tele2 Cisco Control Center REST credentials require username for HTTP Basic auth"
         )
+    api_key = d.get("api_key")
+    if not api_key:
+        raise ProviderAuthFailed(
+            detail="Tele2 Cisco Control Center REST credentials require api_key for HTTP Basic auth"
+        )
     base_url = d.get("base_url") or d.get("cobrand_url") or _DEFAULT_COBRAND_HOST
     raw_base_url = str(base_url).strip().rstrip("/")
     if not raw_base_url.startswith(("http://", "https://")):
@@ -155,7 +160,7 @@ def _creds(d: dict[str, Any]) -> _Tele2Creds:
     return _Tele2Creds(
         base_url=f"{parsed_base_url.scheme}://{parsed_base_url.netloc}",
         username=username,
-        api_key=d["api_key"],
+        api_key=api_key,
         account_id=d.get("account_id"),  # type: ignore[assignment]
     )
 

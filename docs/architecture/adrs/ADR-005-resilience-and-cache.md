@@ -53,6 +53,7 @@ Valores por adapter en `Settings` (env-overridable). El read timeout es el más 
 - Estado en memoria (proceso único). Métrica Prometheus pendiente.
 - Implementación actual: `app/shared/resilience.py::CircuitBreaker`.
 - Cuando está abierto: la request del cliente recibe `503 ProviderUnavailable` en < 10 ms.
+- Clasificación de fallos: sólo cuentan como fallo los errores de salud del proveedor (timeouts, errores de red, 5xx, `ProviderUnavailable`, `ProviderRateLimited`, `ProviderAuthFailed`, `ProviderProtocolError`). Los errores de cliente que demuestran que el proveedor respondió correctamente —`ProviderResourceNotFound`, `ProviderValidationError`, `ProviderForbidden`, `UnsupportedOperation`, `SubscriptionNotFound`, `InvalidICCID`— **no** abren el breaker y se tratan como éxito (cierran un breaker en `half_open`). Evita que una ráfaga de ICCIDs inexistentes bloquee un proveedor sano.
 
 ### 4. Caché L1 in-memory con TTL ≤ 5 s (anti-stampede)
 

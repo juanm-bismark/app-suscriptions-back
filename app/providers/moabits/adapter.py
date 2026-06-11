@@ -113,8 +113,11 @@ def _creds(d: dict[str, Any]) -> _MoabitsCreds:
         raise ProviderAuthFailed(
             detail="Moabits credentials require x_api_key"
         )
+    base_url = d.get("base_url")
+    if not base_url:
+        raise ProviderAuthFailed(detail="Moabits credentials require base_url")
     return _MoabitsCreds(
-        base_url=d["base_url"].rstrip("/"),
+        base_url=str(base_url).rstrip("/"),
         x_api_key=str(x_api_key),
     )
 

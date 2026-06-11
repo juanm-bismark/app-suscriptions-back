@@ -108,7 +108,9 @@ def _kite_search_parameters(
         return None
     params: dict[str, str] = {}
     if filters.status is not None:
-        params["lifeCycleStatus"] = filters.status
+        # UNICA search uses `lifeCycleState` (modifySubscription uses
+        # `lifeCycleStatus`); the two operations spell the field differently.
+        params["lifeCycleState"] = filters.status
     if filters.iccid:
         params["icc"] = filters.iccid
     if filters.imsi:
@@ -125,7 +127,8 @@ def _kite_search_parameters(
         normalized = key.replace("_", "").lower()
         if normalized not in {"customfield1", "customfield2", "customfield3", "customfield4"}:
             continue
-        params[f"customField{normalized[-1]}"] = value
+        # UNICA search names custom fields with an underscore: customField_1..4.
+        params[f"customField_{normalized[-1]}"] = value
     return params
 
 
@@ -203,10 +206,12 @@ class KiteAdapter(BaseAdapter):
                 )
             snapshot = parse_usage_snapshot(detail, iccid)
             return _filter_usage_metrics(snapshot, metrics)
-        # subscriptionData contains a nested subscriptionDetailData element
-        detail = el.find(".//{*}subscriptionDetailData") or el.find(
-            ".//{*}subscriptionDetail"
-        )
+        # subscriptionData contains a nested subscriptionDetailData element.
+        # Use explicit `is not None`: an empty-but-present Element is falsy and
+        # `or` would skip it (and raises DeprecationWarning on Python 3.14).
+        detail = el.find(".//{*}subscriptionDetailData")
+        if detail is None:
+            detail = el.find(".//{*}subscriptionDetail")
         if detail is None:
             # Some providers return the detail at the same level
             detail = el

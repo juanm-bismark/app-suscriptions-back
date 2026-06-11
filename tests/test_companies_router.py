@@ -520,7 +520,11 @@ def test_admin_can_discover_moabits_mapping_options() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert "refreshes the cached Moabits source companies" in payload["cache_message"]
-    assert payload["source_company_codes"] == ["48123", "48123-99"]
+    # `selected_in_source` now reflects companies that were already active in the
+    # source cache BEFORE this refresh. The only pre-cached row ("stale-code") is
+    # not in the live provider list, and neither live company was tracked before,
+    # so the tracked-and-live intersection is empty.
+    assert payload["source_company_codes"] == []
     assert [row.company_code for row in db.source_companies] == ["48123-99", "48123"]
     assert stale_source_company.active is False
     assert db.commits == 1
@@ -529,7 +533,7 @@ def test_admin_can_discover_moabits_mapping_options() -> None:
     linked_moabits = next(
         item for item in payload["moabits_companies"] if item["companyCode"] == "48123"
     )
-    assert linked_moabits["selected_in_source"] is True
+    assert linked_moabits["selected_in_source"] is False
     assert linked_moabits["linked_companies"] == [
         {"company_id": str(COMPANY_ID), "company_name": "Bismark"}
     ]
@@ -538,7 +542,7 @@ def test_admin_can_discover_moabits_mapping_options() -> None:
         for item in payload["moabits_companies"]
         if item["companyCode"] == "48123-99"
     )
-    assert unlinked_moabits["selected_in_source"] is True
+    assert unlinked_moabits["selected_in_source"] is False
     assert unlinked_moabits["linked_companies"] == []
 
 

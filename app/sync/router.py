@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import structlog
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -25,6 +26,7 @@ from app.shared.errors import JobNotFound, SyncAlreadyRunning
 from app.sync.models import (
     KIND_ROUTING_SYNC,
     STATUS_DONE,
+    STATUS_FAILED,
     STATUS_PENDING,
     STATUS_RUNNING,
     SyncJob,
@@ -40,6 +42,10 @@ from app.sync.schemas import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# A job stuck pending/running past this age is treated as abandoned (the worker
+# job_timeout ceiling is 1h, so 2h means it can never legitimately still run).
+_STALE_JOB_CUTOFF = timedelta(hours=2)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentProfile = Annotated[Profile, Depends(get_current_profile)]
@@ -57,6 +63,22 @@ async def trigger_sync(
 ) -> SyncTriggerOut:
     """Manually trigger a routing sync job for a provider (admin only)."""
     company_id: uuid.UUID = current.company_id  # type: ignore[assignment]
+
+    # Self-heal abandoned jobs (enqueue that never reached the worker, or a dead
+    # worker) so they stop blocking new syncs forever.
+    await db.execute(
+        update(SyncJob)
+        .where(
+            and_(
+                SyncJob.company_id == company_id,
+                SyncJob.kind == KIND_ROUTING_SYNC,
+                SyncJob.provider == provider.value,
+                SyncJob.status.in_([STATUS_PENDING, STATUS_RUNNING]),
+                SyncJob.created_at < datetime.now(UTC) - _STALE_JOB_CUTOFF,
+            )
+        )
+        .values(status=STATUS_FAILED, finished_at=func.now())
+    )
 
     existing = await db.execute(
         select(SyncJob.id).where(
@@ -85,13 +107,33 @@ async def trigger_sync(
     db.add(job)
     await db.commit()
 
-    await pool.enqueue_job(
-        "routing_sync_for_provider",
-        job_id,
-        provider.value,
-        str(company_id),
-        _job_id=job_id,
-    )
+    try:
+        await pool.enqueue_job(
+            "routing_sync_for_provider",
+            job_id,
+            provider.value,
+            str(company_id),
+            _job_id=job_id,
+        )
+    except Exception as exc:
+        # The pending row is committed; if enqueue fails, fail it now instead of
+        # leaving it to block every future sync for this provider.
+        await db.execute(
+            update(SyncJob)
+            .where(SyncJob.id == job_id)
+            .values(status=STATUS_FAILED, finished_at=func.now())
+        )
+        await db.commit()
+        logger.error(
+            "sync_enqueue_failed",
+            job_id=job_id,
+            provider=provider.value,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to enqueue sync job; the async queue is unavailable",
+        ) from exc
 
     logger.info("sync_triggered", job_id=job_id, provider=provider.value, company_id=str(company_id))
     return SyncTriggerOut(job_id=job_id, status_url=f"/v1/jobs/{job_id}")

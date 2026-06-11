@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # (Kite: 1000, Tele2: 50, Moabits: 500).
 _SYNC_BATCH_SIZE = 500
 
+# A job stuck pending/running past this age is treated as abandoned (the worker
+# job_timeout ceiling is 1h, so 2h means it can never legitimately still run).
+_STALE_JOB_CUTOFF = timedelta(hours=2)
+
 
 async def _persist_job_failure(job_id: str, exc: Exception) -> None:
     from app.database import _session_factory
@@ -65,11 +69,9 @@ async def routing_sync_for_provider(
     from app.database import _session_factory
     from app.providers.base import SearchableProvider
     from app.providers.registry import ProviderRegistry
-    from app.shared.crypto import decrypt_credentials
-    from app.shared.errors import CredentialsMissing
     from app.subscriptions.models.routing import SimRoutingMap
+    from app.subscriptions.services.credentials import _load_credentials
     from app.sync.models import STATUS_DONE, STATUS_RUNNING, SyncJob
-    from app.tenancy.models.credentials import CompanyProviderCredentials
 
     if _session_factory is None:
         raise RuntimeError("Database engine not initialized in worker")
@@ -96,22 +98,15 @@ async def routing_sync_for_provider(
                 .values(status=STATUS_RUNNING, started_at=func.now())
             )
 
-            cred_result = await db.execute(
-                select(CompanyProviderCredentials).where(
-                    CompanyProviderCredentials.company_id == company_uuid,
-                    CompanyProviderCredentials.provider == provider,
-                    CompanyProviderCredentials.active.is_(True),
-                )
-            )
-            cred_row = cred_result.scalar_one_or_none()
-            if cred_row is None:
-                raise CredentialsMissing(detail=f"No active credentials for {provider}")
-
             if not settings.fernet_key:
                 raise RuntimeError("FERNET_KEY not configured")
 
-            credentials = decrypt_credentials(cred_row.credentials_enc, settings.fernet_key)
-            credentials["company_id"] = company_id
+            # _load_credentials injects the provider-specific scope the adapters
+            # need — notably Moabits' `company_code` from the active provider
+            # mapping, without which list_subscriptions returns zero SIMs.
+            credentials = await _load_credentials(
+                company_uuid, provider, db, settings
+            )
             await db.commit()
 
         # ── Tele2: initialize date-range cursor on fresh start ─────────────────
@@ -210,6 +205,7 @@ async def schedule_nightly_routing_sync(ctx: dict[str, Any]) -> dict[str, Any]:
     from app.database import _session_factory
     from app.sync.models import (
         KIND_ROUTING_SYNC,
+        STATUS_FAILED,
         STATUS_PENDING,
         STATUS_RUNNING,
         SyncJob,
@@ -223,6 +219,21 @@ async def schedule_nightly_routing_sync(ctx: dict[str, Any]) -> dict[str, Any]:
     skipped = 0
     queued = 0
     async with _session_factory() as db:
+        # Self-heal abandoned jobs (worker died, or an enqueue never landed) so
+        # they don't block scheduling forever via the in-flight guard below.
+        await db.execute(
+            update(SyncJob)
+            .where(
+                and_(
+                    SyncJob.kind == KIND_ROUTING_SYNC,
+                    SyncJob.status.in_([STATUS_PENDING, STATUS_RUNNING]),
+                    SyncJob.created_at < datetime.now(UTC) - _STALE_JOB_CUTOFF,
+                )
+            )
+            .values(status=STATUS_FAILED, finished_at=func.now())
+        )
+        await db.commit()
+
         rows_result = await db.execute(
             select(
                 CompanyProviderCredentials.company_id,
@@ -264,14 +275,29 @@ async def schedule_nightly_routing_sync(ctx: dict[str, Any]) -> dict[str, Any]:
             await db.commit()
             created += 1
 
-            await ctx["redis"].enqueue_job(
-                "routing_sync_for_provider",
-                job_id,
-                provider,
-                str(company_id),
-                _job_id=job_id,
-            )
-            queued += 1
+            try:
+                await ctx["redis"].enqueue_job(
+                    "routing_sync_for_provider",
+                    job_id,
+                    provider,
+                    str(company_id),
+                    _job_id=job_id,
+                )
+                queued += 1
+            except Exception:
+                # Don't abort the whole batch — fail just this job so it doesn't
+                # linger as pending and block the next nightly run.
+                logger.exception(
+                    "failed to enqueue routing sync job %s (provider=%s)",
+                    job_id,
+                    provider,
+                )
+                await db.execute(
+                    update(SyncJob)
+                    .where(SyncJob.id == job_id)
+                    .values(status=STATUS_FAILED, finished_at=func.now())
+                )
+                await db.commit()
 
     logger.info(
         "nightly_routing_sync_scheduled",

@@ -20,9 +20,30 @@ from enum import Enum
 from functools import wraps
 from typing import Any, TypeVar
 
-from app.shared.errors import ProviderUnavailable
+from app.shared.errors import (
+    InvalidICCID,
+    ProviderForbidden,
+    ProviderResourceNotFound,
+    ProviderUnavailable,
+    ProviderValidationError,
+    SubscriptionNotFound,
+    UnsupportedOperation,
+)
 
 T = TypeVar("T")
+
+# Errors that represent a definitive answer from a healthy provider (resource
+# missing, bad request, unsupported op) rather than a provider outage. They must
+# not count toward the failure threshold, and a probe that gets one of these in
+# HALF_OPEN proves the provider is responding — so we treat them as a success.
+_NON_TRIPPING_ERRORS: tuple[type[Exception], ...] = (
+    ProviderResourceNotFound,
+    ProviderValidationError,
+    ProviderForbidden,
+    UnsupportedOperation,
+    SubscriptionNotFound,
+    InvalidICCID,
+)
 
 
 class _State(Enum):
@@ -82,6 +103,10 @@ class CircuitBreaker:
 
         try:
             result = await fn(*args, **kwargs)
+        except _NON_TRIPPING_ERRORS:
+            # Provider responded with a client-level error — it is healthy.
+            await self._record_success()
+            raise
         except Exception:
             await self._record_failure()
             raise

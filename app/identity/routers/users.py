@@ -60,12 +60,10 @@ async def _attach_profile_emails(
         )
     )
     emails = {row.id: row.email for row in result.all()}
-    out: list[ProfileOut] = []
-    for profile in profiles:
-        email = emails.get(profile.id)
-        object.__setattr__(profile, "email", email)
-        out.append(_profile_out_from_email(profile, email))
-    return out
+    return [
+        _profile_out_from_email(profile, emails.get(profile.id))
+        for profile in profiles
+    ]
 
 
 async def _get_company_or_404(
@@ -302,9 +300,9 @@ async def delete_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    result2 = await db.execute(
-        select(Profile).where(Profile.id == user_id, Profile.company_id == current.company_id)
-    )
+    # Admin-only endpoint; admins manage users across companies (consistent with
+    # create_user/update_user), so the profile lookup is not company-scoped.
+    result2 = await db.execute(select(Profile).where(Profile.id == user_id))
     if not result2.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 

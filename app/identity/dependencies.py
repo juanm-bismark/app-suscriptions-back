@@ -36,8 +36,14 @@ async def get_current_profile(
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload"
+        ) from None
 
-    result = await db.execute(select(Profile).where(Profile.id == uuid.UUID(user_id)))
+    result = await db.execute(select(Profile).where(Profile.id == user_uuid))
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
@@ -64,7 +70,11 @@ async def get_current_profile_optional(
     user_id: str | None = payload.get("sub")
     if not user_id:
         return None
-    result = await db.execute(select(Profile).where(Profile.id == uuid.UUID(user_id)))
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        return None
+    result = await db.execute(select(Profile).where(Profile.id == user_uuid))
     return result.scalar_one_or_none()
 
 

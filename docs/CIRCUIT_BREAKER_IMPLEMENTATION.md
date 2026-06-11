@@ -113,7 +113,15 @@ HALF_OPEN
 
 ### Behavior Specifications
 
-1. **Failure Detection**: Any exception raised by provider call triggers failure count
+1. **Failure Detection**: Exceptions that indicate a provider-health problem
+   (timeouts, network errors, 5xx, `ProviderUnavailable`, `ProviderRateLimited`,
+   `ProviderAuthFailed`, `ProviderProtocolError`) trigger the failure count.
+   Client-level domain errors that prove the provider answered correctly do
+   **not** count and are treated as a success for breaker purposes (so they also
+   close a HALF_OPEN breaker): `ProviderResourceNotFound`,
+   `ProviderValidationError`, `ProviderForbidden`, `UnsupportedOperation`,
+   `SubscriptionNotFound`, `InvalidICCID`. This prevents a burst of "unknown
+   ICCID" lookups from opening the breaker and blocking a healthy provider.
 2. **Threshold**: Circuit opens when:
    - 5+ failures recorded in rolling 30-second window, OR
    - 1+ failure in HALF_OPEN state

@@ -47,6 +47,11 @@ Hay que definir: qué roles pueden ejecutar las **operaciones mutantes** de subs
 | Desactivar credencial activa | `DELETE /v1/companies/me/credentials/{provider}` | ✗ | ✗ | ✓ |
 | Cambiar estado administrativo | `PUT /v1/sims/{iccid}/status` | ✗ | ✗ | ✓ |
 | **Purge (control op)** | `POST /v1/sims/{iccid}/purge` | ✗ | ✗ | ✓ |
+| Listar usuarios | `GET /v1/users` | ✗ | ✓ | ✓ |
+| Ver perfil de usuario | `GET /v1/users/{user_id}` | sólo propio | ✓ | ✓ |
+| Crear usuario | `POST /v1/users` | ✗ | ✓ sólo `member` | ✓ (cualquier company) |
+| Actualizar usuario | `PATCH/PUT /v1/users/{user_id}` | ✗ | ✓ sólo `member` | ✓ (cualquier company) |
+| Eliminar usuario | `DELETE /v1/users/{user_id}` | ✗ | ✗ | ✓ (cualquier company) |
 
 `public` (rol del usuario que se acaba de auto-registrar y no fue confirmado por un admin) **no tiene acceso** a ningún endpoint de subscriptions.
 
@@ -57,6 +62,7 @@ Hay que definir: qué roles pueden ejecutar las **operaciones mutantes** de subs
 - Cada request resuelve `company_id` del `Profile` autenticado.
 - El service `SubscriptionFetcher` consulta `SimRoutingMap` filtrando por `company_id`. Si el `iccid` solicitado no pertenece al tenant → **`404 SubscriptionNotFound`**, **no 403**, para no filtrar la existencia del recurso a otros tenants.
 - `admin` no puede operar sobre SIMs de otra `Company` por la API normal. Si en el futuro se necesita "super-admin global", crearlo como rol nuevo y endpoints separados.
+- **Gestión de usuarios**: a diferencia de las operaciones sobre SIMs, las mutaciones de usuario son cross-company para `admin`. `POST /v1/users` acepta cualquier `company_id`; `PATCH/PUT /v1/users/{user_id}` y `DELETE /v1/users/{user_id}` no filtran por la company del actor — admin puede operar sobre usuarios de cualquier tenant. `GET /v1/users/{user_id}` sí permanece scoped a la company del actor. Este scoping mínimo cubre el flujo de administración sin requerir un rol "super-admin" separado.
 
 ### 5. Auditoría — tablas `audit_log` y `lifecycle_change_audit`
 
